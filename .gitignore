@@ -1,0 +1,23 @@
+# 비밀값
+.env
+.env.*
+!.env.example
+
+# 자료: samples/만 커밋
+data/*
+!data/samples/
+
+# 모델, 파이썬
+models/
+.venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# 공부 기록, 실습, 설계 문서 (로컬에서만 관리)
+notes/
+labs/
+docs/
+CLAUDE.md
