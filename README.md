@@ -16,6 +16,10 @@
 
 ## 구성
 
+![ops-rag 구성도](assets/architecture.drawio.svg)
+
+<sub>`assets/architecture.drawio.svg`는 draw.io(웹·앱·VS Code 확장)에서 바로 열어 고칠 수 있다.</sub>
+
 | 역할 | 선택 | 상태 |
 | --- | --- | --- |
 | 벡터 DB | PostgreSQL 18 + pgvector 0.8.7 | ✅ |
