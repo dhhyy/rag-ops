@@ -20,6 +20,7 @@ import sys
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 # 경로와 한도 상수. 숫자를 바꾸면 TEI 설정(.env)도 같이 확인한다.
 ROOT = Path(__file__).resolve().parents[2]  # 저장소 루트 (.env 위치). engine/app/ingest.py 기준
@@ -150,10 +151,12 @@ def count_tokens(base: str, texts: list[str]) -> list[int]:
 
 
 # 조각 글을 EMBED_BATCH개씩 묶어 TEI /embed로 보내고, 벡터 목록을 순서대로 돌려준다.
-def embed(base: str, texts: list[str]) -> list[list[float]]:
+def embed(base: str, texts: list[str], on_batch: Callable[[int, int], None] | None = None) -> list[list[float]]:
     vecs: list[list[float]] = []
     for i in range(0, len(texts), EMBED_BATCH):
         vecs.extend(tei_post(f"{base}/embed", {"inputs": texts[i:i + EMBED_BATCH]}))
+        if on_batch:  # 묶음 하나가 끝날 때마다 (끝낸 조각 수, 전체 조각 수)를 알린다
+            on_batch(len(vecs), len(texts))
     return vecs
 
 
@@ -168,25 +171,26 @@ def connect(env: dict[str, str]):
 
 
 # 같은 문서가 같은 해시로 이미 저장돼 있는지 본다. 같으면 임베딩부터 건너뛴다.
-def unchanged(env: dict[str, str], doc: dict) -> bool:
-    """이미 같은 내용이 들어 있으면 True. 임베딩 전에 확인해서 계산을 아낀다."""
+def unchanged(env: dict[str, str], doc: dict) -> int | None:
+    """이미 같은 내용이 들어 있으면 그 document_id, 아니면 None. 임베딩 전에 확인해서 계산을 아낀다."""
     with connect(env) as conn:
         row = conn.execute(
-            "SELECT content_hash FROM documents WHERE source_repo=%s AND source_path=%s",
+            "SELECT id, content_hash FROM documents WHERE source_repo=%s AND source_path=%s",
             (doc["source_repo"], doc["source_path"]),
         ).fetchone()
-    return bool(row and row[0] == doc["content_hash"])
+    return row[0] if row and row[1] == doc["content_hash"] else None
 
 
 # 문서 1행과 조각 여러 행을 한 트랜잭션으로 저장한다. 내용이 바뀌었으면 옛 문서를 지우고 다시 넣는다.
-def save(env: dict[str, str], doc: dict, rows: list[tuple]) -> str:
+def save(env: dict[str, str], doc: dict, rows: list[tuple]) -> tuple[str, int]:
+    """(결과, document_id)를 돌려준다. 결과는 inserted / replaced / skipped 중 하나."""
     with connect(env) as conn:  # 블록이 끝나면 커밋, 오류면 전부 되돌린다
         old = conn.execute(
             "SELECT id, content_hash FROM documents WHERE source_repo=%s AND source_path=%s",
             (doc["source_repo"], doc["source_path"]),
         ).fetchone()
         if old and old[1] == doc["content_hash"]:
-            return "skip (내용 같음)"
+            return "skipped", old[0]
         if old:
             conn.execute("DELETE FROM documents WHERE id=%s", (old[0],))  # 조각도 함께 지워진다
         doc_id = conn.execute(
@@ -203,7 +207,87 @@ def save(env: dict[str, str], doc: dict, rows: list[tuple]) -> str:
                    VALUES (%s, %s, %s, %s, %s, %s, %s::vector)""",
                 [(doc_id, *r) for r in rows],
             )
-        return f"{'replaced' if old else 'inserted'} document_id={doc_id}, chunks={len(rows)}"
+        return ("replaced" if old else "inserted"), doc_id
+
+
+# ---------- 가져오기 (CLI·API 공용) ----------
+
+# 진행 상황을 알릴 때 쓰는 6단계. API는 이 이름과 번호(1~6)를 그대로 화면·작업 기록에 쓴다.
+STAGES = ["확인", "중복 확인", "청킹", "토큰 검사", "임베딩", "저장"]
+
+# 단계 알림 함수의 모양: (단계 이름, 끝낸 수, 전체 수). 수는 임베딩처럼 나눠서 하는 단계에서만 쓴다.
+OnStep = Callable[[str, "int | None", "int | None"], None]
+
+
+# 가져오기 중 사용자에게 보여 줄 실패. API는 이 메시지를 그대로 응답에 담는다.
+class IngestError(Exception):
+    pass
+
+
+# 문서 1개를 읽기 → 자르기 → 토큰 검사 → 임베딩 → 저장까지 한다. CLI와 API가 같은 함수를 부른다.
+def ingest_file(path: Path, *, env_label: str | None = None, doc_type: str | None = None,
+                verification: str = "미확인", checked_at: str | None = None,
+                external_ok: bool = False, on_step: OnStep | None = None) -> dict:
+    """결과를 dict로 돌려준다: status(inserted/replaced/skipped), document_id, 출처, 조각·토큰 수.
+
+    on_step을 주면 6단계(STAGES)에 들어설 때마다 부른다. CLI는 주지 않는다.
+    """
+    def step(name: str, done: int | None = None, total: int | None = None) -> None:
+        if on_step:
+            on_step(name, done, total)
+
+    # 1. 확인: 문서를 읽고 머리말을 떼고 출처(git 저장소·커밋)를 구한다. git 밖의 파일은 출처를 남길 수 없어 거절한다.
+    step("확인")
+    raw = path.read_text(encoding="utf-8")
+    meta, text = parse_front_matter(raw)
+    title = meta.get("title") or path.stem
+    try:
+        repo, rel, commit = git_source(path)
+    except subprocess.CalledProcessError:
+        raise IngestError("git 저장소 안의 파일이 아닙니다. 출처(저장소·커밋)를 기록할 수 없습니다")
+
+    # 2. 중복 확인: content_hash(원문 전체의 sha256)가 DB와 같으면 여기서 끝낸다.
+    step("중복 확인")
+    env = load_env()
+    doc = {
+        "source_repo": repo, "source_path": rel, "source_commit": commit,
+        "content_hash": hashlib.sha256(raw.encode()).hexdigest(), "title": title,
+        "env": env_label, "doc_type": doc_type, "verification": verification,
+        "checked_at": checked_at, "external_ok": external_ok,
+    }
+    result = {"source_repo": repo, "source_path": rel, "source_commit": commit, "title": title}
+    same_id = unchanged(env, doc)
+    if same_id is not None:
+        return {**result, "status": "skipped", "document_id": same_id, "chunks": None, "tokens": None}
+
+    # 3. 청킹: ##/### 제목마다 자르고, 임베딩할 글(제목 경로 + 본문)을 만든다.
+    step("청킹")
+    sections = split_sections(text, title)
+    if not sections:
+        raise IngestError("잘라 낸 조각이 없습니다 (빈 문서)")
+    embed_texts = [make_embed_text(s.heading_path, s.body) for s in sections]
+
+    # 4. 토큰 검사: 하나라도 한도를 넘으면 TEI가 조용히 자르기 전에 멈춘다.
+    step("토큰 검사")
+    base = f"http://127.0.0.1:{env['EMBED_PORT']}"
+    tokens = count_tokens(base, embed_texts)
+    over = [i for i, t in enumerate(tokens) if t > MAX_TOKENS]
+    if over:
+        raise IngestError(f"{MAX_TOKENS}토큰을 넘는 조각: {over}. 잘림을 막기 위해 중단")
+
+    # 5. 임베딩: 8개씩 묶어 보내고, 묶음이 끝날 때마다 (끝낸 조각 수 / 전체)를 알린다.
+    step("임베딩", 0, len(embed_texts))
+    vecs = embed(base, embed_texts, on_batch=lambda done, total: step("임베딩", done, total))
+
+    # 6. 저장: 문서 1행과 조각 여러 행을 한 트랜잭션으로. 벡터는 pgvector가 읽는 '[...]' 문자열로 넘긴다.
+    step("저장")
+    rows = [
+        (i, " > ".join(s.heading_path), s.body, t, n, json.dumps(v))
+        for i, (s, t, n, v) in enumerate(zip(sections, embed_texts, tokens, vecs))
+    ]
+    status, doc_id = save(env, doc, rows)
+    return {**result, "status": status, "document_id": doc_id, "chunks": len(rows),
+            "tokens": {"min": min(tokens), "max": max(tokens), "total": sum(tokens)}}
 
 
 # ---------- 실행 ----------
@@ -221,16 +305,14 @@ def main() -> None:
     ap.add_argument("--external-ok", action="store_true", help="외부 LLM 전송 가능")
     a = ap.parse_args()
 
-    # 문서를 읽고 머리말 분리 → 조각 나누기 → 출처 확인까지 한다. DB·TEI는 아직 안 쓴다.
-    raw = a.path.read_text(encoding="utf-8")
-    meta, text = parse_front_matter(raw)
-    title = meta.get("title") or a.path.stem
-    sections = split_sections(text, title)
-    repo, rel, commit = git_source(a.path)
-    print(f"{repo}/{rel} @ {commit[:12]}  title={title!r}  sections={len(sections)}")
-
-    # --dry-run이면 조각 목록과 임베딩할 글 예시만 보여 주고 끝낸다.
+    # --dry-run이면 조각 목록과 임베딩할 글 예시만 보여 주고 끝낸다. DB·TEI는 쓰지 않는다.
     if a.dry_run:
+        raw = a.path.read_text(encoding="utf-8")
+        meta, text = parse_front_matter(raw)
+        title = meta.get("title") or a.path.stem
+        sections = split_sections(text, title)
+        repo, rel, commit = git_source(a.path)
+        print(f"{repo}/{rel} @ {commit[:12]}  title={title!r}  sections={len(sections)}")
         for i, s in enumerate(sections):
             print(f"[{i:02d}] {len(s.body):5d}자  {' > '.join(s.heading_path[1:]) or '(머리말·도입)'}")
         try:
@@ -240,33 +322,17 @@ def main() -> None:
             print(f"\n(make_embed_text 미작성: {e})")
         return
 
-    # documents 테이블에 넣을 값. content_hash는 원문 전체의 sha256으로, 변경 여부 판단에 쓴다.
-    env = load_env()
-    doc = {
-        "source_repo": repo, "source_path": rel, "source_commit": commit,
-        "content_hash": hashlib.sha256(raw.encode()).hexdigest(), "title": title,
-        "env": a.env, "doc_type": a.doc_type, "verification": a.verification,
-        "checked_at": a.checked_at, "external_ok": a.external_ok,
-    }
-    if unchanged(env, doc):
-        print("skip (내용 같음)")
-        return
-
-    # 임베딩할 글을 만들고 토큰 수를 검사한다. 하나라도 한도를 넘으면 잘리기 전에 멈춘다.
-    base = f"http://127.0.0.1:{env['EMBED_PORT']}"
-    embed_texts = [make_embed_text(s.heading_path, s.body) for s in sections]
-    tokens = count_tokens(base, embed_texts)
-    over = [i for i, t in enumerate(tokens) if t > MAX_TOKENS]
-    if over:
-        sys.exit(f"{MAX_TOKENS}토큰을 넘는 조각: {over}. 잘림을 막기 위해 중단")
-    # 벡터를 받아 chunks 행으로 묶은 뒤 저장한다. 벡터는 pgvector가 읽는 '[...]' 문자열로 넘긴다.
-    vecs = embed(base, embed_texts)
-    rows = [
-        (i, " > ".join(s.heading_path), s.body, t, n, json.dumps(v))
-        for i, (s, t, n, v) in enumerate(zip(sections, embed_texts, tokens, vecs))
-    ]
-    print(save(env, doc, rows))
-    print(f"tokens: min={min(tokens)} max={max(tokens)} total={sum(tokens)}")
+    # 실제 가져오기는 ingest_file에 맡기고, 결과만 사람이 읽기 좋게 출력한다.
+    try:
+        r = ingest_file(a.path, env_label=a.env, doc_type=a.doc_type, verification=a.verification,
+                        checked_at=a.checked_at, external_ok=a.external_ok)
+    except IngestError as e:
+        sys.exit(str(e))
+    print(f"{r['source_repo']}/{r['source_path']} @ {r['source_commit'][:12]}  title={r['title']!r}")
+    chunks = f", chunks={r['chunks']}" if r["chunks"] is not None else ""
+    print(f"{r['status']} document_id={r['document_id']}{chunks}")
+    if r["tokens"]:
+        print("tokens: min={min} max={max} total={total}".format(**r["tokens"]))
 
 
 # 직접 실행할 때만 main()을 돈다. search.py에서 import할 때는 실행되지 않는다.
