@@ -1,4 +1,4 @@
-# ops-rag
+# rag-ops
 
 > **운영 문서와 설정을 근거로, 확인된 것만 답하는 사내 RAG**
 >
@@ -16,7 +16,7 @@
 
 ## 구성
 
-![ops-rag 구성도](assets/architecture.drawio.svg)
+![rag-ops 구성도](assets/architecture.drawio.svg)
 
 <sub>`assets/architecture.drawio.svg`는 draw.io(웹·앱·VS Code 확장)에서 바로 열어 고칠 수 있다.</sub>
 

@@ -16,8 +16,7 @@ __pycache__/
 # macOS
 .DS_Store
 
-# 공부 기록, 실습, 설계 문서 (로컬에서만 관리)
+# 공부 기록, 실습 (로컬에서만 관리). docs/는 공개 문서라 커밋한다
 notes/
 labs/
-docs/
 CLAUDE.md
