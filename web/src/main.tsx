@@ -1,12 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AnimatePresence, motion, MotionConfig, useReducedMotion } from 'motion/react';
+import { AnimatePresence, animate, motion, MotionConfig, useMotionValue, useReducedMotion, useTransform } from 'motion/react';
 import {
   ArrowDown, ArrowRight, ArrowUpRight, Bell, BookOpen, Box, Check, CheckCheck,
-  ChevronDown, ChevronRight, Clock3, Database, FileText, Folder,
+  ChevronDown, ChevronRight, CircleAlert, Clock3, Database, FileText, Folder, LoaderCircle,
   GitBranch, Home, Layers3, Maximize2, MessageSquare, Pause, Play,
   Plus, Search, Settings2, ShieldCheck, SkipBack, SkipForward, SlidersHorizontal,
-  Sparkles, Terminal, Trash2, X, Zap, ChartNoAxesCombined,
+  Sparkles, Trash2, X, Zap, ChartNoAxesCombined,
   type LucideIcon,
 } from 'lucide-react';
 import './styles.css';
@@ -142,7 +142,7 @@ function App() {
           <div className="page-footer"><span><span className="local-dot" /> Local workspace</span><span>UI preview · Sample data</span></div>
         </>}
         {page === 'knowledge' && <Knowledge collections={collections} create={() => setDialog({ type: 'create' })} inspect={name => setDialog({ type: 'node', value: name })} />}
-        {page === 'pipeline' && <Pipeline enabled={enabled} flip={flip} run={run} running={runState === 'running'} runStep={runStep} inspect={name => setDialog({ type: 'node', value: name })} />}
+        {page === 'pipeline' && <Pipeline enabled={enabled} flip={flip} />}
         {page === 'playground' && <Playground chat={selectedChat} send={send} reset={() => setSelectedChat(null)} />}
         {page === 'evaluations' && <Evaluations score={score} evaluating={evaluating} evaluate={evaluate} />}
         {page === 'runs' && <Runs runs={runs} inspect={title => setDialog({ type: 'run', value: title })} />}
@@ -175,9 +175,534 @@ function Knowledge({ collections, create, inspect }: { collections: Collection[]
   const shown = collections.filter(c => c.name.toLowerCase().includes(filter.toLowerCase()));
   return <><Heading title="Knowledge base"><button className="primary-button" onClick={create}><Plus size={16} />New collection</button></Heading><div className="section-heading"><h2>Collections</h2><span className="muted">{collections.length} total</span></div><div className="collections-grid">{collections.map((c, i) => <Card key={c.id} delay={i * 0.07} className="collection-card"><button onClick={() => inspect(c.name)}><ColorIcon icon={Folder} color={c.color} /><ArrowUpRight className="collection-arrow" size={17} /><div><h3>{c.name}</h3><small>{c.documents} sample documents</small></div></button></Card>)}</div><div className="section-heading document-heading"><h2>Documents</h2><label className="search-field"><Search size={16} /><input aria-label="Filter collections" placeholder="Search collections" value={filter} onChange={e => setFilter(e.target.value)} /></label></div><Card className="table-card" delay={0.2}><table><thead><tr><th>Name</th><th>Collection</th><th>Type</th><th>Status</th><th /></tr></thead><tbody>{shown.map((c, i) => <tr key={c.id}><td><span className="file-label"><FileText size={17} />{c.documents ? `Sample document ${String(i + 1).padStart(2, '0')}` : 'No documents yet'}</span></td><td>{c.name}</td><td>{c.documents ? 'Markdown' : '—'}</td><td><span className={`pill ${c.documents ? 'lime' : 'neutral'}`}>{c.documents ? 'Sample' : 'Empty'}</span></td><td><IconButton icon={ArrowUpRight} label={`Inspect ${c.name}`} onClick={() => inspect(c.name)} /></td></tr>)}</tbody></table>{!shown.length && <div className="empty-state compact"><Search size={24} /><p>No collections match “{filter}”.</p></div>}</Card><p className="footnote">Sample library · Document ingestion will be connected in a later version.</p></>;
 }
-function Pipeline({ enabled, flip, run, running, runStep, inspect }: { enabled: boolean[]; flip: (i: number) => void; run: () => void; running: boolean; runStep: number; inspect: (name: string) => void }) {
-  return <><Heading title="RAG pipeline" subtitle="Your local retrieval flow"><span className="tag">Sample pipeline</span><button className="primary-button" onClick={run}>{running ? <Pause size={15} /> : <Play size={15} />}{running ? 'Pause preview' : 'Preview run'}</button></Heading><Card className="pipeline-canvas"><div className="canvas-toolbar"><span><span className="local-dot" />Retrieval pipeline</span><span>5 stages</span></div><div className="flow-nodes">{stages.map((s, i) => <React.Fragment key={s.name}><motion.button className={`flow-node ${runStep === i ? 'current' : ''} ${runStep > i ? 'done' : ''}`} onClick={() => inspect(s.name)} animate={{ scale: runStep === i && running ? 1.04 : 1 }}><ColorIcon icon={s.icon} color={s.color} /><h3>{s.name}</h3><small>{s.detail}</small><span className="node-port left" /><span className="node-port right" />{runStep > i && <Check size={13} className="node-check" />}</motion.button>{i < 4 && <div className={`flow-connector ${runStep > i ? 'passed' : ''}`}><ArrowRight size={14} /></div>}</React.Fragment>)}</div><div className="canvas-footer"><span><GitBranch size={14} />Sequential RAG</span><span>Click a stage to inspect</span></div></Card><div className="section-heading"><h2>Pipeline options</h2><span className="tag">Preview settings</span></div><div className="quick-grid">{['Retrieval', 'Reranking', 'Streaming', 'Citations'].map((name, i) => <Card className="option-card" key={name} delay={0.15 + i * 0.06}><span>{name}</span><Toggle checked={enabled[i]} onChange={() => flip(i)} label={name} /></Card>)}</div><Card className="pipeline-note" delay={0.3}><ColorIcon icon={Terminal} color="neutral" /><div><h3>Ready for your local stack</h3><p>Choose your models and sources when you connect the backend.</p></div><span className="tag">UI preview</span></Card></>;
+// ---------- Live ingest pipeline (engine API: /api/rag) ----------
+
+type JobStatus = 'queued' | 'running' | 'done' | 'failed';
+type JobResult = {
+  status: 'inserted' | 'replaced' | 'skipped'; document_id: number; chunks: number | null;
+  tokens: { min: number; max: number; total: number } | null;
+  source_repo: string; source_path: string; source_commit: string; title: string;
+};
+type Job = {
+  id: number; path: string; params: Record<string, unknown> | null; status: JobStatus; stage: string | null; stage_index: number | null;
+  progress_done: number | null; progress_total: number | null; error: string | null; result: JobResult | null;
+  created_at: string; started_at: string | null; finished_at: string | null;
+};
+type Chunk = { chunk_index: number; heading_path: string; token_count: number; content: string; embed_text: string };
+type Moment = { key: string; label: string; detail?: string; tone: 'run' | 'done' | 'fail'; at: number };
+type NodeState = 'idle' | 'waiting' | 'current' | 'done' | 'skipped' | 'failed' | 'planned';
+type StageNode = { name: string; detail: string; icon: LucideIcon; color: string; stage?: string; note?: string };
+type GroupId = 'indexing' | 'retrieval' | 'generation';
+type Group = { id: GroupId; title: string; icon: LucideIcon; color: string; nodes: StageNode[] };
+
+const RAG_API = '/api/rag';
+const LAST_PATH_KEY = 'rag-ops:last-ingest-path';
+const ENV_OPTIONS = ['혼합', '운영', '개발', '샘플'];
+const DOC_TYPE_OPTIONS = ['해설', '설정', '실행 결과', '장애 기록'];
+// Same values as engine/app/ingest.py (MAX_TOKENS, EMBED_BATCH) and the bge-m3 vector size.
+const MAX_TOKENS = 2048;
+const EMBED_BATCH = 8;
+const EMBED_DIMS = 1024;
+const ease = [0.22, 1, 0.36, 1] as const;
+
+// The whole RAG flow in three groups. Only Indexing is wired to the engine; each of its cards is one engine stage.
+const groups: Group[] = [
+  { id: 'indexing', title: 'Indexing', icon: Layers3, color: 'lime', nodes: [
+    { name: 'Source', detail: 'Front matter · git', icon: FileText, color: 'lime', stage: '확인', note: 'Reads the file, its front matter and the git commit it came from.' },
+    { name: 'Dedupe', detail: 'sha256 compare', icon: CheckCheck, color: 'lime', stage: '중복 확인', note: 'Compares the content hash with the stored copy of the same path.' },
+    { name: 'Chunking', detail: '## / ### headings', icon: Layers3, color: 'blue', stage: '청킹', note: 'Splits the body at ## and ### headings. Each chunk keeps its heading path.' },
+    { name: 'Tokens', detail: `Up to ${MAX_TOKENS} each`, icon: SlidersHorizontal, color: 'blue', stage: '토큰 검사', note: `Counts tokens with the embedding tokenizer. Any chunk over ${MAX_TOKENS} stops the run.` },
+    { name: 'Embedding', detail: `bge-m3 · ${EMBED_DIMS} dims`, icon: Box, color: 'purple', stage: '임베딩', note: `Turns every chunk into a ${EMBED_DIMS}-dim vector, ${EMBED_BATCH} chunks per request.` },
+    { name: 'Storage', detail: 'PostgreSQL · pgvector', icon: Database, color: 'peach', stage: '저장', note: 'Writes the document and its chunks in one transaction.' },
+  ] },
+  { id: 'retrieval', title: 'Retrieval', icon: Search, color: 'blue', nodes: [
+    { name: 'Query', detail: 'Embed the question', icon: MessageSquare, color: 'neutral' },
+    { name: 'Hybrid search', detail: 'Vector + BM25', icon: Search, color: 'neutral' },
+    { name: 'Rerank', detail: 'bge-reranker-v2-m3', icon: Zap, color: 'neutral' },
+  ] },
+  { id: 'generation', title: 'Generation', icon: Sparkles, color: 'purple', nodes: [
+    { name: 'Context', detail: 'Pick the evidence', icon: BookOpen, color: 'neutral' },
+    { name: 'Answer', detail: 'External LLM', icon: Sparkles, color: 'neutral' },
+    { name: 'Citations', detail: 'Sources · status', icon: ShieldCheck, color: 'neutral' },
+  ] },
+];
+const indexing = groups[0].nodes;
+
+const stageLabels: Record<string, string> = {
+  '확인': 'Checking source', '중복 확인': 'Comparing with stored copy', '청킹': 'Splitting by headings',
+  '토큰 검사': 'Counting tokens', '임베딩': 'Embedding chunks', '저장': 'Saving to pgvector',
+};
+const resultTone: Record<JobResult['status'], { label: string; color: string; note: string }> = {
+  inserted: { label: 'Inserted', color: 'lime', note: 'No stored copy of this path yet, so it was saved as a new document.' },
+  replaced: { label: 'Replaced', color: 'blue', note: 'The content hash changed, so the old chunks were replaced.' },
+  skipped: { label: 'Unchanged', color: 'neutral', note: 'Same hash as the stored copy, so nothing was re-chunked or re-embedded.' },
+};
+
+// 0-based index of the stage the job is on (or stopped at).
+const currentIndex = (job: Job) => Math.max(0, job.stage_index ? job.stage_index - 1 : indexing.findIndex(n => n.stage === job.stage));
+
+function nodeState(job: Job | null, index: number): NodeState {
+  if (!job) return 'idle';
+  if (job.status === 'queued') return 'waiting';
+  if (job.status === 'done') return job.result?.status === 'skipped' && index > 1 ? 'skipped' : 'done';
+  const current = currentIndex(job);
+  if (index < current) return 'done';
+  if (index === current) return job.status === 'failed' ? 'failed' : 'current';
+  return 'waiting';
 }
+
+// Share of the six stages finished, counting embedding batches inside stage 5.
+function indexingProgress(job: Job | null) {
+  if (!job || job.status === 'queued') return 0;
+  if (job.status === 'done') return 1;
+  const current = currentIndex(job);
+  const part = indexing[current]?.stage === '임베딩' && job.progress_total ? (job.progress_done ?? 0) / job.progress_total : 0;
+  return (current + part) / indexing.length;
+}
+
+function stageSub(job: Job | null, index: number, state: NodeState) {
+  const node = indexing[index];
+  const r = job?.result;
+  if (state === 'current') return stageLabels[node.stage!];
+  if (state === 'failed') return 'Stopped here';
+  if (state === 'skipped') return 'Skipped · unchanged';
+  if (state === 'done' && r) return [
+    `@${r.source_commit.slice(0, 7)}${r.source_commit.endsWith('-dirty') ? ' · dirty' : ''}`,
+    resultTone[r.status].label,
+    `${r.chunks} chunks`,
+    r.tokens ? `Max ${r.tokens.max} tokens` : node.detail,
+    `${r.chunks} vectors`,
+    `Document #${r.document_id}`,
+  ][index];
+  return node.detail;
+}
+
+async function readError(res: Response): Promise<string> {
+  try {
+    const body = await res.json();
+    if (typeof body.detail === 'string') return body.detail;
+    if (Array.isArray(body.detail)) return body.detail.map((d: { msg: string }) => d.msg).join(' · ');
+  } catch { /* fall through */ }
+  return res.status === 502 ? 'Engine is not reachable. Start the engine API first.' : `Request failed (${res.status})`;
+}
+
+// Starts ingest jobs and follows their progress stream. State survives a reload through GET /jobs.
+function useIngestJob() {
+  const [job, setJob] = useState<Job | null>(null);
+  const [moments, setMoments] = useState<Moment[]>([]);
+  const [offline, setOffline] = useState(false);
+  const stream = useRef<EventSource | null>(null);
+
+  function record(next: Job) {
+    const tone: Moment['tone'] = next.status === 'failed' ? 'fail' : next.status === 'done' ? 'done' : 'run';
+    const key = next.status === 'done' || next.status === 'failed' ? next.status : next.stage ?? next.status;
+    const label = next.status === 'done' ? (next.result ? `${resultTone[next.result.status].label} · finished` : 'Finished')
+      : next.status === 'failed' ? `Stopped at ${stageLabels[next.stage ?? ''] ?? 'start'}`
+      : next.stage ? stageLabels[next.stage] ?? next.stage : 'Queued';
+    const detail = next.status === 'failed' ? next.error ?? undefined
+      : next.progress_total ? `${next.progress_done ?? 0} / ${next.progress_total} chunks` : undefined;
+    setMoments(list => {
+      const last = list[list.length - 1];
+      if (last?.key === key) return [...list.slice(0, -1), { ...last, detail, tone }];
+      // A new stage arrived, so every earlier running stage is now finished.
+      // A finished embedding step reads "33 chunks embedded" instead of the last polled count.
+      const settled = list.map(m => (m.tone !== 'run' ? m : {
+        ...m, tone: 'done' as const,
+        detail: m.detail?.replace(/^\d+ \/ (\d+) chunks$/, '$1 chunks embedded'),
+      }));
+      return [...settled, { key, label, detail, tone, at: Date.now() }];
+    });
+  }
+
+  function follow(id: number) {
+    stream.current?.close();
+    const source = new EventSource(`${RAG_API}/jobs/${id}/events`);
+    stream.current = source;
+    const onEvent = (event: MessageEvent) => {
+      const next = JSON.parse(event.data) as Job;
+      setJob(next);
+      record(next);
+      if (next.status === 'done' || next.status === 'failed') source.close();
+    };
+    for (const type of ['progress', 'done', 'failed']) source.addEventListener(type, onEvent as EventListener);
+    source.onerror = () => {
+      // The connection dropped before the job finished: read the stored state, then reconnect if it is still running.
+      source.close();
+      fetch(`${RAG_API}/jobs/${id}`).then(r => (r.ok ? r.json() : null)).then((latest: Job | null) => {
+        if (!latest) return;
+        setJob(latest);
+        if (latest.status === 'queued' || latest.status === 'running') setTimeout(() => follow(id), 1500);
+      }).catch(() => setOffline(true));
+    };
+  }
+
+  useEffect(() => {
+    fetch(`${RAG_API}/jobs`).then(r => {
+      if (!r.ok) throw new Error(String(r.status));
+      return r.json();
+    }).then((jobs: Job[]) => {
+      const latest = jobs[0];
+      if (!latest) return;
+      setJob(latest);
+      record(latest);
+      if (latest.status === 'queued' || latest.status === 'running') follow(latest.id);
+    }).catch(() => setOffline(true));
+    return () => stream.current?.close();
+  }, []);
+
+  async function start(body: { path: string; env: string; doc_type: string }): Promise<string | null> {
+    try {
+      const res = await fetch(`${RAG_API}/jobs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!res.ok) return readError(res);
+      const { job_id } = await res.json();
+      setOffline(false);
+      setMoments([]);
+      setJob({ id: job_id, path: body.path, params: body, status: 'queued', stage: null, stage_index: null, progress_done: null, progress_total: null, error: null, result: null, created_at: new Date().toISOString(), started_at: null, finished_at: null });
+      follow(job_id);
+      return null;
+    } catch {
+      setOffline(true);
+      return 'Engine is not reachable. Start the engine API first.';
+    }
+  }
+
+  return { job, moments, offline, start };
+}
+
+function useNow(active: boolean) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => setNow(Date.now()), 200);
+    return () => clearInterval(timer);
+  }, [active]);
+  return now;
+}
+
+function useChunks(documentId: number | null) {
+  const [chunks, setChunks] = useState<Chunk[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (documentId === null) return;
+    fetch(`${RAG_API}/documents/${documentId}/chunks`).then(async r => (r.ok ? r.json() : Promise.reject(await readError(r))))
+      .then(setChunks).catch(e => setError(String(e)));
+  }, [documentId]);
+  return { chunks, error };
+}
+
+function CountUp({ value }: { value: number }) {
+  const count = useMotionValue(0);
+  const text = useTransform(count, v => Math.round(v).toLocaleString());
+  useEffect(() => {
+    const controls = animate(count, value, { duration: 1.1, ease });
+    return () => controls.stop();
+  }, [value]);
+  return <motion.span>{text}</motion.span>;
+}
+
+function elapsed(job: Job | null, now: number) {
+  if (!job?.started_at) return null;
+  const end = job.finished_at ? Date.parse(job.finished_at) : now;
+  return Math.max(0, (end - Date.parse(job.started_at)) / 1000);
+}
+
+function StageCard({ node, state, sub, progress, onOpen }: { node: StageNode; state: NodeState; sub: string; progress?: number | null; onOpen?: () => void }) {
+  const isCurrent = state === 'current';
+  return <motion.button
+    className={`flow-node ingest-node is-${state}`}
+    onClick={onOpen}
+    disabled={!onOpen}
+    aria-label={onOpen ? `${node.name} details` : node.name}
+    animate={state === 'failed' ? { x: [0, -6, 6, -4, 4, 0], scale: 1 } : { x: 0, scale: isCurrent ? 1.04 : 1 }}
+    transition={state === 'failed' ? { duration: 0.5 } : spring}
+  >
+    <span className="node-icon-wrap">
+      {isCurrent && <motion.span className="node-halo" initial={{ scale: 1, opacity: 0.55 }} animate={{ scale: 1.9, opacity: 0 }} transition={{ duration: 1.6, repeat: Infinity, ease: 'easeOut' }} />}
+      <motion.span animate={isCurrent ? { y: [0, -2, 0] } : { y: 0 }} transition={isCurrent ? { duration: 1.4, repeat: Infinity, ease: 'easeInOut' } : spring} style={{ display: 'inline-grid' }}>
+        <ColorIcon icon={state === 'failed' ? CircleAlert : node.icon} color={state === 'failed' ? 'peach' : node.color} />
+      </motion.span>
+    </span>
+    <h3>{node.name}</h3>
+    <AnimatePresence mode="wait" initial={false}>
+      <motion.small key={sub} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.25 }}>{sub}</motion.small>
+    </AnimatePresence>
+    {progress != null && <div className="node-progress" aria-label={`${node.name} ${progress}%`}>
+      <motion.span initial={{ width: 0 }} animate={{ width: `${progress}%` }} transition={{ duration: 0.7, ease }} />
+    </div>}
+    <span className="node-port left" /><span className="node-port right" />
+    <AnimatePresence>{state === 'done' && <motion.span className="node-check" initial={{ scale: 0, rotate: -40 }} animate={{ scale: 1, rotate: 0 }} exit={{ scale: 0 }} transition={{ type: 'spring', stiffness: 520, damping: 18 }}><Check size={13} /></motion.span>}</AnimatePresence>
+    {state === 'planned' && <span className="node-soon">Soon</span>}
+  </motion.button>;
+}
+
+function StageConnector({ from, to }: { from: NodeState; to: NodeState }) {
+  const filled = from === 'done' && (to === 'done' || to === 'current' || to === 'failed');
+  const flowing = from === 'done' && to === 'current';
+  return <div className={`flow-connector ingest-connector ${filled ? 'passed' : ''} ${to === 'planned' ? 'is-planned' : ''}`}>
+    <motion.span className="connector-fill" initial={false} animate={{ scaleX: filled ? 1 : 0 }} transition={{ duration: 0.6, ease }} />
+    {flowing && <motion.span className="connector-comet" initial={{ left: '0%', opacity: 0 }} animate={{ left: ['0%', '100%'], opacity: [0, 1, 0] }} transition={{ duration: 1.1, repeat: Infinity, ease: 'easeInOut' }} />}
+    <ArrowRight size={14} />
+  </div>;
+}
+
+// One collapsible group. The header stays visible when closed, so the run can still be followed from its meter.
+function GroupCard({ group, open, toggle, summary, badge, meter, delay, children }: {
+  group: Group; open: boolean; toggle: () => void; summary: string; badge: React.ReactNode;
+  meter?: { value: number; tone: string }; delay: number; children: React.ReactNode;
+}) {
+  const planned = group.nodes.every(n => !n.stage);
+  return <Card className={`pipeline-canvas group-card ${open ? 'is-open' : ''} ${planned ? 'is-planned' : ''}`} delay={delay}>
+    <button className="group-head" onClick={toggle} aria-expanded={open}>
+      <ColorIcon icon={group.icon} color={planned ? 'neutral' : group.color} small />
+      <span className="group-title">
+        <h2>{group.title}</h2>
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.small key={summary} initial={{ opacity: 0, y: 3 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={{ duration: 0.2 }}>{summary}</motion.small>
+        </AnimatePresence>
+      </span>
+      {meter && <span className={`group-meter is-${meter.tone}`}><motion.span initial={false} animate={{ width: `${Math.round(meter.value * 100)}%` }} transition={{ duration: 0.7, ease }} /></span>}
+      {badge}
+      <motion.span className="group-chevron" animate={{ rotate: open ? 180 : 0 }} transition={spring}><ChevronDown size={16} /></motion.span>
+    </button>
+    <AnimatePresence initial={false}>
+      {open && <motion.div key="body" className="group-body" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.45, ease }}>
+        {children}
+      </motion.div>}
+    </AnimatePresence>
+  </Card>;
+}
+
+function ChunkList({ chunks }: { chunks: Chunk[] }) {
+  return <div className="chunk-list">{chunks.map((c, i) => <motion.article className="chunk-item" key={c.chunk_index} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 12) * 0.035, duration: 0.35 }}>
+    <header><span>#{String(c.chunk_index).padStart(2, '0')}</span><span>{c.token_count} tokens</span></header>
+    <h4>{c.heading_path.split(' > ').slice(1).join(' › ') || c.heading_path}</h4>
+    <p>{c.content.replace(/^#{2,3}\s.*\n+/, '')}</p>
+  </motion.article>)}</div>;
+}
+
+function ChunkModal({ documentId, close }: { documentId: number; close: () => void }) {
+  const { chunks, error } = useChunks(documentId);
+  return <Modal title={`Chunks · document #${documentId}`} close={close}>
+    <p className="muted">{chunks ? `${chunks.length} chunks, split by headings` : error ?? 'Loading…'}</p>
+    {chunks && <ChunkList chunks={chunks} />}
+  </Modal>;
+}
+
+function DetailRows({ rows }: { rows: [string, React.ReactNode][] }) {
+  return <dl className="detail-rows">{rows.map(([k, v], i) => <motion.div key={k} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04, duration: 0.3 }}>
+    <dt>{k}</dt><dd>{v ?? '—'}</dd>
+  </motion.div>)}</dl>;
+}
+
+// What one indexing stage did in the latest run. Uses only the job record and the stored chunks.
+function StageModal({ index, job, close }: { index: number; job: Job; close: () => void }) {
+  const node = indexing[index];
+  const state = nodeState(job, index);
+  const r = job.result;
+  const { chunks, error } = useChunks(r && index >= 2 && index <= 4 ? r.document_id : null);
+  const params = job.params ?? {};
+  const waiting = <p className="dialog-note">{error ?? 'Loading…'}</p>;
+  const pending = <p className="dialog-note">Details appear once the run finishes.</p>;
+
+  let body: React.ReactNode = null;
+  if (index === 0) body = <DetailRows rows={[
+    ['File', job.path],
+    ['Repository', r?.source_repo],
+    ['Path in repo', r?.source_path],
+    ['Commit', r && <>{r.source_commit}{r.source_commit.endsWith('-dirty') && <em className="detail-hint">-dirty: the file had uncommitted edits</em>}</>],
+    ['Title', r?.title],
+    ['Environment', String(params.env ?? '—')],
+    ['Document type', String(params.doc_type ?? '—')],
+    ['Verification', String(params.verification ?? '미확인')],
+  ]} />;
+  else if (!r) body = pending;
+  else if (index === 1) body = <div className="verdict">
+    <span className={`pill ${resultTone[r.status].color}`}>{resultTone[r.status].label}</span>
+    <p>{resultTone[r.status].note}</p>
+    <small>Document #{r.document_id}</small>
+  </div>;
+  else if (index === 2) body = chunks ? <><p className="muted">{chunks.length} chunks</p><ChunkList chunks={chunks} /></> : waiting;
+  else if (index === 3) body = chunks ? <>
+    <div className="result-stats">
+      <div><strong>{Math.min(...chunks.map(c => c.token_count))}</strong><small>Min</small></div>
+      <div><strong>{Math.max(...chunks.map(c => c.token_count))}</strong><small>Max</small></div>
+      <div><strong>{chunks.reduce((s, c) => s + c.token_count, 0).toLocaleString()}</strong><small>Total</small></div>
+    </div>
+    <div className="token-bars">{chunks.map((c, i) => <div className="token-row" key={c.chunk_index}>
+      <span>#{String(c.chunk_index).padStart(2, '0')}</span>
+      <span className="token-track"><motion.span initial={{ width: 0 }} animate={{ width: `${Math.min(100, (c.token_count / MAX_TOKENS) * 100)}%` }} transition={{ delay: Math.min(i, 30) * 0.02, duration: 0.6, ease }} /></span>
+      <span>{c.token_count}</span>
+    </div>)}</div>
+    <p className="dialog-note">Bars are scaled to the {MAX_TOKENS}-token limit.</p>
+  </> : waiting;
+  else if (index === 4) body = chunks ? <>
+    <div className="result-stats">
+      <div><strong><CountUp value={chunks.length} /></strong><small>Vectors</small></div>
+      <div><strong>{EMBED_DIMS}</strong><small>Dimensions</small></div>
+      <div><strong>{Math.ceil(chunks.length / EMBED_BATCH)}</strong><small>Requests of {EMBED_BATCH}</small></div>
+    </div>
+    <p className="muted">What gets embedded — the heading path is put in front of the chunk text.</p>
+    {chunks[0] && <article className="chunk-item embed-preview"><header><span>#{String(chunks[0].chunk_index).padStart(2, '0')}</span><span>{chunks[0].token_count} tokens</span></header><p>{chunks[0].embed_text}</p></article>}
+  </> : waiting;
+  else body = <DetailRows rows={[
+    ['Document', `#${r.document_id}`],
+    ['Result', resultTone[r.status].label],
+    ['Chunks stored', r.chunks ?? 'unchanged'],
+    ['Finished', job.finished_at ? new Date(job.finished_at).toLocaleString() : null],
+    ['Tables', 'documents · chunks (pgvector)'],
+  ]} />;
+
+  return <Modal title={node.name} close={close}>
+    <div className="node-summary"><ColorIcon icon={state === 'failed' ? CircleAlert : node.icon} color={state === 'failed' ? 'peach' : node.color} /><div><h3>{stageLabels[node.stage!]}</h3><small>{node.note}</small></div></div>
+    {state === 'failed' && <p className="result-error">{job.error}</p>}
+    {state === 'skipped' && <p className="dialog-note">This stage did not run because the document is unchanged. Showing the stored copy.</p>}
+    {body}
+  </Modal>;
+}
+
+function Pipeline({ enabled, flip }: { enabled: boolean[]; flip: (i: number) => void }) {
+  const { job, moments, offline, start } = useIngestJob();
+  const [path, setPath] = useState(() => { try { return localStorage.getItem(LAST_PATH_KEY) ?? ''; } catch { return ''; } });
+  const [env, setEnv] = useState(ENV_OPTIONS[0]);
+  const [docType, setDocType] = useState(DOC_TYPE_OPTIONS[0]);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [chunksOf, setChunksOf] = useState<number | null>(null);
+  const [detail, setDetail] = useState<number | null>(null);
+  const [open, setOpen] = useState<Record<GroupId, boolean>>({ indexing: true, retrieval: false, generation: false });
+  const busy = submitting || job?.status === 'queued' || job?.status === 'running';
+  const now = useNow(job?.status === 'running' || job?.status === 'queued');
+  const seconds = elapsed(job, now);
+  const firstAt = moments[0]?.at ?? 0;
+  const status = job?.status;
+  const states = indexing.map((_, i) => nodeState(job, i));
+
+  // A run that starts while Indexing is folded opens it again.
+  useEffect(() => { if (busy) setOpen(o => (o.indexing ? o : { ...o, indexing: true })); }, [busy]);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!path.trim() || busy) return;
+    setSubmitting(true);
+    setError(null);
+    try { localStorage.setItem(LAST_PATH_KEY, path.trim()); } catch { /* storage unavailable */ }
+    setError(await start({ path: path.trim(), env, doc_type: docType }));
+    setSubmitting(false);
+  }
+
+  const time = seconds !== null ? ` · ${seconds.toFixed(1)}s` : '';
+  const indexingSummary = !job ? 'Not run yet · document → chunks → vectors'
+    : status === 'done' && job.result ? `Job #${job.id} · ${job.result.chunks ?? 'no new'} chunks${time}`
+    : status === 'failed' ? `Job #${job.id} · stopped at ${indexing[currentIndex(job)].name}`
+    : `Job #${job.id} · ${job.stage ? stageLabels[job.stage] : 'Queued'}${time}`;
+  const indexingBadge = status === 'done' && job?.result ? <span className={`pill ${resultTone[job.result.status].color}`}>{resultTone[job.result.status].label}</span>
+    : status === 'failed' ? <span className="pill peach">Failed</span>
+    : busy ? <span className="pill lilac">Running</span>
+    : <span className="tag">Live</span>;
+  const embedIndex = indexing.findIndex(n => n.stage === '임베딩');
+  const embedPct = states[embedIndex] === 'done' ? 100
+    : states[embedIndex] === 'current' && job?.progress_total ? Math.round(((job.progress_done ?? 0) / job.progress_total) * 100)
+    : states[embedIndex] === 'current' ? 0 : null;
+
+  return <>
+    <Heading title="RAG pipeline" subtitle="Ingest a document and follow every stage live">
+      <span className="tag">{offline ? 'Engine offline' : 'Local engine'}</span>
+    </Heading>
+
+    <Card className="source-card">
+      <form className="source-form" onSubmit={submit}>
+        <ColorIcon icon={FileText} color="lime" small />
+        <input className="source-input" aria-label="Document path" placeholder="/path/to/docs-repo/document.md" value={path} onChange={e => setPath(e.target.value)} spellCheck={false} />
+        <select className="chip-select" aria-label="Environment" value={env} onChange={e => setEnv(e.target.value)}>{ENV_OPTIONS.map(o => <option key={o}>{o}</option>)}</select>
+        <select className="chip-select" aria-label="Document type" value={docType} onChange={e => setDocType(e.target.value)}>{DOC_TYPE_OPTIONS.map(o => <option key={o}>{o}</option>)}</select>
+        <button className="primary-button" disabled={busy || !path.trim()}>
+          {busy ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}{busy ? 'Ingesting…' : 'Run ingest'}
+        </button>
+      </form>
+      <AnimatePresence>{error && <motion.p className="source-error" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>{error}</motion.p>}</AnimatePresence>
+    </Card>
+
+    <div className="stage-groups">
+      {groups.map((g, gi) => {
+        const live = g.id === 'indexing';
+        const toggle = () => setOpen(o => ({ ...o, [g.id]: !o[g.id] }));
+        return <GroupCard key={g.id} group={g} open={open[g.id]} toggle={toggle} delay={0.05 + gi * 0.06}
+          summary={live ? indexingSummary : g.nodes.map(n => n.name).join(' → ')}
+          badge={live ? indexingBadge : <span className="tag">Soon</span>}
+          meter={live ? { value: indexingProgress(job), tone: status === 'failed' ? 'failed' : status === 'done' ? 'done' : 'running' } : undefined}>
+          {live ? <>
+            <div className="flow-nodes">{indexing.map((n, i) => <React.Fragment key={n.name}>
+              <StageCard node={n} state={states[i]} sub={stageSub(job, i, states[i])} progress={i === embedIndex ? embedPct : null}
+                onOpen={job && ['done', 'skipped', 'failed'].includes(states[i]) ? () => setDetail(i) : undefined} />
+              {i < indexing.length - 1 && <StageConnector from={states[i]} to={states[i + 1]} />}
+            </React.Fragment>)}</div>
+            <div className="canvas-footer">
+              <span><GitBranch size={14} />{job?.result ? `${job.result.source_repo}/${job.result.source_path}` : job?.path.split('/').slice(-2).join('/') ?? 'No document yet'}</span>
+              <span>{status === 'done' || status === 'failed' ? 'Click a stage for details' : 'Stages light up as the engine reports them'}</span>
+            </div>
+          </> : <>
+            <div className="flow-nodes">{g.nodes.map((n, i) => <React.Fragment key={n.name}>
+              <StageCard node={n} state="planned" sub={n.detail} />
+              {i < g.nodes.length - 1 && <StageConnector from="planned" to="planned" />}
+            </React.Fragment>)}</div>
+            <div className="canvas-footer"><span><GitBranch size={14} />Planned</span><span>Not connected to the engine yet</span></div>
+          </>}
+        </GroupCard>;
+      })}
+    </div>
+
+    <div className="live-grid">
+      <Card className="timeline-card" delay={0.08}>
+        <div className="section-heading"><h2>Activity</h2><span className="tag">Live stream</span></div>
+        {moments.length ? <ol className="timeline">
+          <AnimatePresence initial={false}>{moments.map(m => <motion.li key={m.key} layout initial={{ opacity: 0, x: -10, filter: 'blur(4px)' }} animate={{ opacity: 1, x: 0, filter: 'blur(0px)' }} transition={{ duration: 0.35 }}>
+            <span className={`dot ${m.tone}`} />
+            <span>{m.label}{m.detail && <em>{m.detail}</em>}</span>
+            <small>+{((m.at - firstAt) / 1000).toFixed(1)}s</small>
+          </motion.li>)}</AnimatePresence>
+        </ol> : <div className="empty-state compact"><ColorIcon icon={Clock3} color="neutral" /><h3>Nothing running</h3><p>Run an ingest to watch each stage arrive.</p></div>}
+      </Card>
+
+      <Card className="result-card" delay={0.14}>
+        <div className="section-heading"><h2>Result</h2>
+          {status === 'done' && job?.result && <span className={`pill ${resultTone[job.result.status].color}`}>{resultTone[job.result.status].label}</span>}
+          {status === 'failed' && <span className="pill peach">Failed</span>}
+          {busy && <span className="pill lilac">Running</span>}
+        </div>
+        <AnimatePresence mode="wait">
+          {status === 'done' && job?.result ? <motion.div key="done" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+            <h3 className="result-title">{job.result.title}</h3>
+            <div className="result-stats">
+              <div><strong>{job.result.chunks !== null ? <CountUp value={job.result.chunks} /> : '—'}</strong><small>Chunks</small></div>
+              <div><strong>{job.result.tokens ? <CountUp value={job.result.tokens.max} /> : '—'}</strong><small>Max tokens</small></div>
+              <div><strong>{seconds !== null ? `${seconds.toFixed(1)}s` : '—'}</strong><small>Elapsed</small></div>
+            </div>
+            <p className="result-source">{job.result.source_repo}/{job.result.source_path}<br />@ {job.result.source_commit.slice(0, 12)}</p>
+            <button className="subtle-button result-action" onClick={() => setChunksOf(job.result!.document_id)}>View chunks <ArrowUpRight size={14} /></button>
+          </motion.div>
+          : status === 'failed' ? <motion.div key="failed" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+            <h3 className="result-title">Stopped at {indexing[currentIndex(job!)].name}</h3>
+            <p className="result-error">{job!.error}</p>
+          </motion.div>
+          : busy ? <motion.div key="busy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <h3 className="result-title">{job?.stage ? stageLabels[job.stage] : 'Waiting for the engine'}</h3>
+            <div className="progress-row result-progress"><span className="progress-track"><motion.span animate={{ width: `${((job?.stage_index ?? 0) / 6) * 100}%` }} transition={{ duration: 0.6, ease }} /></span><span>{job?.stage_index ?? 0} / 6</span></div>
+          </motion.div>
+          : <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+            <p className="result-source">The latest result appears here — chunk count, token size and the source commit.</p>
+          </motion.div>}
+        </AnimatePresence>
+      </Card>
+    </div>
+
+    <div className="section-heading pipeline-options-heading"><h2>Pipeline options</h2><span className="tag">Preview settings</span></div>
+    <div className="quick-grid">{['Retrieval', 'Reranking', 'Streaming', 'Citations'].map((name, i) => <Card className="option-card" key={name} delay={0.15 + i * 0.06}><span>{name}</span><Toggle checked={enabled[i]} onChange={() => flip(i)} label={name} /></Card>)}</div>
+
+    {chunksOf !== null && <ChunkModal documentId={chunksOf} close={() => setChunksOf(null)} />}
+    {detail !== null && job && <StageModal index={detail} job={job} close={() => setDetail(null)} />}
+  </>;
+}
+
 function Playground({ chat, send, reset }: { chat: Chat | null; send: (text: string) => void; reset: () => void }) {
   const [input, setInput] = useState('');
   return <><Heading title="Playground"><button className="subtle-button" onClick={reset}><Plus size={16} />New conversation</button></Heading><Card className="chat-panel"><div className="chat-toolbar"><span><ColorIcon icon={GitBranch} color="purple" small />Retrieval pipeline <ChevronDown size={13} /></span><span className="tag">Demo mode</span></div><div className="chat-body">{chat ? <><motion.div className="chat-message user-message" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>{chat.prompt}</motion.div><motion.div className="chat-answer" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}><ColorIcon icon={Sparkles} color="lilac" /><div><h3>rag-ops</h3><p>This is a preview conversation. Once a local model and knowledge base are connected, your answer and source citations will appear here.</p><span className="tag">Sample response · No model connected</span></div></motion.div></> : <div className="chat-empty"><div className="empty-orb"><Sparkles size={31} strokeWidth={1.2} /></div><h2>Ask your knowledge.</h2><p>A space to try your retrieval pipeline.</p><div className="suggestion-row">{['Summarize my documents', 'Find related concepts'].map(t => <button key={t} onClick={() => setInput(t)}>{t}<ArrowUpRight size={14} /></button>)}</div></div>}</div><form className="composer" onSubmit={e => { e.preventDefault(); if (input.trim()) { send(input.trim()); setInput(''); } }}><input aria-label="Your message" value={input} onChange={e => setInput(e.target.value)} placeholder="Ask a question about your documents…" maxLength={2000} /><button className="send-button" disabled={!input.trim()} aria-label="Send message"><ArrowUp size={19} /></button></form><div className="composer-caption">Local workspace · Preview responses only</div></Card></>;
