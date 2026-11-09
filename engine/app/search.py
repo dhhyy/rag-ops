@@ -1,8 +1,8 @@
 """질문 하나로 벡터 검색을 한다: 질문 임베딩 → pgvector 코사인 거리 → 상위 k개 조각.
 
 사용:
-  python app/search.py "도메인을 만들면 포트포워딩이 필요 없나?"
-  python app/search.py "..." -k 10 --full     # 조각 원문 전체 보기
+  python engine/app/search.py "도메인을 만들면 포트포워딩이 필요 없나?"
+  python engine/app/search.py "..." -k 10 --full     # 조각 원문 전체 보기
 
 - 점수는 코사인 유사도(1 - 거리). 값 자체보다 순위를 본다 (무관한 글도 0.3~0.4가 나온다).
 - 답변 근거로 쓸 수 있도록 출처(저장소·경로·커밋)와 환경·검증 상태를 함께 보여 준다.

@@ -1,8 +1,8 @@
 """문서 1개를 적재한다: 읽기 → 제목 단위로 자르기 → TEI 임베딩 → pgvector 저장.
 
 사용:
-  python app/ingest.py <문서 경로> --dry-run          # 자르기 결과만 보기 (DB·임베딩 안 함)
-  python app/ingest.py <문서 경로> --env 혼합 --doc-type 해설 --verification 미확인
+  python engine/app/ingest.py <문서 경로> --dry-run          # 자르기 결과만 보기 (DB·임베딩 안 함)
+  python engine/app/ingest.py <문서 경로> --env 혼합 --doc-type 해설 --verification 미확인
 
 - 문서는 원래 위치(git 저장소)에서 읽고, 그 저장소의 커밋을 출처로 기록한다.
 - 다시 돌려도 결과가 같다: 내용 해시가 같으면 건너뛰고, 다르면 옛 조각을 지우고 새로 넣는다.
@@ -19,7 +19,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]  # 저장소 루트 (.env 위치). engine/app/ingest.py 기준
 MAX_TOKENS = 2048   # .env의 EMBED_MAX_BATCH_TOKENS와 같아야 한다. 넘으면 TEI가 조용히 자른다
 EMBED_BATCH = 8     # TEI CPU 백엔드는 한 번에 8개까지 묶는다
 

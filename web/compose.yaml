@@ -1,0 +1,7 @@
+services:
+  local-rag:
+    build: .
+    ports:
+      - "127.0.0.1:4173:4173"
+    init: true
+    restart: unless-stopped
