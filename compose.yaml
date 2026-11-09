@@ -1,4 +1,4 @@
-# rag-ops 1부 1단계: DB(pgvector)와 임베딩 서버(TEI)
+# rag-ops: DB(pgvector), 임베딩 서버(TEI), 작업 대기열(Redis), 엔진 API(FastAPI), 가져오기 worker(Celery)
 # 값은 .env에서 읽는다. .env.example을 복사해서 .env를 만든다.
 
 name: rag-ops
@@ -38,6 +38,63 @@ services:
       - embed-cache:/data
     restart: unless-stopped
 
+  # 작업 대기열. 가져오기 요청이 여기 쌓이고 worker가 하나씩 꺼낸다
+  redis:
+    image: redis:8.10.3-alpine
+    # appendonly: 재시작해도 대기 중인 작업이 남도록 디스크에 기록한다
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # 엔진 API (FastAPI). 경로 검사, 작업 만들기·조회, 진행 스트림. 웹(Rust)이 /api/rag/* 를 여기로 넘긴다
+  engine:
+    image: rag-ops-engine
+    build: ./engine
+    command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+    <<: &engine-common
+      env_file: .env
+      environment:
+        # 컨테이너 안에서는 서비스 이름으로 찾아간다 (.env의 값은 Mac에서 쓰는 주소)
+        DB_HOST: db
+        DB_PORT: "5432"
+        EMBED_URL: http://embed:80
+        REDIS_URL: redis://redis:6379/0
+      volumes:
+        # 문서 폴더를 Mac과 같은 경로로 읽기 전용 연결한다. 엔진의 경로 검사와 worker가 같은 경로를 본다.
+        # INGEST_ROOTS에 폴더가 하나일 때만 이대로 동작한다. 여러 개면 줄을 나눠 적는다
+        - ${INGEST_ROOTS}:${INGEST_ROOTS}:ro
+      depends_on:
+        db:
+          condition: service_healthy
+        redis:
+          condition: service_healthy
+        embed:
+          condition: service_started
+      restart: unless-stopped
+    ports:
+      - "127.0.0.1:${ENGINE_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # 가져오기 worker (Celery). 엔진과 같은 이미지, 실행 명령만 다르다. 문서는 한 번에 하나씩 처리한다 (engine/app/tasks.py)
+  worker:
+    image: rag-ops-engine
+    build: ./engine
+    command: ["celery", "-A", "tasks", "worker", "--concurrency=1", "--loglevel=INFO"]
+    <<: *engine-common
+
 volumes:
   db-data:
   embed-cache:
+  redis-data:

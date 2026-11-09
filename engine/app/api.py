@@ -1,42 +1,36 @@
 """엔진 HTTP API: 문서 가져오기와 가져온 문서·조각 조회.
 
 실행 (저장소 루트에서):
-  .venv/bin/uvicorn api:app --app-dir engine/app --host 127.0.0.1 --port 8000
+  docker compose up -d engine worker                                        # 보통은 컨테이너로
+  .venv/bin/uvicorn api:app --app-dir engine/app --host 127.0.0.1 --port 8000  # Mac에서 직접 (compose의 engine은 꺼 둔다)
 
 - 가져오기는 ingest.py의 ingest_file을 그대로 부른다 (CLI와 같은 동작).
 - 웹(Rust)이 /api/rag/* 요청을 이 서버로 넘겨준다. 브라우저가 직접 부르지 않는다.
 - 읽을 수 있는 파일은 .env의 INGEST_ROOTS(콜론으로 구분한 폴더 목록) 안으로 제한한다.
-- 가져오기 작업(/jobs): 요청하면 작업 번호를 바로 돌려주고, 실제 일은 백그라운드 스레드에서 한다.
+- 가져오기 작업(/jobs): 파일이나 폴더 경로를 받아 문서마다 작업을 만들고 작업 번호를 바로 돌려준다.
+  실제 일은 Celery worker(tasks.py)가 Redis 대기열에서 하나씩 꺼내서 한다.
   진행 상황은 ingest_jobs 테이블에 남기고, /jobs/{id}로 조회하거나 /jobs/{id}/events로 스트리밍(SSE)으로 본다.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import threading
-from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+import redis
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from psycopg.types.json import Jsonb
 
 from ingest import STAGES, IngestError, connect, ingest_file, load_env
+from jobs import JOB_COLUMNS, fetch_job
+from tasks import celery, ingest_task
 
-
-# 서버가 켜질 때, 이전 실행에서 끝나지 못한 작업(대기·진행)을 실패로 정리한다. 백그라운드 스레드는 서버와 함께 사라지기 때문이다.
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    with connect(load_env()) as conn:
-        conn.execute("""UPDATE ingest_jobs SET status='failed', error='서버 재시작으로 중단', finished_at=now()
-                        WHERE status IN ('queued', 'running')""")
-    yield
-
-
-app = FastAPI(title="rag-ops engine", lifespan=lifespan)
+# 작업은 worker가 실행하므로 엔진을 다시 켜도 진행 중인 작업은 영향을 받지 않는다. (끊긴 작업 정리는 worker가 켜질 때 한다)
+app = FastAPI(title="rag-ops engine")
 
 
 # 가져오기 요청 본문. 메타데이터 값은 documents 테이블 주석에 적힌 선택지로 제한한다.
@@ -73,6 +67,20 @@ def resolve_allowed(raw_path: str, roots: list[Path]) -> Path:
     if not path.is_file():
         raise ValueError("파일이 없습니다")
     return path
+
+
+# 폴더 안의 .md 파일을 모두 찾는다. 숨김 폴더(.git, .obsidian 등)는 건너뛴다.
+# 파일마다 resolve_allowed를 다시 거쳐서, 폴더 안에 있지만 밖을 가리키는 링크는 이유와 함께 빼 둔다.
+def expand_folder(folder: Path, roots: list[Path]) -> tuple[list[Path], list[dict]]:
+    files, skipped = [], []
+    for p in sorted(folder.rglob("*.md")):
+        if any(part.startswith(".") for part in p.relative_to(folder).parts):
+            continue
+        try:
+            files.append(resolve_allowed(str(p), roots))
+        except ValueError as e:
+            skipped.append({"path": str(p), "reason": str(e)})
+    return files, skipped
 
 
 # 서버가 떠 있는지 확인용.
@@ -112,76 +120,87 @@ def list_documents() -> list[dict]:
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-# ---------- 가져오기 작업 (백그라운드 + 상태 기록 + 스트리밍) ----------
+# ---------- 가져오기 작업 (Celery 대기열 + 상태 기록 + 스트리밍) ----------
 
-JOB_COLUMNS = ("id, path, params, status, stage, stage_index, progress_done, progress_total, "
-               "error, result, created_at, started_at, finished_at")
-
-
-# 작업 1행을 dict로 읽는다. 없으면 None.
-def fetch_job(job_id: int) -> dict | None:
-    with connect(load_env()) as conn:
-        cur = conn.execute(f"SELECT {JOB_COLUMNS} FROM ingest_jobs WHERE id=%s", (job_id,))
-        row = cur.fetchone()
-        return dict(zip([c.name for c in cur.description], row)) if row else None
-
-
-# 작업 행의 일부 칸을 바꾼다. 단계가 바뀔 때마다 짧은 트랜잭션으로 바로 커밋해서, 조회·스트리밍 쪽이 곧바로 보게 한다.
-NOW = object()  # update_job에 넘기면 DB 시각 now()로 기록한다
-
-
-def update_job(job_id: int, **fields) -> None:
-    sets = ", ".join(f"{k}=now()" if v is NOW else f"{k}=%({k})s" for k, v in fields.items())
-    params = {k: v for k, v in fields.items() if v is not NOW}
-    with connect(load_env()) as conn:
-        conn.execute(f"UPDATE ingest_jobs SET {sets} WHERE id=%(id)s", {**params, "id": job_id})
-
-
-# 백그라운드 스레드에서 도는 실제 작업. ingest_file의 단계 알림을 받아 작업 행에 기록하고, 끝나면 완료·실패를 남긴다.
-def run_job(job_id: int, path: Path, req: IngestRequest) -> None:
-    def on_step(name: str, done: int | None, total: int | None) -> None:
-        update_job(job_id, stage=name, stage_index=STAGES.index(name) + 1,
-                   progress_done=done, progress_total=total)
-
-    update_job(job_id, status="running", started_at=NOW)
-    try:
-        result = ingest_file(path, env_label=req.env, doc_type=req.doc_type, verification=req.verification,
-                             checked_at=req.checked_at.isoformat() if req.checked_at else None,
-                             external_ok=req.external_ok, on_step=on_step)
-        update_job(job_id, status="done", result=Jsonb(result), finished_at=NOW)
-    except IngestError as e:
-        update_job(job_id, status="failed", error=str(e), finished_at=NOW)
-    except Exception as e:  # TEI·DB 오류 등 예상 못 한 실패도 어느 단계였는지와 함께 남긴다
-        update_job(job_id, status="failed", error=f"{type(e).__name__}: {e}", finished_at=NOW)
-
-
-# 가져오기 작업을 만든다. 경로 검사는 바로 하고(실패하면 작업을 만들지 않음), 통과하면 작업 번호를 즉시 돌려준다.
+# 가져오기 작업을 만든다. 파일이면 1개, 폴더면 안의 .md마다 1개씩. 경로 검사는 바로 하고, 통과한 문서만 대기열에 넣는다.
 @app.post("/jobs", status_code=202)
-def create_job(req: IngestRequest) -> dict:
+def create_jobs(req: IngestRequest) -> dict:
+    roots = allowed_roots()
+    target = Path(req.path).expanduser().resolve()
     try:
-        path = resolve_allowed(req.path, allowed_roots())
+        if target.is_dir():
+            if not any(target.is_relative_to(root.resolve()) for root in roots):
+                raise ValueError("허용된 폴더(INGEST_ROOTS) 밖의 경로입니다")
+            files, skipped = expand_folder(target, roots)
+            if not files and not skipped:
+                raise ValueError("폴더 안에 Markdown(.md) 파일이 없습니다")
+        else:
+            files, skipped = [resolve_allowed(req.path, roots)], []
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+    params = Jsonb(req.model_dump(mode="json", exclude={"path"}))
+    created = []
     with connect(load_env()) as conn:
-        # 같은 파일을 가져오는 작업이 이미 대기·진행 중이면 거절한다 (저장 단계에서 서로 부딪히지 않게).
-        busy = conn.execute("SELECT id FROM ingest_jobs WHERE path=%s AND status IN ('queued', 'running')",
-                            (str(path),)).fetchone()
-        if busy:
-            raise HTTPException(409, f"같은 문서를 가져오는 작업이 진행 중입니다 (job {busy[0]})")
-        job_id = conn.execute(
-            "INSERT INTO ingest_jobs (path, params) VALUES (%s, %s) RETURNING id",
-            (str(path), Jsonb(req.model_dump(mode="json", exclude={"path"}))),
-        ).fetchone()[0]
-    threading.Thread(target=run_job, args=(job_id, path, req), daemon=True).start()
-    return {"job_id": job_id, "status": "queued", "stages": STAGES}
+        for path in files:
+            # 같은 파일을 가져오는 작업이 이미 대기·진행 중이면 빼 둔다 (저장 단계에서 서로 부딪히지 않게).
+            busy = conn.execute("SELECT id FROM ingest_jobs WHERE path=%s AND status IN ('queued', 'running')",
+                                (str(path),)).fetchone()
+            if busy:
+                skipped.append({"path": str(path), "reason": f"같은 문서를 가져오는 작업이 진행 중입니다 (job {busy[0]})"})
+                continue
+            job_id = conn.execute("INSERT INTO ingest_jobs (path, params) VALUES (%s, %s) RETURNING id",
+                                  (str(path), params)).fetchone()[0]
+            created.append({"job_id": job_id, "path": str(path)})
+
+    # 작업 행을 커밋한 뒤에 대기열에 넣는다. 그래야 worker가 꺼냈을 때 행이 반드시 있다.
+    try:
+        for job in created:
+            ingest_task.delay(job["job_id"])
+    except Exception as e:
+        ids = [j["job_id"] for j in created]
+        with connect(load_env()) as conn:
+            conn.execute("""UPDATE ingest_jobs SET status='failed', error='대기열(Redis)에 넣지 못함', finished_at=now()
+                            WHERE id = ANY(%s) AND status='queued'""", (ids,))
+        raise HTTPException(503, f"대기열(Redis)에 연결할 수 없습니다: {type(e).__name__}")
+
+    if not created and len(files) == 1 and not target.is_dir():
+        raise HTTPException(409, skipped[0]["reason"])
+    return {"jobs": created, "skipped": skipped, "stages": STAGES}
 
 
-# 최근 작업 20개.
+# 최근 작업 목록 (기본 20개, 최대 200개).
 @app.get("/jobs")
-def list_jobs() -> list[dict]:
+def list_jobs(limit: int = Query(20, ge=1, le=200)) -> list[dict]:
     with connect(load_env()) as conn:
-        cur = conn.execute(f"SELECT {JOB_COLUMNS} FROM ingest_jobs ORDER BY id DESC LIMIT 20")
+        cur = conn.execute(f"SELECT {JOB_COLUMNS} FROM ingest_jobs ORDER BY id DESC LIMIT %s", (limit,))
         return [dict(zip([c.name for c in cur.description], row)) for row in cur.fetchall()]
+
+
+# 대기열 상태: worker가 살아 있는지, 지금 무엇을 처리하는지, Redis에 몇 개가 쌓여 있는지, 작업 기록의 상태별 개수.
+# worker에게 직접 물어보므로(Celery inspect) worker가 꺼져 있으면 1초 기다린 뒤 빈 목록을 돌려준다.
+@app.get("/queue")
+def queue_status() -> dict:
+    workers, redis_waiting, problems = [], None, []
+    try:
+        active = celery.control.inspect(timeout=1.0).active() or {}
+        workers = [{"name": name, "active_job_ids": [t["args"][0] for t in tasks if t.get("args")]}
+                   for name, tasks in sorted(active.items())]
+    except Exception as e:
+        problems.append(f"worker 조회 실패: {type(e).__name__}")
+    try:
+        # Celery 기본 대기열은 Redis의 'celery' 목록(list)이다. worker가 이미 꺼낸 작업은 여기 없다.
+        with redis.Redis.from_url(load_env().get("REDIS_URL", "redis://127.0.0.1:6379/0"), socket_timeout=2) as r:
+            redis_waiting = r.llen("celery")
+    except Exception as e:
+        problems.append(f"Redis 조회 실패: {type(e).__name__}")
+    with connect(load_env()) as conn:
+        counts = dict(conn.execute("SELECT status, count(*) FROM ingest_jobs GROUP BY status").fetchall())
+    return {
+        "online": bool(workers), "workers": workers, "redis_waiting": redis_waiting,
+        "jobs": {k: counts.get(k, 0) for k in ("queued", "running", "done", "failed")},
+        "problems": problems,
+    }
 
 
 # 작업 하나의 지금 상태. 화면을 새로 열었을 때 여기서 현재 상태를 받고, 진행 중이면 스트림을 연다.

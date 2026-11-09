@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -38,14 +39,23 @@ class Section:
 # ---------- 설정 ----------
 
 # 루트 .env를 읽어 dict로 돌려준다. 주석·빈 줄은 건너뛰고 KEY=VALUE 줄만 본다.
+# 컨테이너(worker)에는 .env 파일이 없고 같은 값이 환경 변수로 들어오므로, 환경 변수가 있으면 그 값을 쓴다.
 def load_env() -> dict[str, str]:
     env = {}
-    for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            env[k.strip()] = v.strip()
+    file = ROOT / ".env"
+    if file.is_file():
+        for line in file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip()
+    env.update(os.environ)
     return env
+
+
+# 임베딩 서버(TEI) 주소. Mac에서는 열어 둔 포트로, 컨테이너 안에서는 EMBED_URL(서비스 이름)로 간다.
+def embed_url(env: dict[str, str]) -> str:
+    return env.get("EMBED_URL") or f"http://127.0.0.1:{env['EMBED_PORT']}"
 
 
 # ---------- 출처 ----------
@@ -166,7 +176,8 @@ def embed(base: str, texts: list[str], on_batch: Callable[[int, int], None] | No
 def connect(env: dict[str, str]):
     import psycopg  # 미리보기에서는 필요 없어서 여기서 불러온다
 
-    return psycopg.connect(f"host=127.0.0.1 port={env['DB_PORT']} dbname={env['POSTGRES_DB']} "
+    # DB_HOST가 없으면 Mac에서 열어 둔 포트로 붙는다. 컨테이너 안에서는 DB_HOST=db (서비스 이름).
+    return psycopg.connect(f"host={env.get('DB_HOST', '127.0.0.1')} port={env['DB_PORT']} dbname={env['POSTGRES_DB']} "
                            f"user={env['POSTGRES_USER']} password={env['POSTGRES_PASSWORD']}")
 
 
@@ -269,7 +280,7 @@ def ingest_file(path: Path, *, env_label: str | None = None, doc_type: str | Non
 
     # 4. 토큰 검사: 하나라도 한도를 넘으면 TEI가 조용히 자르기 전에 멈춘다.
     step("토큰 검사")
-    base = f"http://127.0.0.1:{env['EMBED_PORT']}"
+    base = embed_url(env)
     tokens = count_tokens(base, embed_texts)
     over = [i for i, t in enumerate(tokens) if t > MAX_TOKENS]
     if over:

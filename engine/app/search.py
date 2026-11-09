@@ -15,7 +15,7 @@ import argparse
 import json
 import time
 
-from ingest import connect, load_env, tei_post
+from ingest import connect, embed_url, load_env, tei_post
 
 # 코사인 거리(<=>)가 가까운 순으로 상위 k개 조각을 가져온다. 출처·환경·검증 상태를 함께 붙이려고 documents와 조인한다.
 SQL = """
@@ -31,7 +31,7 @@ LIMIT %(k)s
 # 질문을 임베딩한 뒤 SQL로 검색한다. 임베딩 시간과 DB 시간을 따로 재서 함께 돌려준다.
 def search(env: dict[str, str], question: str, k: int) -> tuple[list[tuple], float, float]:
     t0 = time.perf_counter()
-    vec = tei_post(f"http://127.0.0.1:{env['EMBED_PORT']}/embed", {"inputs": question})[0]
+    vec = tei_post(f"{embed_url(env)}/embed", {"inputs": question})[0]
     t1 = time.perf_counter()
     with connect(env) as conn:
         rows = conn.execute(SQL, {"q": json.dumps(vec), "k": k}).fetchall()

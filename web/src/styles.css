@@ -103,6 +103,50 @@
 .embed-preview{margin-top:10px}
 .embed-preview p{white-space:pre-wrap;-webkit-line-clamp:9}
 @media(max-width:760px){.group-head{padding:14px 16px;gap:10px}.group-meter{display:none}.group-card .group-head .tag{display:none}.group-body .flow-nodes{margin:20px auto}.group-body .canvas-footer{padding:0 16px 16px}.group-card.is-planned .flow-node{max-width:none}}
+/* Ingest queue: one chip per document of the latest request. */
+.source-note{font-size:11px;color:#8f839b;padding:10px 0 2px 44px;overflow:hidden}
+.queue-strip{display:flex;flex-wrap:wrap;gap:7px;padding:18px 23px 0;max-height:132px;overflow:auto}
+.queue-chip{position:relative;display:inline-flex;align-items:center;gap:7px;max-width:240px;padding:7px 12px;border-radius:20px;border:1px solid #ebe5f1;background:#fff;font-size:10px;color:#7c7189;cursor:pointer;overflow:hidden;transition:border-color .3s,background-color .3s,color .3s,box-shadow .3s}
+.queue-chip span{position:relative;z-index:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.queue-chip svg{position:relative;z-index:1;flex-shrink:0}
+.queue-chip:hover{border-color:#d9cde6}
+.queue-chip.is-queued{color:#a99db4;background:#fdfcfe}
+.queue-chip.is-running{color:#6f5a8c;border-color:#d2bdec}
+.queue-chip.is-done{color:#6e8160}
+.queue-chip.is-done svg{color:#8d9d7e}
+.queue-chip.is-unchanged{color:#8f839b}
+.queue-chip.is-failed{color:#a5603f;border-color:#f2c9ae;background:#fdf6f1}
+.queue-chip.is-selected{border-color:#b899dc;box-shadow:0 0 0 3px #cbb5ed33}
+.queue-chip.is-failed.is-selected{border-color:#f2b996;box-shadow:0 0 0 3px #f5b89433}
+.queue-fill{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#f1e9fb,#e7edfd)}
+@media(max-width:760px){.queue-strip{padding:16px 16px 0}.source-note{padding-left:0}}
+/* Knowledge base: stored documents. */
+.collection-card{transition:box-shadow .3s}
+.collection-card.is-active{box-shadow:0 0 0 1.5px #b899dc,0 0 0 6px #cbb5ed26}
+.collection-check{position:absolute;right:19px;top:20px;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:#efe7f8;color:#8a6bb0}
+.knowledge-empty{padding:30px}
+.documents-table tbody tr{cursor:pointer;transition:background-color .2s}
+.documents-table tbody tr:hover{background:#faf7fd}
+.doc-name{display:flex;flex-direction:column;gap:3px;min-width:0}
+.doc-name b{font-weight:500;max-width:340px;overflow:hidden;text-overflow:ellipsis}
+.doc-name small{font-size:9px;color:#a69aac;max-width:340px;overflow:hidden;text-overflow:ellipsis}
+.documents-table .num{font-variant-numeric:tabular-nums;color:#8f839b}
+.documents-table .pill{margin-left:0;min-width:56px}
+.document-chunks-heading{margin-top:18px}
+@media(max-width:760px){.collection-check{top:24px}.doc-name b,.doc-name small{max-width:200px}}
+/* Run history: worker and queue cards. */
+.queue-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:24px}
+.queue-card{display:flex;align-items:center;gap:13px;padding:18px}
+.queue-card>div{min-width:0}
+.queue-card small{display:block;font-size:9px;color:#a69aac;letter-spacing:.2px}
+.queue-card strong{display:block;font-size:15px;font-weight:500;letter-spacing:-.4px;margin:3px 0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.queue-card em{display:block;font-style:normal;font-size:9px;color:#9e92aa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.worker-dot{position:relative;flex-shrink:0;width:10px;height:10px;margin:0 9px;border-radius:50%;background:#e3b9a0}
+.worker-dot.is-online{background:#9fb98b}
+.worker-dot i{position:absolute;inset:0;border-radius:50%;background:#9fb98b}
+.queue-problems{padding-left:0;margin:-12px 0 18px}
+@media(max-width:1000px){.queue-cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.queue-cards{grid-template-columns:1fr}}
 @media(max-width:1000px){.live-grid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:760px){.source-form{flex-wrap:wrap}.source-input{flex-basis:calc(100% - 40px)}.source-form .primary-button{margin-left:auto}.connector-fill,.connector-comet{display:none}.ingest-connector.is-planned{background:#dad0e5}.source-error{padding-left:0}}
 @media(prefers-reduced-motion:reduce){.spin{animation:none!important}}

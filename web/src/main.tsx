@@ -141,11 +141,11 @@ function App() {
           </div>
           <div className="page-footer"><span><span className="local-dot" /> Local workspace</span><span>UI preview · Sample data</span></div>
         </>}
-        {page === 'knowledge' && <Knowledge collections={collections} create={() => setDialog({ type: 'create' })} inspect={name => setDialog({ type: 'node', value: name })} />}
+        {page === 'knowledge' && <Knowledge openPipeline={() => navigate('pipeline')} />}
         {page === 'pipeline' && <Pipeline enabled={enabled} flip={flip} />}
         {page === 'playground' && <Playground chat={selectedChat} send={send} reset={() => setSelectedChat(null)} />}
         {page === 'evaluations' && <Evaluations score={score} evaluating={evaluating} evaluate={evaluate} />}
-        {page === 'runs' && <Runs runs={runs} inspect={title => setDialog({ type: 'run', value: title })} />}
+        {page === 'runs' && <Runs openPipeline={() => navigate('pipeline')} />}
         {page === 'conversations' && <Conversations chats={chats} open={chat => { setSelectedChat(chat); navigate('playground'); }} create={() => { setSelectedChat(null); navigate('playground'); }} remove={id => setChats(c => c.filter(chat => chat.id !== id))} />}
         {page === 'settings' && <Settings settings={settings} save={setSettings} notify={notify} />}
       </motion.div></AnimatePresence></main>
@@ -170,10 +170,96 @@ function Gauge({ score, evaluating }: { score: number; evaluating: boolean }) {
 function KnowledgeArt() {
   return <div className="knowledge-art" aria-hidden="true"><div className="art-halo" /><svg className="art-lines" viewBox="0 0 400 240"><path d="M75 65L200 120L310 55M200 120L94 195M200 120L320 182M75 65L310 55L320 182L94 195Z" /></svg><div className="art-tile tile-one"><FileText /></div><div className="art-tile tile-two"><Layers3 /></div><div className="art-tile tile-three"><Database /></div><div className="art-tile tile-four"><FileText /></div><div className="art-core"><span /><Box size={40} strokeWidth={1} /></div><i className="art-speck speck-one" /><i className="art-speck speck-two" /></div>;
 }
-function Knowledge({ collections, create, inspect }: { collections: Collection[]; create: () => void; inspect: (name: string) => void }) {
+type StoredDocument = {
+  id: number; source_repo: string; source_path: string; source_commit: string; title: string;
+  env: string | null; doc_type: string | null; verification: string; checked_at: string | null;
+  external_ok: boolean; ingested_at: string; chunks: number;
+};
+const verificationTone: Record<string, string> = { '확인': 'lime', '추정': 'blue', '미확인': 'neutral', '폐기': 'peach' };
+const repoColors = ['lime', 'blue', 'purple', 'peach'];
+const shortTime = (iso: string) => new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+// Every document stored in the DB (GET /documents). Reloads each time the page opens.
+function useDocuments() {
+  const [docs, setDocs] = useState<StoredDocument[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    fetch(`${RAG_API}/documents`).then(async r => (r.ok ? r.json() : Promise.reject(await readError(r))))
+      .then(setDocs).catch(e => setError(String(e)));
+  }, []);
+  return { docs, error };
+}
+
+function DocumentModal({ doc, close }: { doc: StoredDocument; close: () => void }) {
+  const { chunks, error } = useChunks(doc.id);
+  return <Modal title={doc.title} close={close}>
+    <DetailRows rows={[
+      ['Source', `${doc.source_repo}/${doc.source_path}`],
+      ['Commit', <>{doc.source_commit}{doc.source_commit.endsWith('-dirty') && <em className="detail-hint">-dirty: the file had uncommitted edits</em>}</>],
+      ['Environment', doc.env ?? '—'],
+      ['Document type', doc.doc_type ?? '—'],
+      ['Verification', `${doc.verification}${doc.checked_at ? ` · checked ${doc.checked_at}` : ''}`],
+      ['External LLM', doc.external_ok ? 'Allowed' : 'Not allowed'],
+      ['Ingested', shortTime(doc.ingested_at)],
+    ]} />
+    <p className="muted document-chunks-heading">{chunks ? `${chunks.length} chunks` : error ?? 'Loading chunks…'}</p>
+    {chunks && <ChunkList chunks={chunks} />}
+  </Modal>;
+}
+
+// Knowledge base: the documents the engine has stored, grouped by the git repository they came from.
+function Knowledge({ openPipeline }: { openPipeline: () => void }) {
+  const { docs, error } = useDocuments();
   const [filter, setFilter] = useState('');
-  const shown = collections.filter(c => c.name.toLowerCase().includes(filter.toLowerCase()));
-  return <><Heading title="Knowledge base"><button className="primary-button" onClick={create}><Plus size={16} />New collection</button></Heading><div className="section-heading"><h2>Collections</h2><span className="muted">{collections.length} total</span></div><div className="collections-grid">{collections.map((c, i) => <Card key={c.id} delay={i * 0.07} className="collection-card"><button onClick={() => inspect(c.name)}><ColorIcon icon={Folder} color={c.color} /><ArrowUpRight className="collection-arrow" size={17} /><div><h3>{c.name}</h3><small>{c.documents} sample documents</small></div></button></Card>)}</div><div className="section-heading document-heading"><h2>Documents</h2><label className="search-field"><Search size={16} /><input aria-label="Filter collections" placeholder="Search collections" value={filter} onChange={e => setFilter(e.target.value)} /></label></div><Card className="table-card" delay={0.2}><table><thead><tr><th>Name</th><th>Collection</th><th>Type</th><th>Status</th><th /></tr></thead><tbody>{shown.map((c, i) => <tr key={c.id}><td><span className="file-label"><FileText size={17} />{c.documents ? `Sample document ${String(i + 1).padStart(2, '0')}` : 'No documents yet'}</span></td><td>{c.name}</td><td>{c.documents ? 'Markdown' : '—'}</td><td><span className={`pill ${c.documents ? 'lime' : 'neutral'}`}>{c.documents ? 'Sample' : 'Empty'}</span></td><td><IconButton icon={ArrowUpRight} label={`Inspect ${c.name}`} onClick={() => inspect(c.name)} /></td></tr>)}</tbody></table>{!shown.length && <div className="empty-state compact"><Search size={24} /><p>No collections match “{filter}”.</p></div>}</Card><p className="footnote">Sample library · Document ingestion will be connected in a later version.</p></>;
+  const [repo, setRepo] = useState<string | null>(null);
+  const [open, setOpen] = useState<StoredDocument | null>(null);
+  const repos = docs ? [...new Set(docs.map(d => d.source_repo))].map(name => {
+    const list = docs.filter(d => d.source_repo === name);
+    return { name, documents: list.length, chunks: list.reduce((n, d) => n + d.chunks, 0) };
+  }) : [];
+  const query = filter.trim().toLowerCase();
+  const shown = (docs ?? []).filter(d => (!repo || d.source_repo === repo)
+    && (!query || d.title.toLowerCase().includes(query) || d.source_path.toLowerCase().includes(query)));
+  const totalChunks = docs?.reduce((n, d) => n + d.chunks, 0) ?? 0;
+
+  return <>
+    <Heading title="Knowledge base" subtitle={docs ? `${docs.length} documents · ${totalChunks.toLocaleString()} chunks stored` : 'Documents stored by the engine'}>
+      <button className="primary-button" onClick={openPipeline}><Play size={15} />Ingest</button>
+    </Heading>
+
+    <div className="section-heading"><h2>Repositories</h2><span className="muted">{repos.length} total</span></div>
+    {repos.length ? <div className="collections-grid">{repos.map((r, i) => <Card key={r.name} delay={i * 0.07} className={`collection-card ${repo === r.name ? 'is-active' : ''}`}>
+      <button onClick={() => setRepo(cur => (cur === r.name ? null : r.name))} aria-pressed={repo === r.name}>
+        <ColorIcon icon={Folder} color={repoColors[i % repoColors.length]} />
+        <AnimatePresence>{repo === r.name && <motion.span className="collection-check" initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0 }} transition={spring}><Check size={13} /></motion.span>}</AnimatePresence>
+        <div><h3>{r.name}</h3><small>{r.documents} documents · {r.chunks} chunks</small></div>
+      </button>
+    </Card>)}</div>
+    : <Card className="knowledge-empty"><div className="empty-state compact"><ColorIcon icon={Database} color="neutral" /><h3>{error ? 'Engine is not reachable' : docs ? 'No documents yet' : 'Loading…'}</h3><p>{error ?? 'Ingest a document or folder from the RAG pipeline page.'}</p></div></Card>}
+
+    <div className="section-heading document-heading">
+      <h2>Documents{repo && <span className="muted"> · {repo}</span>}</h2>
+      <label className="search-field"><Search size={16} /><input aria-label="Filter documents" placeholder="Search title or path" value={filter} onChange={e => setFilter(e.target.value)} /></label>
+    </div>
+    <Card className="table-card documents-table" delay={0.2}>
+      <table>
+        <thead><tr><th>Title</th><th>Environment</th><th>Type</th><th>Verification</th><th>Chunks</th><th>Ingested</th><th /></tr></thead>
+        <tbody>{shown.map((d, i) => <motion.tr key={d.id} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 14) * 0.03, duration: 0.3 }} onClick={() => setOpen(d)}>
+          <td><span className="file-label"><FileText size={17} /><span className="doc-name"><b>{d.title}</b><small>{d.source_repo}/{d.source_path}</small></span></span></td>
+          <td>{d.env ?? '—'}</td>
+          <td>{d.doc_type ?? '—'}</td>
+          <td><span className={`pill ${verificationTone[d.verification] ?? 'neutral'}`}>{d.verification}</span></td>
+          <td className="num">{d.chunks}</td>
+          <td className="num">{shortTime(d.ingested_at)}</td>
+          <td><IconButton icon={ArrowUpRight} label={`Open ${d.title}`} onClick={() => setOpen(d)} /></td>
+        </motion.tr>)}</tbody>
+      </table>
+      {docs && !shown.length && <div className="empty-state compact"><Search size={24} /><p>{docs.length ? `No documents match “${filter}”.` : 'No documents stored yet.'}</p></div>}
+    </Card>
+    <p className="footnote">Stored in PostgreSQL · grouped by the git repository each document came from.</p>
+
+    {open && <DocumentModal doc={open} close={() => setOpen(null)} />}
+  </>;
 }
 // ---------- Live ingest pipeline (engine API: /api/rag) ----------
 
@@ -286,19 +372,29 @@ async function readError(res: Response): Promise<string> {
   return res.status === 502 ? 'Engine is not reachable. Start the engine API first.' : `Request failed (${res.status})`;
 }
 
-// Starts ingest jobs and follows their progress stream. State survives a reload through GET /jobs.
-function useIngestJob() {
-  const [job, setJob] = useState<Job | null>(null);
+const isActive = (j: Job) => j.status === 'queued' || j.status === 'running';
+
+// Starts ingest jobs (one file or a whole folder) and follows them.
+// Jobs from one request share created_at, so a reload can rebuild the same queue from GET /jobs.
+function useIngestQueue() {
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [moments, setMoments] = useState<Moment[]>([]);
   const [offline, setOffline] = useState(false);
+  const jobsRef = useRef(jobs);
+  jobsRef.current = jobs;
+  const pinned = useRef(false);  // true once the user picks a finished or waiting job to look at
   const stream = useRef<EventSource | null>(null);
+  const job = jobs.find(j => j.id === selectedId) ?? null;
+  const active = jobs.some(isActive);
+  const idsKey = jobs.map(j => j.id).join(',');
 
   function record(next: Job) {
     const tone: Moment['tone'] = next.status === 'failed' ? 'fail' : next.status === 'done' ? 'done' : 'run';
     const key = next.status === 'done' || next.status === 'failed' ? next.status : next.stage ?? next.status;
     const label = next.status === 'done' ? (next.result ? `${resultTone[next.result.status].label} · finished` : 'Finished')
       : next.status === 'failed' ? `Stopped at ${stageLabels[next.stage ?? ''] ?? 'start'}`
-      : next.stage ? stageLabels[next.stage] ?? next.stage : 'Queued';
+      : next.stage ? stageLabels[next.stage] ?? next.stage : 'Waiting in queue';
     const detail = next.status === 'failed' ? next.error ?? undefined
       : next.progress_total ? `${next.progress_done ?? 0} / ${next.progress_total} chunks` : undefined;
     setMoments(list => {
@@ -314,13 +410,22 @@ function useIngestJob() {
     });
   }
 
+  const upsert = (next: Job) => setJobs(list => list.map(j => (j.id === next.id ? next : j)));
+
+  // Shows the job the user picked, else the one running now, else the next waiting one, else the last one.
+  function autoPick(list: Job[]) {
+    if (pinned.current) return;
+    const pick = list.find(j => j.status === 'running') ?? list.find(j => j.status === 'queued') ?? list[list.length - 1];
+    if (pick) setSelectedId(pick.id);
+  }
+
   function follow(id: number) {
     stream.current?.close();
     const source = new EventSource(`${RAG_API}/jobs/${id}/events`);
     stream.current = source;
     const onEvent = (event: MessageEvent) => {
       const next = JSON.parse(event.data) as Job;
-      setJob(next);
+      upsert(next);
       record(next);
       if (next.status === 'done' || next.status === 'failed') source.close();
     };
@@ -330,43 +435,84 @@ function useIngestJob() {
       source.close();
       fetch(`${RAG_API}/jobs/${id}`).then(r => (r.ok ? r.json() : null)).then((latest: Job | null) => {
         if (!latest) return;
-        setJob(latest);
-        if (latest.status === 'queued' || latest.status === 'running') setTimeout(() => follow(id), 1500);
+        upsert(latest);
+        if (isActive(latest) && stream.current === source) setTimeout(() => follow(id), 1500);
       }).catch(() => setOffline(true));
     };
   }
 
+  async function readQueue(): Promise<Job[]> {
+    const r = await fetch(`${RAG_API}/jobs?limit=200`);
+    if (!r.ok) throw new Error(String(r.status));
+    return r.json();
+  }
+
+  // On first load, rebuild the latest request's queue.
   useEffect(() => {
-    fetch(`${RAG_API}/jobs`).then(r => {
-      if (!r.ok) throw new Error(String(r.status));
-      return r.json();
-    }).then((jobs: Job[]) => {
-      const latest = jobs[0];
+    readQueue().then(all => {
+      const latest = all[0];
       if (!latest) return;
-      setJob(latest);
-      record(latest);
-      if (latest.status === 'queued' || latest.status === 'running') follow(latest.id);
+      const list = all.filter(j => j.created_at === latest.created_at).sort((a, b) => a.id - b.id);
+      setJobs(list);
+      autoPick(list);
     }).catch(() => setOffline(true));
     return () => stream.current?.close();
   }, []);
 
-  async function start(body: { path: string; env: string; doc_type: string }): Promise<string | null> {
+  // Whenever another job is shown, start its activity log over and stream it if it is still going.
+  useEffect(() => {
+    stream.current?.close();
+    stream.current = null;
+    setMoments([]);
+    const current = jobsRef.current.find(j => j.id === selectedId);
+    if (!current) return;
+    record(current);
+    if (isActive(current)) follow(current.id);
+  }, [selectedId]);
+
+  // While anything is waiting or running, refresh the whole queue once a second.
+  useEffect(() => {
+    if (!active) return;
+    const ids = idsKey.split(',').map(Number);
+    const timer = setInterval(() => {
+      readQueue().then(all => {
+        const list = all.filter(j => ids.includes(j.id)).sort((a, b) => a.id - b.id);
+        if (!list.length) return;
+        setJobs(list);
+        autoPick(list);
+      }).catch(() => setOffline(true));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [active, idsKey]);
+
+  // Picking the job that is running now means "follow along"; picking any other one keeps it on screen.
+  function select(id: number) {
+    const picked = jobs.find(j => j.id === id);
+    pinned.current = !(picked && picked.status === 'running');
+    setSelectedId(id);
+  }
+
+  async function start(body: { path: string; env: string; doc_type: string }): Promise<{ error: string | null; note: string | null }> {
     try {
       const res = await fetch(`${RAG_API}/jobs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      if (!res.ok) return readError(res);
-      const { job_id } = await res.json();
+      if (!res.ok) return { error: await readError(res), note: null };
+      const data: { jobs: { job_id: number; path: string }[]; skipped: { path: string; reason: string }[] } = await res.json();
       setOffline(false);
-      setMoments([]);
-      setJob({ id: job_id, path: body.path, params: body, status: 'queued', stage: null, stage_index: null, progress_done: null, progress_total: null, error: null, result: null, created_at: new Date().toISOString(), started_at: null, finished_at: null });
-      follow(job_id);
-      return null;
+      const note = data.skipped.length ? `${data.skipped.length} skipped · ${data.skipped[0].path.split('/').pop()}: ${data.skipped[0].reason}` : null;
+      if (!data.jobs.length) return { error: note ?? 'Nothing to ingest', note: null };
+      const created = new Date().toISOString();
+      const list: Job[] = data.jobs.map(j => ({ id: j.job_id, path: j.path, params: body, status: 'queued', stage: null, stage_index: null, progress_done: null, progress_total: null, error: null, result: null, created_at: created, started_at: null, finished_at: null }));
+      pinned.current = false;
+      setJobs(list);
+      setSelectedId(list[0].id);
+      return { error: null, note };
     } catch {
       setOffline(true);
-      return 'Engine is not reachable. Start the engine API first.';
+      return { error: 'Engine is not reachable. Start the engine API first.', note: null };
     }
   }
 
-  return { job, moments, offline, start };
+  return { jobs, job, select, moments, offline, start };
 }
 
 function useNow(active: boolean) {
@@ -560,17 +706,36 @@ function StageModal({ index, job, close }: { index: number; job: Job; close: () 
   </Modal>;
 }
 
+// One chip per document in the latest request. The chip being shown is highlighted; the running one fills as it goes.
+function QueueStrip({ jobs, selected, select }: { jobs: Job[]; selected: number | null; select: (id: number) => void }) {
+  return <div className="queue-strip" role="list" aria-label="Ingest queue">
+    {jobs.map((j, i) => {
+      const tone = j.status === 'done' ? (j.result?.status === 'skipped' ? 'unchanged' : 'done') : j.status;
+      const Icon = j.status === 'done' ? Check : j.status === 'failed' ? CircleAlert : j.status === 'running' ? LoaderCircle : Clock3;
+      return <motion.button key={j.id} role="listitem" layout className={`queue-chip is-${tone} ${j.id === selected ? 'is-selected' : ''}`}
+        onClick={() => select(j.id)} title={j.path}
+        initial={{ opacity: 0, y: 6, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ ...spring, delay: Math.min(i, 20) * 0.03 }}>
+        <Icon size={12} className={j.status === 'running' ? 'spin' : ''} />
+        <span>{j.path.split('/').pop()?.replace(/\.md$/, '')}</span>
+        {j.status === 'running' && <motion.i className="queue-fill" initial={false} animate={{ width: `${Math.round(indexingProgress(j) * 100)}%` }} transition={{ duration: 0.6, ease }} />}
+      </motion.button>;
+    })}
+  </div>;
+}
+
 function Pipeline({ enabled, flip }: { enabled: boolean[]; flip: (i: number) => void }) {
-  const { job, moments, offline, start } = useIngestJob();
+  const { jobs, job, select, moments, offline, start } = useIngestQueue();
   const [path, setPath] = useState(() => { try { return localStorage.getItem(LAST_PATH_KEY) ?? ''; } catch { return ''; } });
   const [env, setEnv] = useState(ENV_OPTIONS[0]);
   const [docType, setDocType] = useState(DOC_TYPE_OPTIONS[0]);
   const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [chunksOf, setChunksOf] = useState<number | null>(null);
   const [detail, setDetail] = useState<number | null>(null);
   const [open, setOpen] = useState<Record<GroupId, boolean>>({ indexing: true, retrieval: false, generation: false });
-  const busy = submitting || job?.status === 'queued' || job?.status === 'running';
+  const busy = submitting || jobs.some(isActive);
+  const jobBusy = !!job && isActive(job);
   const now = useNow(job?.status === 'running' || job?.status === 'queued');
   const seconds = elapsed(job, now);
   const firstAt = moments[0]?.at ?? 0;
@@ -585,17 +750,29 @@ function Pipeline({ enabled, flip }: { enabled: boolean[]; flip: (i: number) => 
     if (!path.trim() || busy) return;
     setSubmitting(true);
     setError(null);
+    setNote(null);
     try { localStorage.setItem(LAST_PATH_KEY, path.trim()); } catch { /* storage unavailable */ }
-    setError(await start({ path: path.trim(), env, doc_type: docType }));
+    const outcome = await start({ path: path.trim(), env, doc_type: docType });
+    setError(outcome.error);
+    setNote(outcome.note);
     setSubmitting(false);
   }
 
   const time = seconds !== null ? ` · ${seconds.toFixed(1)}s` : '';
-  const indexingSummary = !job ? 'Not run yet · document → chunks → vectors'
+  const finished = jobs.filter(j => !isActive(j)).length;
+  const failedCount = jobs.filter(j => j.status === 'failed').length;
+  const queuePrefix = jobs.length > 1 ? `${finished} / ${jobs.length} documents · ` : '';
+  const jobSummary = !job ? 'Not run yet · document → chunks → vectors'
     : status === 'done' && job.result ? `Job #${job.id} · ${job.result.chunks ?? 'no new'} chunks${time}`
     : status === 'failed' ? `Job #${job.id} · stopped at ${indexing[currentIndex(job)].name}`
-    : `Job #${job.id} · ${job.stage ? stageLabels[job.stage] : 'Queued'}${time}`;
-  const indexingBadge = status === 'done' && job?.result ? <span className={`pill ${resultTone[job.result.status].color}`}>{resultTone[job.result.status].label}</span>
+    : `Job #${job.id} · ${job.stage ? stageLabels[job.stage] : 'Waiting in queue'}${time}`;
+  const indexingSummary = queuePrefix + jobSummary;
+  const queueProgress = jobs.length ? jobs.reduce((sum, j) => sum + indexingProgress(j), 0) / jobs.length : 0;
+  const queueTone = busy ? 'running' : failedCount ? 'failed' : 'done';
+  const indexingBadge = jobs.length > 1 ? (busy ? <span className="pill lilac">Running</span>
+      : failedCount ? <span className="pill peach">{failedCount} failed</span>
+      : <span className="pill lime">All done</span>)
+    : status === 'done' && job?.result ? <span className={`pill ${resultTone[job.result.status].color}`}>{resultTone[job.result.status].label}</span>
     : status === 'failed' ? <span className="pill peach">Failed</span>
     : busy ? <span className="pill lilac">Running</span>
     : <span className="tag">Live</span>;
@@ -612,13 +789,14 @@ function Pipeline({ enabled, flip }: { enabled: boolean[]; flip: (i: number) => 
     <Card className="source-card">
       <form className="source-form" onSubmit={submit}>
         <ColorIcon icon={FileText} color="lime" small />
-        <input className="source-input" aria-label="Document path" placeholder="/path/to/docs-repo/document.md" value={path} onChange={e => setPath(e.target.value)} spellCheck={false} />
+        <input className="source-input" aria-label="Document or folder path" placeholder="/path/to/docs-repo — a folder or one .md file" value={path} onChange={e => setPath(e.target.value)} spellCheck={false} />
         <select className="chip-select" aria-label="Environment" value={env} onChange={e => setEnv(e.target.value)}>{ENV_OPTIONS.map(o => <option key={o}>{o}</option>)}</select>
         <select className="chip-select" aria-label="Document type" value={docType} onChange={e => setDocType(e.target.value)}>{DOC_TYPE_OPTIONS.map(o => <option key={o}>{o}</option>)}</select>
         <button className="primary-button" disabled={busy || !path.trim()}>
           {busy ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}{busy ? 'Ingesting…' : 'Run ingest'}
         </button>
       </form>
+      <AnimatePresence>{note && !error && <motion.p className="source-note" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>{note}</motion.p>}</AnimatePresence>
       <AnimatePresence>{error && <motion.p className="source-error" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>{error}</motion.p>}</AnimatePresence>
     </Card>
 
@@ -629,8 +807,9 @@ function Pipeline({ enabled, flip }: { enabled: boolean[]; flip: (i: number) => 
         return <GroupCard key={g.id} group={g} open={open[g.id]} toggle={toggle} delay={0.05 + gi * 0.06}
           summary={live ? indexingSummary : g.nodes.map(n => n.name).join(' → ')}
           badge={live ? indexingBadge : <span className="tag">Soon</span>}
-          meter={live ? { value: indexingProgress(job), tone: status === 'failed' ? 'failed' : status === 'done' ? 'done' : 'running' } : undefined}>
+          meter={live ? { value: queueProgress, tone: queueTone } : undefined}>
           {live ? <>
+            {jobs.length > 1 && <QueueStrip jobs={jobs} selected={job?.id ?? null} select={select} />}
             <div className="flow-nodes">{indexing.map((n, i) => <React.Fragment key={n.name}>
               <StageCard node={n} state={states[i]} sub={stageSub(job, i, states[i])} progress={i === embedIndex ? embedPct : null}
                 onOpen={job && ['done', 'skipped', 'failed'].includes(states[i]) ? () => setDetail(i) : undefined} />
@@ -667,7 +846,7 @@ function Pipeline({ enabled, flip }: { enabled: boolean[]; flip: (i: number) => 
         <div className="section-heading"><h2>Result</h2>
           {status === 'done' && job?.result && <span className={`pill ${resultTone[job.result.status].color}`}>{resultTone[job.result.status].label}</span>}
           {status === 'failed' && <span className="pill peach">Failed</span>}
-          {busy && <span className="pill lilac">Running</span>}
+          {jobBusy && <span className="pill lilac">{job?.status === 'queued' ? 'Waiting' : 'Running'}</span>}
         </div>
         <AnimatePresence mode="wait">
           {status === 'done' && job?.result ? <motion.div key="done" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
@@ -684,8 +863,8 @@ function Pipeline({ enabled, flip }: { enabled: boolean[]; flip: (i: number) => 
             <h3 className="result-title">Stopped at {indexing[currentIndex(job!)].name}</h3>
             <p className="result-error">{job!.error}</p>
           </motion.div>
-          : busy ? <motion.div key="busy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <h3 className="result-title">{job?.stage ? stageLabels[job.stage] : 'Waiting for the engine'}</h3>
+          : jobBusy ? <motion.div key="busy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <h3 className="result-title">{job?.stage ? stageLabels[job.stage] : 'Waiting in queue'}</h3>
             <div className="progress-row result-progress"><span className="progress-track"><motion.span animate={{ width: `${((job?.stage_index ?? 0) / 6) * 100}%` }} transition={{ duration: 0.6, ease }} /></span><span>{job?.stage_index ?? 0} / 6</span></div>
           </motion.div>
           : <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
@@ -712,10 +891,125 @@ function Evaluations({ score, evaluating, evaluate }: { score: number; evaluatin
   const [metrics, setMetrics] = useState([true, true, true]);
   return <><Heading title="Evaluations" subtitle="A closer look at answer quality"><span className="tag">Sample results</span><button className="primary-button" disabled={evaluating} onClick={evaluate}>{evaluating ? <span className="spinner" /> : <Play size={15} />}{evaluating ? 'Evaluating…' : 'Preview evaluation'}</button></Heading><div className="evaluation-grid"><Card className="evaluation-overview"><div className="card-heading"><ColorIcon icon={ChartNoAxesCombined} color="peach" /><h2>Overall quality</h2></div><Gauge score={score} evaluating={evaluating} /><span className="centered-note">Baseline evaluation · Sample</span></Card><Card className="metrics-card" delay={0.1}><div className="card-heading"><h2>Evaluation metrics</h2><SlidersHorizontal size={17} /></div>{['Faithfulness', 'Answer relevancy', 'Context precision'].map((name, i) => <div className="metric-row" key={name}><div className="metric-label"><span>{name}</span><strong>{score ? [score, 91, 88][i] : '—'}{score ? '%' : ''}</strong><Toggle checked={metrics[i]} onChange={() => setMetrics(m => m.map((v, j) => i === j ? !v : v))} label={name} /></div><div className="metric-track"><motion.span className={['purple', 'blue', 'lime'][i]} initial={{ width: 0 }} animate={{ width: metrics[i] ? `${[score, score ? 91 : 0, score ? 88 : 0][i]}%` : '0%' }} transition={{ duration: 1.2, delay: i * 0.12 }} /></div></div>)}</Card></div><div className="section-heading"><h2>Evaluation sets</h2><span className="muted">1 sample set</span></div><Card className="dataset-card" delay={0.2}><ColorIcon icon={Layers3} color="blue" /><div><h3>Baseline questions</h3><small>20 sample questions · 3 metrics</small></div><span className="pill lime">Ready</span><button className="subtle-button" disabled={evaluating} onClick={evaluate}>Preview <ArrowRight size={15} /></button></Card></>;
 }
-function Runs({ runs, inspect }: { runs: Run[]; inspect: (title: string) => void }) {
+type QueueStatus = {
+  online: boolean; workers: { name: string; active_job_ids: number[] }[]; redis_waiting: number | null;
+  jobs: Record<JobStatus, number>; problems: string[];
+};
+const jobTone: Record<JobStatus, { label: string; color: string }> = {
+  queued: { label: 'Waiting', color: 'neutral' }, running: { label: 'Running', color: 'lilac' },
+  done: { label: 'Done', color: 'lime' }, failed: { label: 'Failed', color: 'peach' },
+};
+const fileName = (path: string) => path.split('/').pop() ?? path;
+function duration(job: Job) {
+  if (!job.started_at || !job.finished_at) return '—';
+  return `${((Date.parse(job.finished_at) - Date.parse(job.started_at)) / 1000).toFixed(1)}s`;
+}
+
+// Worker and queue state (GET /queue every 3s) plus the job history (GET /jobs, faster while something is moving).
+function useRunHistory() {
+  const [queue, setQueue] = useState<QueueStatus | null>(null);
+  const [jobs, setJobs] = useState<Job[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const moving = !!jobs?.some(isActive) || !!queue?.jobs.queued || !!queue?.jobs.running;
+  useEffect(() => {
+    let alive = true;
+    const readQueue = () => fetch(`${RAG_API}/queue`).then(async r => (r.ok ? r.json() : Promise.reject(await readError(r))))
+      .then(q => { if (alive) { setQueue(q); setError(null); } }).catch(e => alive && setError(String(e)));
+    readQueue();
+    const timer = setInterval(readQueue, 3000);
+    return () => { alive = false; clearInterval(timer); };
+  }, []);
+  useEffect(() => {
+    let alive = true;
+    const readJobs = () => fetch(`${RAG_API}/jobs?limit=100`).then(r => (r.ok ? r.json() : Promise.reject()))
+      .then(list => alive && setJobs(list)).catch(() => undefined);
+    readJobs();
+    const timer = setInterval(readJobs, moving ? 1000 : 5000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [moving]);
+  return { queue, jobs, error };
+}
+
+function JobModal({ job, close }: { job: Job; close: () => void }) {
+  const r = job.result;
+  return <Modal title={`Job #${job.id}`} close={close}>
+    <div className="node-summary"><ColorIcon icon={job.status === 'failed' ? CircleAlert : FileText} color={job.status === 'failed' ? 'peach' : 'lime'} /><div><h3>{r?.title ?? fileName(job.path)}</h3><small>{job.path}</small></div></div>
+    {job.error && <p className="result-error">{job.error}</p>}
+    <DetailRows rows={[
+      ['Status', jobTone[job.status].label],
+      ['Result', r ? resultTone[r.status].label : '—'],
+      ['Last stage', job.stage ? `${job.stage_index ?? '?'} / 6 · ${stageLabels[job.stage] ?? job.stage}` : '—'],
+      ['Chunks', r?.chunks ?? '—'],
+      ['Document', r ? `#${r.document_id}` : '—'],
+      ['Queued', shortTime(job.created_at)],
+      ['Took', duration(job)],
+      ['Environment', String(job.params?.env ?? '—')],
+      ['Document type', String(job.params?.doc_type ?? '—')],
+    ]} />
+  </Modal>;
+}
+
+// Run history: the Celery worker, what is waiting in Redis, and every ingest job the engine recorded.
+function Runs({ openPipeline }: { openPipeline: () => void }) {
+  const { queue, jobs, error } = useRunHistory();
   const [query, setQuery] = useState('');
-  const filtered = runs.filter(r => r.title.toLowerCase().includes(query.toLowerCase()));
-  return <><Heading title="Run history" /><div className="table-toolbar"><label className="search-field"><Search size={16} /><input aria-label="Search runs" placeholder="Search runs" value={query} onChange={e => setQuery(e.target.value)} /></label><span className="tag">Sample activity</span></div><Card className="table-card"><table><thead><tr><th>When</th><th>Pipeline / task</th><th>Source</th><th>Status</th><th /></tr></thead><tbody>{filtered.map((r, i) => <tr key={r.id}><td>{r.time}</td><td><span className="file-label">{i % 2 ? <ChartNoAxesCombined size={16} /> : <GitBranch size={16} />}{r.title}</span></td><td>Preview</td><td><span className="pill lime">{r.status}</span></td><td><IconButton icon={ArrowUpRight} label={`View ${r.title} run ${r.id}`} onClick={() => inspect(r.title)} /></td></tr>)}</tbody></table>{!filtered.length && <div className="empty-state compact"><p>No matching runs.</p></div>}</Card><div className="table-footer"><span>{filtered.length} {filtered.length === 1 ? 'run' : 'runs'}</span><span>All activity is from this UI preview</span></div></>;
+  const [open, setOpen] = useState<Job | null>(null);
+  const q = query.trim().toLowerCase();
+  const shown = (jobs ?? []).filter(j => !q || j.path.toLowerCase().includes(q) || String(j.id) === q || jobTone[j.status].label.toLowerCase() === q);
+  const runningId = queue?.workers.flatMap(w => w.active_job_ids)[0];
+  const runningJob = jobs?.find(j => j.id === runningId);
+  const waiting = queue ? queue.jobs.queued : 0;
+  const offline = !!error && !queue;
+
+  return <>
+    <Heading title="Run history" subtitle="Ingest jobs and the Celery worker that runs them">
+      <button className="subtle-button" onClick={openPipeline}><Play size={15} />New ingest</button>
+    </Heading>
+
+    <div className="queue-cards">
+      <Card className="queue-card" delay={0}>
+        <span className={`worker-dot ${queue?.online ? 'is-online' : ''}`}>{queue?.online && <motion.i initial={{ scale: 1, opacity: 0.5 }} animate={{ scale: 2.4, opacity: 0 }} transition={{ duration: 1.8, repeat: Infinity, ease: 'easeOut' }} />}</span>
+        <div><small>Worker</small><strong>{offline ? 'Engine offline' : !queue ? 'Checking…' : queue.online ? 'Online' : 'Offline'}</strong><em>{queue?.workers[0]?.name ?? (queue ? 'No worker answered' : '—')}</em></div>
+      </Card>
+      <Card className="queue-card" delay={0.05}>
+        <ColorIcon icon={runningJob ? LoaderCircle : Check} color={runningJob ? 'purple' : 'neutral'} small />
+        <div><small>Processing</small>
+          <AnimatePresence mode="wait" initial={false}><motion.strong key={runningJob?.id ?? 'idle'} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}>{runningJob ? fileName(runningJob.path) : 'Idle'}</motion.strong></AnimatePresence>
+          <em>{runningJob ? `Job #${runningJob.id} · ${runningJob.stage ? stageLabels[runningJob.stage] : 'starting'}` : 'Nothing running'}</em></div>
+      </Card>
+      <Card className="queue-card" delay={0.1}>
+        <ColorIcon icon={Clock3} color={waiting ? 'blue' : 'neutral'} small />
+        <div><small>Waiting</small><strong><CountUp value={waiting} /></strong><em>{queue?.redis_waiting != null ? `${queue.redis_waiting} message${queue.redis_waiting === 1 ? '' : 's'} in Redis` : 'Redis not reachable'}</em></div>
+      </Card>
+      <Card className="queue-card" delay={0.15}>
+        <ColorIcon icon={CheckCheck} color="lime" small />
+        <div><small>History</small><strong><CountUp value={queue?.jobs.done ?? 0} /> done</strong><em>{queue?.jobs.failed ?? 0} failed</em></div>
+      </Card>
+    </div>
+    {queue?.problems.length ? <p className="source-error queue-problems">{queue.problems.join(' · ')}</p> : null}
+
+    <div className="table-toolbar"><label className="search-field"><Search size={16} /><input aria-label="Search jobs" placeholder="Search file, job # or status" value={query} onChange={e => setQuery(e.target.value)} /></label><span className="tag">Latest 100 jobs</span></div>
+    <Card className="table-card documents-table" delay={0.2}>
+      <table>
+        <thead><tr><th>#</th><th>Document</th><th>Status</th><th>Result</th><th>Chunks</th><th>Took</th><th>Queued</th><th /></tr></thead>
+        <tbody>{shown.map((j, i) => <motion.tr key={j.id} layout initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 14) * 0.02, duration: 0.3 }} onClick={() => setOpen(j)}>
+          <td className="num">{j.id}</td>
+          <td><span className="file-label">{j.status === 'running' ? <LoaderCircle size={16} className="spin" /> : <FileText size={16} />}<span className="doc-name"><b>{j.result?.title ?? fileName(j.path)}</b><small>{j.result ? `${j.result.source_repo}/${j.result.source_path}` : j.path}</small></span></span></td>
+          <td><span className={`pill ${jobTone[j.status].color}`}>{jobTone[j.status].label}</span></td>
+          <td>{j.result ? resultTone[j.result.status].label : j.status === 'failed' ? `Stopped at ${j.stage ? stageLabels[j.stage] ?? j.stage : 'start'}` : j.stage ? stageLabels[j.stage] : '—'}</td>
+          <td className="num">{j.result?.chunks ?? '—'}</td>
+          <td className="num">{duration(j)}</td>
+          <td className="num">{shortTime(j.created_at)}</td>
+          <td><IconButton icon={ArrowUpRight} label={`Open job ${j.id}`} onClick={() => setOpen(j)} /></td>
+        </motion.tr>)}</tbody>
+      </table>
+      {jobs && !shown.length && <div className="empty-state compact"><p>{jobs.length ? 'No matching jobs.' : 'No ingest jobs yet.'}</p></div>}
+      {!jobs && <div className="empty-state compact"><p>{offline ? error : 'Loading…'}</p></div>}
+    </Card>
+    <div className="table-footer"><span>{shown.length} {shown.length === 1 ? 'job' : 'jobs'}</span><span>Recorded in ingest_jobs · run by Celery</span></div>
+
+    {open && <JobModal job={jobs?.find(j => j.id === open.id) ?? open} close={() => setOpen(null)} />}
+  </>;
 }
 function Conversations({ chats, open, create, remove }: { chats: Chat[]; open: (chat: Chat) => void; create: () => void; remove: (id: number) => void }) {
   const [query, setQuery] = useState('');
