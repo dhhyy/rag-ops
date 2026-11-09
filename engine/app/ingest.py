@@ -7,8 +7,10 @@
 - 문서는 원래 위치(git 저장소)에서 읽고, 그 저장소의 커밋을 출처로 기록한다.
 - 다시 돌려도 결과가 같다: 내용 해시가 같으면 건너뛰고, 다르면 옛 조각을 지우고 새로 넣는다.
 """
+# 타입 힌트를 문자열로 늦게 해석한다 (list[str] | None 같은 표기를 쓰기 위해).
 from __future__ import annotations
 
+# 표준 라이브러리만 쓴다. DB 드라이버(psycopg)는 connect()에서 필요할 때 불러온다.
 import argparse
 import hashlib
 import json
@@ -19,11 +21,13 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+# 경로와 한도 상수. 숫자를 바꾸면 TEI 설정(.env)도 같이 확인한다.
 ROOT = Path(__file__).resolve().parents[2]  # 저장소 루트 (.env 위치). engine/app/ingest.py 기준
 MAX_TOKENS = 2048   # .env의 EMBED_MAX_BATCH_TOKENS와 같아야 한다. 넘으면 TEI가 조용히 자른다
 EMBED_BATCH = 8     # TEI CPU 백엔드는 한 번에 8개까지 묶는다
 
 
+# 잘라 낸 조각 하나. 어느 제목 아래에 있었는지(경로)와 원문을 함께 들고 다닌다.
 @dataclass
 class Section:
     heading_path: list[str]  # [문서 제목, ## 제목, ### 제목]
@@ -32,6 +36,7 @@ class Section:
 
 # ---------- 설정 ----------
 
+# 루트 .env를 읽어 dict로 돌려준다. 주석·빈 줄은 건너뛰고 KEY=VALUE 줄만 본다.
 def load_env() -> dict[str, str]:
     env = {}
     for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
@@ -44,6 +49,7 @@ def load_env() -> dict[str, str]:
 
 # ---------- 출처 ----------
 
+# 문서가 들어 있는 git 저장소를 찾아 출처(저장소·경로·커밋)를 만든다.
 def git_source(path: Path) -> tuple[str, str, str]:
     """(저장소 이름, 저장소 안 경로, 커밋). 커밋 후 고친 내용이 있으면 커밋 뒤에 -dirty를 붙인다."""
     top = Path(subprocess.check_output(["git", "-C", str(path.parent), "rev-parse", "--show-toplevel"], text=True).strip())
@@ -59,6 +65,7 @@ def git_source(path: Path) -> tuple[str, str, str]:
 
 # ---------- 자르기 ----------
 
+# 문서 맨 위 머리말(YAML 비슷한 부분)을 떼어 내고, 메타데이터와 본문으로 나눈다.
 def parse_front_matter(text: str) -> tuple[dict[str, str], str]:
     """맨 위 --- ... --- 머리말에서 한 줄짜리 값만 읽는다 (title, status 등)."""
     meta: dict[str, str] = {}
@@ -73,6 +80,7 @@ def parse_front_matter(text: str) -> tuple[dict[str, str], str]:
     return meta, text
 
 
+# 청킹: 본문을 ##/### 제목 기준으로 잘라 Section 목록을 만든다.
 def split_sections(text: str, title: str) -> list[Section]:
     """## / ### 제목마다 자른다. ``` 코드 블록 안의 # 줄은 제목으로 보지 않는다."""
     sections: list[Section] = []
@@ -81,12 +89,14 @@ def split_sections(text: str, title: str) -> list[Section]:
     buf: list[str] = []
     in_code = False
 
+    # 지금까지 모은 줄(buf)을 조각 하나로 확정한다. 빈 조각은 버린다.
     def flush():
         body = "\n".join(buf).strip()
         if body:
             path = [title] + [h for h in (h2, h3) if h]
             sections.append(Section(path, body))
 
+    # 한 줄씩 보면서 코드 블록 안팎을 추적하고, 제목 줄을 만나면 이전 조각을 닫는다.
     for line in text.splitlines():
         if line.lstrip().startswith("```"):
             in_code = not in_code
@@ -103,6 +113,7 @@ def split_sections(text: str, title: str) -> list[Section]:
     return sections
 
 
+# 임베딩 모델에 넣을 글을 만든다. 조각 앞에 제목 경로를 붙여 문맥을 보탠다(방식 B).
 def make_embed_text(heading_path: list[str], body: str) -> str:
     """임베딩할 글을 만든다. 방식 B: 조각 앞에 제목 경로를 붙인다.
 
@@ -123,12 +134,14 @@ def make_embed_text(heading_path: list[str], body: str) -> str:
 
 # ---------- 임베딩 ----------
 
+# TEI(임베딩 서버)에 JSON을 POST하고 응답 JSON을 돌려준다. 외부 패키지 없이 urllib만 쓴다.
 def tei_post(url: str, payload: dict) -> list:
     req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=120) as r:
         return json.load(r)
 
 
+# 조각마다 토큰 수를 TEI /tokenize로 센다. 한도(MAX_TOKENS) 초과를 미리 잡기 위해서다.
 def count_tokens(base: str, texts: list[str]) -> list[int]:
     out = []
     for t in texts:
@@ -136,6 +149,7 @@ def count_tokens(base: str, texts: list[str]) -> list[int]:
     return out
 
 
+# 조각 글을 EMBED_BATCH개씩 묶어 TEI /embed로 보내고, 벡터 목록을 순서대로 돌려준다.
 def embed(base: str, texts: list[str]) -> list[list[float]]:
     vecs: list[list[float]] = []
     for i in range(0, len(texts), EMBED_BATCH):
@@ -145,6 +159,7 @@ def embed(base: str, texts: list[str]) -> list[list[float]]:
 
 # ---------- 저장 ----------
 
+# .env 값으로 PostgreSQL에 접속한다. search.py도 이 함수를 가져다 쓴다.
 def connect(env: dict[str, str]):
     import psycopg  # 미리보기에서는 필요 없어서 여기서 불러온다
 
@@ -152,6 +167,7 @@ def connect(env: dict[str, str]):
                            f"user={env['POSTGRES_USER']} password={env['POSTGRES_PASSWORD']}")
 
 
+# 같은 문서가 같은 해시로 이미 저장돼 있는지 본다. 같으면 임베딩부터 건너뛴다.
 def unchanged(env: dict[str, str], doc: dict) -> bool:
     """이미 같은 내용이 들어 있으면 True. 임베딩 전에 확인해서 계산을 아낀다."""
     with connect(env) as conn:
@@ -162,6 +178,7 @@ def unchanged(env: dict[str, str], doc: dict) -> bool:
     return bool(row and row[0] == doc["content_hash"])
 
 
+# 문서 1행과 조각 여러 행을 한 트랜잭션으로 저장한다. 내용이 바뀌었으면 옛 문서를 지우고 다시 넣는다.
 def save(env: dict[str, str], doc: dict, rows: list[tuple]) -> str:
     with connect(env) as conn:  # 블록이 끝나면 커밋, 오류면 전부 되돌린다
         old = conn.execute(
@@ -191,7 +208,9 @@ def save(env: dict[str, str], doc: dict, rows: list[tuple]) -> str:
 
 # ---------- 실행 ----------
 
+# 명령줄 진입점: 인자 읽기 → 자르기 → (미리보기 또는) 임베딩 → 저장 순서로 진행한다.
 def main() -> None:
+    # 명령줄 인자. 메타데이터(환경·자료 성격·검증 상태 등)는 여기서 받아 documents에 기록한다.
     ap = argparse.ArgumentParser(description="문서 1개 적재")
     ap.add_argument("path", type=Path)
     ap.add_argument("--dry-run", action="store_true", help="자르기 결과만 출력")
@@ -202,6 +221,7 @@ def main() -> None:
     ap.add_argument("--external-ok", action="store_true", help="외부 LLM 전송 가능")
     a = ap.parse_args()
 
+    # 문서를 읽고 머리말 분리 → 조각 나누기 → 출처 확인까지 한다. DB·TEI는 아직 안 쓴다.
     raw = a.path.read_text(encoding="utf-8")
     meta, text = parse_front_matter(raw)
     title = meta.get("title") or a.path.stem
@@ -209,6 +229,7 @@ def main() -> None:
     repo, rel, commit = git_source(a.path)
     print(f"{repo}/{rel} @ {commit[:12]}  title={title!r}  sections={len(sections)}")
 
+    # --dry-run이면 조각 목록과 임베딩할 글 예시만 보여 주고 끝낸다.
     if a.dry_run:
         for i, s in enumerate(sections):
             print(f"[{i:02d}] {len(s.body):5d}자  {' > '.join(s.heading_path[1:]) or '(머리말·도입)'}")
@@ -219,6 +240,7 @@ def main() -> None:
             print(f"\n(make_embed_text 미작성: {e})")
         return
 
+    # documents 테이블에 넣을 값. content_hash는 원문 전체의 sha256으로, 변경 여부 판단에 쓴다.
     env = load_env()
     doc = {
         "source_repo": repo, "source_path": rel, "source_commit": commit,
@@ -230,12 +252,14 @@ def main() -> None:
         print("skip (내용 같음)")
         return
 
+    # 임베딩할 글을 만들고 토큰 수를 검사한다. 하나라도 한도를 넘으면 잘리기 전에 멈춘다.
     base = f"http://127.0.0.1:{env['EMBED_PORT']}"
     embed_texts = [make_embed_text(s.heading_path, s.body) for s in sections]
     tokens = count_tokens(base, embed_texts)
     over = [i for i, t in enumerate(tokens) if t > MAX_TOKENS]
     if over:
         sys.exit(f"{MAX_TOKENS}토큰을 넘는 조각: {over}. 잘림을 막기 위해 중단")
+    # 벡터를 받아 chunks 행으로 묶은 뒤 저장한다. 벡터는 pgvector가 읽는 '[...]' 문자열로 넘긴다.
     vecs = embed(base, embed_texts)
     rows = [
         (i, " > ".join(s.heading_path), s.body, t, n, json.dumps(v))
@@ -245,5 +269,6 @@ def main() -> None:
     print(f"tokens: min={min(tokens)} max={max(tokens)} total={sum(tokens)}")
 
 
+# 직접 실행할 때만 main()을 돈다. search.py에서 import할 때는 실행되지 않는다.
 if __name__ == "__main__":
     main()
