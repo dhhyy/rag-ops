@@ -1,0 +1,22 @@
+[
+ {
+  "run_id": "20261109-173410_bge-m3_heading-b",
+  "created_at": "2026-11-09T17:34:10+09:00",
+  "label": "baseline",
+  "model": "bge-m3",
+  "chunking": "heading-b",
+  "questions_sha256": "aeb7dd1bae3b",
+  "chunks": 76,
+  "summary": {
+   "questions": 10,
+   "recall@1": 0.7,
+   "recall@3": 1.0,
+   "recall@5": 1.0,
+   "mrr": 0.8
+  },
+  "latency_ms": {
+   "mean": 317.0,
+   "p95": 445.1
+  }
+ }
+]

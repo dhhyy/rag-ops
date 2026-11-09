@@ -144,7 +144,7 @@ function App() {
         {page === 'knowledge' && <Knowledge openPipeline={() => navigate('pipeline')} />}
         {page === 'pipeline' && <Pipeline enabled={enabled} flip={flip} />}
         {page === 'playground' && <Playground chat={selectedChat} send={send} reset={() => setSelectedChat(null)} />}
-        {page === 'evaluations' && <Evaluations score={score} evaluating={evaluating} evaluate={evaluate} />}
+        {page === 'evaluations' && <Evaluations />}
         {page === 'runs' && <Runs openPipeline={() => navigate('pipeline')} />}
         {page === 'conversations' && <Conversations chats={chats} open={chat => { setSelectedChat(chat); navigate('playground'); }} create={() => { setSelectedChat(null); navigate('playground'); }} remove={id => setChats(c => c.filter(chat => chat.id !== id))} />}
         {page === 'settings' && <Settings settings={settings} save={setSettings} notify={notify} />}
@@ -887,9 +887,271 @@ function Playground({ chat, send, reset }: { chat: Chat | null; send: (text: str
   return <><Heading title="Playground"><button className="subtle-button" onClick={reset}><Plus size={16} />New conversation</button></Heading><Card className="chat-panel"><div className="chat-toolbar"><span><ColorIcon icon={GitBranch} color="purple" small />Retrieval pipeline <ChevronDown size={13} /></span><span className="tag">Demo mode</span></div><div className="chat-body">{chat ? <><motion.div className="chat-message user-message" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>{chat.prompt}</motion.div><motion.div className="chat-answer" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}><ColorIcon icon={Sparkles} color="lilac" /><div><h3>rag-ops</h3><p>This is a preview conversation. Once a local model and knowledge base are connected, your answer and source citations will appear here.</p><span className="tag">Sample response · No model connected</span></div></motion.div></> : <div className="chat-empty"><div className="empty-orb"><Sparkles size={31} strokeWidth={1.2} /></div><h2>Ask your knowledge.</h2><p>A space to try your retrieval pipeline.</p><div className="suggestion-row">{['Summarize my documents', 'Find related concepts'].map(t => <button key={t} onClick={() => setInput(t)}>{t}<ArrowUpRight size={14} /></button>)}</div></div>}</div><form className="composer" onSubmit={e => { e.preventDefault(); if (input.trim()) { send(input.trim()); setInput(''); } }}><input aria-label="Your message" value={input} onChange={e => setInput(e.target.value)} placeholder="Ask a question about your documents…" maxLength={2000} /><button className="send-button" disabled={!input.trim()} aria-label="Send message"><ArrowUp size={19} /></button></form><div className="composer-caption">Local workspace · Preview responses only</div></Card></>;
 }
 function ArrowUp({ size }: { size: number }) { return <ArrowDown size={size} style={{ transform: 'rotate(180deg)' }} />; }
-function Evaluations({ score, evaluating, evaluate }: { score: number; evaluating: boolean; evaluate: () => void }) {
-  const [metrics, setMetrics] = useState([true, true, true]);
-  return <><Heading title="Evaluations" subtitle="A closer look at answer quality"><span className="tag">Sample results</span><button className="primary-button" disabled={evaluating} onClick={evaluate}>{evaluating ? <span className="spinner" /> : <Play size={15} />}{evaluating ? 'Evaluating…' : 'Preview evaluation'}</button></Heading><div className="evaluation-grid"><Card className="evaluation-overview"><div className="card-heading"><ColorIcon icon={ChartNoAxesCombined} color="peach" /><h2>Overall quality</h2></div><Gauge score={score} evaluating={evaluating} /><span className="centered-note">Baseline evaluation · Sample</span></Card><Card className="metrics-card" delay={0.1}><div className="card-heading"><h2>Evaluation metrics</h2><SlidersHorizontal size={17} /></div>{['Faithfulness', 'Answer relevancy', 'Context precision'].map((name, i) => <div className="metric-row" key={name}><div className="metric-label"><span>{name}</span><strong>{score ? [score, 91, 88][i] : '—'}{score ? '%' : ''}</strong><Toggle checked={metrics[i]} onChange={() => setMetrics(m => m.map((v, j) => i === j ? !v : v))} label={name} /></div><div className="metric-track"><motion.span className={['purple', 'blue', 'lime'][i]} initial={{ width: 0 }} animate={{ width: metrics[i] ? `${[score, score ? 91 : 0, score ? 88 : 0][i]}%` : '0%' }} transition={{ duration: 1.2, delay: i * 0.12 }} /></div></div>)}</Card></div><div className="section-heading"><h2>Evaluation sets</h2><span className="muted">1 sample set</span></div><Card className="dataset-card" delay={0.2}><ColorIcon icon={Layers3} color="blue" /><div><h3>Baseline questions</h3><small>20 sample questions · 3 metrics</small></div><span className="pill lime">Ready</span><button className="subtle-button" disabled={evaluating} onClick={evaluate}>Preview <ArrowRight size={15} /></button></Card></>;
+// ---------- Evaluations: retrieval scores from eval/run.py and the embedding map ----------
+type EvalSummary = { questions: number; 'recall@1': number | null; 'recall@3': number | null; 'recall@5': number | null; mrr: number | null };
+type EvalHit = { chunk_id: number; score: number; correct: boolean };
+type EvalQuestion = {
+  id: string; kind: string; question: string; answer: string; env: string; abstain: boolean; use: string;
+  evidence: { path: string; heading: string }[]; gold_chunk_ids: number[]; missing_evidence: boolean;
+  rank: number | null; top1_score: number | null; retrieved: EvalHit[];
+  latency_ms: { embed: number; db: number; total: number }; x: number; y: number;
+};
+type EvalChunk = { id: number; path: string; title: string; index: number; heading: string; heading_path: string; snippet: string; x: number; y: number };
+type EvalMeta = {
+  run_id: string; created_at: string; label: string; model: string; model_revision: string; chunking: string;
+  top_k: number; recall_at: number[]; code_commit: string; questions_file: string; questions_sha256: string;
+  documents: number; chunks: number; projection: { method: string; fit_on: string; explained: number[] };
+};
+type EvalRun = {
+  meta: EvalMeta; questions: EvalQuestion[]; chunks: EvalChunk[];
+  summary: { all: EvalSummary; by_kind: Record<string, EvalSummary>; abstain: { questions: number; top1_scores: number[] }; latency_ms: { mean: number; p95: number } };
+};
+type EvalIndexEntry = { run_id: string; created_at: string; label: string; model: string; chunking: string; chunks: number; summary: EvalSummary };
+
+const EVAL_API = '/api/eval';
+const SHOWN_HITS = 5;
+const pct = (v: number | null | undefined) => v == null ? '—' : `${Math.round(v * 100)}%`;
+
+// 결과 하나가 어떤 상태인지: 1위 / 상위 5위 안 / 그 밖 / 못 찾음 / 답 없는 질문.
+function evalOutcome(q: EvalQuestion): { label: string; tone: 'lime' | 'blue' | 'peach' | 'neutral'; color: string } {
+  if (q.abstain) return { label: 'No answer', tone: 'neutral', color: '#b3a9bd' };
+  if (q.rank === 1) return { label: '#1', tone: 'lime', color: '#b9c43c' };
+  if (q.rank && q.rank <= SHOWN_HITS) return { label: `#${q.rank}`, tone: 'blue', color: '#8ea6ec' };
+  if (q.rank) return { label: `#${q.rank}`, tone: 'peach', color: '#f29e70' };
+  return { label: 'Missed', tone: 'peach', color: '#f29e70' };
+}
+
+function useEvalRuns() {
+  const [index, setIndex] = useState<EvalIndexEntry[] | null>(null);
+  const [runId, setRunId] = useState<string | null>(null);
+  const [run, setRun] = useState<EvalRun | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    fetch(`${EVAL_API}/index.json`, { cache: 'no-store' })
+      .then(r => r.status === 404 ? [] : r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((list: EvalIndexEntry[]) => { setIndex(list); setRunId(id => id ?? list[0]?.run_id ?? null); })
+      .catch(e => setError(`Could not load evaluation runs (${e.message})`));
+  }, []);
+
+  useEffect(() => {
+    if (!runId) return;
+    let alive = true;
+    fetch(`${EVAL_API}/${encodeURIComponent(runId)}.json`, { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((data: EvalRun) => { if (alive) { setRun(data); setError(''); } })
+      .catch(e => alive && setError(`Could not load ${runId} (${e.message})`));
+    return () => { alive = false; };
+  }, [runId]);
+
+  return { index, run, runId, setRunId, error };
+}
+
+// 요소 크기를 따라가는 훅. 지도는 폭·높이가 바뀌어도 x·y 축척을 같게 유지해야 하므로 실제 픽셀 크기가 필요하다.
+function useSize<T extends HTMLElement>() {
+  const ref = useRef<T>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => setSize({ width: entry.contentRect.width, height: entry.contentRect.height }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, size] as const;
+}
+
+function MetricCard({ icon, color, label, value, note, delay }: { icon: LucideIcon; color: string; label: string; value: string; note: string; delay: number }) {
+  return <Card className="queue-card" delay={delay}><ColorIcon icon={icon} color={color} small /><div><small>{label}</small><strong>{value}</strong><em title={note}>{note}</em></div></Card>;
+}
+
+// 1위 점수 분포: 정답 있는 질문과 답 없는 질문을 같은 눈금에 찍는다. 겹치면 점수 하나로는 보류를 가를 수 없다.
+function ScoreStrip({ run, selected, select }: { run: EvalRun; selected: string | null; select: (id: string) => void }) {
+  const scored = run.questions.filter(q => q.top1_score != null);
+  if (!scored.length) return null;
+  const values = scored.map(q => q.top1_score!);
+  const lo = Math.floor((Math.min(...values) - 0.02) * 50) / 50;
+  const hi = Math.ceil((Math.max(...values) + 0.02) * 50) / 50;
+  const pos = (v: number) => `${((v - lo) / (hi - lo)) * 100}%`;
+  const answerable = scored.filter(q => !q.abstain).map(q => q.top1_score!);
+  const noAnswer = scored.filter(q => q.abstain).map(q => q.top1_score!);
+  const overlap = answerable.length && noAnswer.length && Math.max(...noAnswer) >= Math.min(...answerable);
+  return <Card className="eval-score-card" delay={0.2}>
+    <div className="eval-score-head"><small>Top-1 score</small><em>{noAnswer.length ? overlap ? 'No-answer questions overlap answerable ones' : 'No-answer questions score lower' : 'No no-answer questions'}</em></div>
+    {[{ label: 'Has answer', abstain: false }, { label: 'No answer', abstain: true }].map(row => <div className="eval-score-row" key={row.label}>
+      <span>{row.label}</span>
+      <div className="eval-score-track">
+        {scored.filter(q => q.abstain === row.abstain).map(q => <button key={q.id} className={`eval-score-dot ${selected === q.id ? 'is-selected' : ''}`} style={{ left: pos(q.top1_score!), background: evalOutcome(q).color }} onClick={() => select(q.id)} aria-label={`${q.id} top-1 score ${q.top1_score!.toFixed(3)}`} title={`${q.id} · ${q.top1_score!.toFixed(3)}`} />)}
+      </div>
+    </div>)}
+    <div className="eval-score-axis"><span>{lo.toFixed(2)}</span><span>{hi.toFixed(2)}</span></div>
+  </Card>;
+}
+
+type MapTip = { x: number; y: number; title: string; sub: string } | null;
+
+// 임베딩 지도: 조각(점)과 질문(마름모)을 PCA 2축에 찍고, 고른 질문에서 상위 5개 조각으로 선을 긋는다.
+function EvalMap({ run, selected, select, focusChunk, setFocusChunk }: {
+  run: EvalRun; selected: EvalQuestion | null; select: (id: string) => void;
+  focusChunk: number | null; setFocusChunk: (id: number | null) => void;
+}) {
+  const [ref, { width, height }] = useSize<HTMLDivElement>();
+  const [tip, setTip] = useState<MapTip>(null);
+  const reduced = useReducedMotion();
+  const chunkById = new Map(run.chunks.map(c => [c.id, c]));
+  const pts = [...run.chunks, ...run.questions];
+  const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const pad = 26;
+  // x·y에 같은 축척을 써야 그림 속 거리가 2D 투영 거리 그대로 보인다.
+  const scale = Math.min((width - pad * 2) / (x1 - x0 || 1), (height - pad * 2) / (y1 - y0 || 1));
+  const ox = (width - (x1 - x0) * scale) / 2, oy = (height - (y1 - y0) * scale) / 2;
+  const sx = (x: number) => ox + (x - x0) * scale;
+  const sy = (y: number) => height - (oy + (y - y0) * scale);
+
+  const top = selected ? selected.retrieved.slice(0, SHOWN_HITS) : [];
+  const rankOf = new Map(top.map((h, i) => [h.chunk_id, i + 1]));
+  const gold = new Set(selected?.gold_chunk_ids ?? []);
+  const focusPath = focusChunk != null ? chunkById.get(focusChunk)?.path : undefined;
+  const explained = run.meta.projection.explained.reduce((a, b) => a + b, 0);
+
+  return <Card className="eval-map-card" delay={0.25}>
+    <div className="card-heading"><div><h2>Embedding map</h2><small>{run.chunks.length} chunks · {run.questions.length} questions · PCA fitted on chunks</small></div><span className="tag" title="Share of the original variance the two axes keep">2 axes keep {Math.round(explained * 100)}%</span></div>
+    <div className="eval-map" ref={ref} onMouseLeave={() => { setTip(null); setFocusChunk(null); }}>
+      {width > 0 && height > 0 && <svg width={width} height={height} role="img" aria-label="Chunks and questions projected to two dimensions">
+        {/* 선택한 질문 → 상위 5개 조각 */}
+        {selected && top.map((h, i) => { const c = chunkById.get(h.chunk_id); if (!c) return null; return <motion.line key={`${selected.id}-${h.chunk_id}`} x1={sx(selected.x)} y1={sy(selected.y)} x2={sx(c.x)} y2={sy(c.y)} className={`eval-link ${h.correct ? 'is-correct' : ''}`} initial={{ pathLength: reduced ? 1 : 0, opacity: 0 }} animate={{ pathLength: 1, opacity: 1 - i * 0.14 }} transition={{ duration: 0.45, delay: reduced ? 0 : i * 0.05, ease }} />; })}
+        {run.chunks.map(c => {
+          const rank = rankOf.get(c.id);
+          const cls = ['eval-chunk', rank ? 'is-hit' : '', gold.has(c.id) ? 'is-gold' : '', focusPath && c.path === focusPath ? 'is-doc' : '', focusChunk === c.id ? 'is-focus' : ''].filter(Boolean).join(' ');
+          return <g key={c.id} transform={`translate(${sx(c.x)} ${sy(c.y)})`} className={cls}
+            onMouseEnter={() => { setFocusChunk(c.id); setTip({ x: sx(c.x), y: sy(c.y), title: c.heading, sub: `${c.title} · chunk ${c.index}${rank ? ` · rank ${rank}` : ''}` }); }}>
+            {gold.has(c.id) && <circle r={8.5} className="eval-gold-ring" />}
+            <circle r={rank ? 5.5 : 4} />
+            {rank && <text y={-10} textAnchor="middle">{rank}</text>}
+          </g>;
+        })}
+        {run.questions.map(q => {
+          const on = selected?.id === q.id, o = evalOutcome(q), s = on ? 7 : 5;
+          return <g key={q.id} transform={`translate(${sx(q.x)} ${sy(q.y)})`} className={`eval-question ${on ? 'is-selected' : ''} ${q.abstain ? 'is-abstain' : ''}`}
+            onClick={() => select(q.id)} onMouseEnter={() => setTip({ x: sx(q.x), y: sy(q.y), title: q.question, sub: `${q.id} · ${q.kind} · ${o.label}` })}>
+            <rect x={-s} y={-s} width={s * 2} height={s * 2} transform="rotate(45)" style={{ fill: q.abstain ? '#fff' : o.color, stroke: q.abstain ? o.color : undefined }} />
+            {on && <text y={-13} textAnchor="middle">{q.id}</text>}
+          </g>;
+        })}
+      </svg>}
+      <AnimatePresence>{tip && <motion.div className="eval-tip" style={{ left: Math.min(tip.x, width - 230), top: tip.y + 14 }} initial={{ opacity: 0, y: -3 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.12 }}><b>{tip.title}</b><small>{tip.sub}</small></motion.div>}</AnimatePresence>
+    </div>
+    <div className="eval-legend">
+      <span><i className="lg-chunk" />Chunk</span><span><i className="lg-hit" />Retrieved (rank)</span><span><i className="lg-gold" />Expected evidence</span>
+      <span><i className="lg-q" style={{ background: '#b9c43c' }} />#1</span><span><i className="lg-q" style={{ background: '#8ea6ec' }} />#2–5</span><span><i className="lg-q" style={{ background: '#f29e70' }} />Missed</span><span><i className="lg-q is-hollow" />No answer</span>
+    </div>
+    <p className="eval-caption">Close on this map does not always mean close in search: search uses all 1024 dimensions, the map shows two.</p>
+  </Card>;
+}
+
+function EvalDetail({ q, run, setFocusChunk }: { q: EvalQuestion | null; run: EvalRun; setFocusChunk: (id: number | null) => void }) {
+  if (!q) return <Card className="eval-detail" delay={0.3}><div className="empty-state compact"><p>Select a question.</p></div></Card>;
+  const chunkById = new Map(run.chunks.map(c => [c.id, c]));
+  const o = evalOutcome(q);
+  const hits = q.retrieved.slice(0, SHOWN_HITS);
+  const rankOfChunk = new Map(q.retrieved.map((h, i) => [h.chunk_id, i + 1]));
+  const scores = q.retrieved.map(h => h.score);
+  const lo = Math.min(...scores) - 0.05, hi = Math.max(...scores);
+  return <Card className="eval-detail" delay={0.3}>
+    <AnimatePresence mode="wait" initial={false}>
+      <motion.div key={q.id} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.2 }}>
+        <div className="eval-detail-head"><span className="eval-id">{q.id}</span><span className="tag">{q.kind}</span><span className="tag">{q.use}</span><span className={`pill ${o.tone}`}>{o.label}</span></div>
+        <h3 className="eval-detail-question">{q.question}</h3>
+        <dl className="eval-answer"><dt>Expected</dt><dd>{q.answer}</dd></dl>
+
+        <h4 className="eval-subhead">Evidence</h4>
+        {q.evidence.length ? <ul className="eval-evidence">{q.evidence.map(e => {
+          const chunk = run.chunks.find(c => c.path === e.path && c.heading === e.heading);
+          const rank = chunk ? rankOfChunk.get(chunk.id) : undefined;
+          return <li key={`${e.path}#${e.heading}`} onMouseEnter={() => chunk && setFocusChunk(chunk.id)} onMouseLeave={() => setFocusChunk(null)}>
+            <span className={`eval-rank-badge ${rank ? (rank <= SHOWN_HITS ? 'is-in' : 'is-low') : 'is-out'}`}>{rank ?? '—'}</span>
+            <span className="doc-name"><b>{e.heading}</b><small>{e.path}{chunk ? '' : ' · not in index'}</small></span>
+          </li>;
+        })}</ul> : <p className="eval-note">No evidence: this question should be declined. The decline rule is not set yet — the top-1 score was <b>{q.top1_score?.toFixed(3)}</b>.</p>}
+
+        <h4 className="eval-subhead">Retrieved · top {SHOWN_HITS}</h4>
+        <ol className="eval-hits">{hits.map((h, i) => { const c = chunkById.get(h.chunk_id); return <li key={h.chunk_id} className={h.correct ? 'is-correct' : ''} onMouseEnter={() => setFocusChunk(h.chunk_id)} onMouseLeave={() => setFocusChunk(null)}>
+          <span className="eval-hit-rank">{i + 1}</span>
+          <span className="doc-name"><b>{c?.heading ?? `chunk ${h.chunk_id}`}</b><small>{c?.title}</small></span>
+          <span className="eval-hit-score"><em>{h.score.toFixed(3)}</em><i><motion.span initial={{ width: 0 }} animate={{ width: `${Math.max(4, ((h.score - lo) / (hi - lo || 1)) * 100)}%` }} transition={{ duration: 0.5, delay: i * 0.04, ease }} /></i></span>
+          {h.correct ? <Check size={14} className="eval-hit-check" /> : <span className="eval-hit-check" />}
+        </li>; })}</ol>
+        <p className="eval-latency">Embed {q.latency_ms.embed.toFixed(0)} ms · DB {q.latency_ms.db.toFixed(0)} ms</p>
+      </motion.div>
+    </AnimatePresence>
+  </Card>;
+}
+
+type EvalFilter = 'all' | 'missed' | string;
+
+function Evaluations() {
+  const { index, run, runId, setRunId, error } = useEvalRuns();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<EvalFilter>('all');
+  const [focusChunk, setFocusChunk] = useState<number | null>(null);
+
+  // 실행 결과를 바꿔도 같은 질문을 계속 보게 하고, 없으면 첫 질문을 고른다.
+  useEffect(() => {
+    if (run && !run.questions.some(q => q.id === selectedId)) setSelectedId(run.questions[0]?.id ?? null);
+  }, [run, selectedId]);
+
+  if (index && !index.length) return <>
+    <Heading title="Evaluations" subtitle="Retrieval quality on the evaluation set" />
+    <Card className="empty-state"><ColorIcon icon={ChartNoAxesCombined} color="peach" /><h2>No evaluation runs yet</h2><p>Run <code>.venv/bin/python eval/run.py</code> from the repository root.<br />Results are written to eval/results/.</p></Card>
+  </>;
+
+  const meta = run?.meta, s = run?.summary;
+  const kinds = run ? [...new Set(run.questions.map(q => q.kind))] : [];
+  const shown = (run?.questions ?? []).filter(q => filter === 'all' ? true : filter === 'missed' ? !q.abstain && q.rank !== 1 : q.kind === filter);
+  const selected = run?.questions.find(q => q.id === selectedId) ?? null;
+  const byKind = s ? Object.entries(s.by_kind).map(([k, v]) => `${k} ${pct(v['recall@1'])}`).join(' · ') : '';
+  const graded = s?.all.questions ?? 0;
+  const firstHits = run ? run.questions.filter(q => !q.abstain && q.rank === 1).length : 0;
+
+  return <>
+    <Heading title="Evaluations" subtitle={meta ? `${meta.model} · ${meta.chunking} · ${meta.documents} documents · ${meta.chunks} chunks · code ${meta.code_commit}` : 'Retrieval quality on the evaluation set'}>
+      {index && index.length > 0 && <label className="eval-run-select"><span>Run</span><select value={runId ?? ''} onChange={e => setRunId(e.target.value)} aria-label="Evaluation run">
+        {index.map(e => <option key={e.run_id} value={e.run_id}>{shortTime(e.created_at)}{e.label ? ` · ${e.label}` : ''} · {e.model} · R@1 {pct(e.summary['recall@1'])}</option>)}
+      </select><ChevronDown size={14} /></label>}
+    </Heading>
+    {error && <p className="source-error queue-problems">{error}</p>}
+
+    {run && s && meta ? <>
+      <div className="eval-metrics">
+        <MetricCard icon={Check} color="lime" label="Recall@1" value={pct(s.all['recall@1'])} note={`${firstHits} of ${graded} · ${byKind}`} delay={0} />
+        <MetricCard icon={Layers3} color="blue" label="Recall@3 · @5" value={`${pct(s.all['recall@3'])} · ${pct(s.all['recall@5'])}`} note="Evidence anywhere in the top 3 / 5" delay={0.05} />
+        <MetricCard icon={ChartNoAxesCombined} color="purple" label="MRR" value={s.all.mrr?.toFixed(2) ?? '—'} note="Mean of 1 / rank of first evidence" delay={0.1} />
+        <MetricCard icon={Clock3} color="neutral" label="Latency" value={`${Math.round(s.latency_ms.mean)} ms`} note={`p95 ${Math.round(s.latency_ms.p95)} ms · embed + DB`} delay={0.15} />
+        <ScoreStrip run={run} selected={selectedId} select={setSelectedId} />
+      </div>
+
+      <div className="eval-workspace">
+        <Card className="eval-list" delay={0.2}>
+          <div className="eval-filters" role="tablist" aria-label="Filter questions">
+            {[{ id: 'all', label: `All ${run.questions.length}` }, ...kinds.map(k => ({ id: k, label: `${k} ${run.questions.filter(q => q.kind === k).length}` })), { id: 'missed', label: `Not #1 ${run.questions.filter(q => !q.abstain && q.rank !== 1).length}` }].map(f =>
+              <button key={f.id} role="tab" aria-selected={filter === f.id} className={`eval-filter ${filter === f.id ? 'is-active' : ''}`} onClick={() => setFilter(f.id)}>{f.label}</button>)}
+          </div>
+          <div className="eval-questions">
+            {shown.map(q => { const o = evalOutcome(q); return <button key={q.id} className={`eval-q ${selectedId === q.id ? 'is-selected' : ''}`} onClick={() => setSelectedId(q.id)} aria-pressed={selectedId === q.id}>
+              <span className="eval-id">{q.id}</span>
+              <span className="eval-q-text"><b>{q.question}</b><small>{q.kind} · top-1 {q.top1_score?.toFixed(3)}</small></span>
+              <span className={`pill ${o.tone}`}>{o.label}</span>
+            </button>; })}
+            {!shown.length && <div className="empty-state compact"><p>No questions in this filter.</p></div>}
+          </div>
+          <div className="eval-list-foot"><span>{meta.questions_file}</span><span>sha {meta.questions_sha256}</span></div>
+        </Card>
+        <EvalMap run={run} selected={selected} select={setSelectedId} focusChunk={focusChunk} setFocusChunk={setFocusChunk} />
+        <EvalDetail q={selected} run={run} setFocusChunk={setFocusChunk} />
+      </div>
+    </> : !error && <Card className="empty-state compact"><p>Loading evaluation…</p></Card>}
+  </>;
 }
 type QueueStatus = {
   online: boolean; workers: { name: string; active_job_ids: number[] }[]; redis_waiting: number | null;

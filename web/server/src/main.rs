@@ -25,6 +25,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !assets.join("index.html").is_file() {
         return Err("Frontend build missing. Run npm install && npm run build first.".into());
     }
+    // 평가 결과 파일(eval/run.py가 만든 JSON)을 읽기 전용으로 내보낸다. 엔진 컨테이너에는 eval 폴더가 없어서 여기서 준다.
+    let eval_dir = env::var("RAG_EVAL_DIR").map(PathBuf::from).unwrap_or_else(|_| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../eval/results")
+    });
     // 전체 시간 제한은 두지 않는다 (진행 스트림은 작업이 끝날 때까지 열려 있다).
     // 대신 연결은 5초, 응답이 한 번도 오지 않는 구간은 5분까지만 기다린다.
     let engine = Engine {
@@ -38,6 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/health", get(|| async { "{\"status\":\"ok\",\"mode\":\"ui-preview\"}" }))
         // /api/rag/* 는 Python 엔진으로 그대로 넘긴다. 나중에 권한 확인·추적 ID를 붙일 자리.
         .route("/api/rag/{*rest}", any(proxy_rag))
+        .nest_service("/api/eval", ServeDir::new(&eval_dir))
         .with_state(engine)
         .fallback_service(ServeDir::new(&assets).not_found_service(ServeFile::new(assets.join("index.html"))));
     let listener = tokio::net::TcpListener::bind(&address).await?;
