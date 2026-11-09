@@ -1,4 +1,4 @@
-# Local RAG
+# rag-ops web
 
 A local desktop UI prototype inspired by the supplied smart-home motion reference.
 English interface, React + TypeScript + Motion, served by a Rust / Axum process.
@@ -22,7 +22,7 @@ npm start
 ```
 
 Open http://127.0.0.1:4173. Requires Node.js 22+ and Rust 1.94+.
-If your global npm cache has ownership problems, use `npm ci --cache /tmp/local-rag-npm-cache`.
+If your global npm cache has ownership problems, use `npm ci --cache /tmp/rag-ops-npm-cache`.
 Stop the server with Ctrl+C.
 
 For UI development with hot reload:

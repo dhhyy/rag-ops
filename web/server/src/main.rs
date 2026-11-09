@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/health", get(|| async { "{\"status\":\"ok\",\"mode\":\"ui-preview\"}" }))
         .fallback_service(ServeDir::new(&assets).not_found_service(ServeFile::new(assets.join("index.html"))));
     let listener = tokio::net::TcpListener::bind(&address).await?;
-    println!("Local RAG · http://{address}");
+    println!("rag-ops · http://{address}");
     axum::serve(listener, app)
         .with_graceful_shutdown(async { let _ = tokio::signal::ctrl_c().await; })
         .await?;

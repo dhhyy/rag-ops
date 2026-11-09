@@ -14,9 +14,9 @@ RUN cargo build --release --locked --manifest-path server/Cargo.toml
 
 FROM debian:bookworm-slim
 WORKDIR /app
-COPY --from=backend /app/server/target/release/local-rag-server /usr/local/bin/local-rag-server
+COPY --from=backend /app/server/target/release/rag-ops-server /usr/local/bin/rag-ops-server
 COPY --from=frontend /app/dist ./dist
 ENV RAG_BIND=0.0.0.0:4173 RAG_DIST=/app/dist
 USER 65534:65534
 EXPOSE 4173
-CMD ["local-rag-server"]
+CMD ["rag-ops-server"]

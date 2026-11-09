@@ -1,6 +1,6 @@
 -- 문서와 조각(청크) 테이블
 -- 이미 초기화된 DB에는 자동 실행되지 않는다. 직접 적용:
---   docker compose exec -T db psql -U opsrag -d opsrag < db/init/02-chunks.sql
+--   docker compose exec -T db psql -U postgres -d postgres < db/init/02-chunks.sql
 
 -- 문서 1개 = 1행. 같은 저장소·경로는 한 번만 들어간다 (다시 넣으면 갱신)
 CREATE TABLE IF NOT EXISTS documents (
