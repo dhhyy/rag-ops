@@ -15,7 +15,7 @@ conversations live in memory and reset on reload. All fonts are bundled locally.
 From the macOS Terminal:
 
 ```sh
-cd /Users/yudongheon/Documents/rag-ops/web
+cd web  # 저장소 루트에서
 npm ci
 npm run build
 npm start
