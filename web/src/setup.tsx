@@ -21,7 +21,7 @@ export type IndexInfo = {
   id: number; key: string; chunker: StageSetting; embedder: StageSetting; dims: number; is_base: boolean; created_at: string;
   chunks: number; documents: number; pending: number; label: { chunker: string; embedder: string }; external: boolean;
 };
-export type Query = { top_k: number; reranker: StageSetting | null; reranker_label?: string | null };
+export type Query = { top_k: number; reranker: StageSetting | null; reranker_label?: string | null; generator: StageSetting | null; generator_label?: string | null };
 export type Setup = { index: IndexInfo; query: Query; saved_as: string | null; updated_at: string };
 export type SavedSetup = { id: number; name: string; index_id: number; query: Partial<Query>; created_at: string };
 type DocRef = { id: number; title: string; path: string };
@@ -71,7 +71,7 @@ export function useSetup() {
   }
   return {
     setup, saved, indexes, error, reload,
-    update: (body: { index_id?: number; top_k?: number; reranker?: StageSetting | 'off' }) => act('/setup', 'PUT', body),
+    update: (body: { index_id?: number; top_k?: number; reranker?: StageSetting | 'off'; generator?: StageSetting | 'off' }) => act('/setup', 'PUT', body),
     saveAs: (name: string) => act('/setups', 'POST', { name }),
     load: (id: number) => act(`/setups/${id}/load`, 'POST'),
     remove: (id: number) => act(`/setups/${id}`, 'DELETE'),
@@ -208,7 +208,7 @@ function SettingsTab({ stage, note, s, catalog, busy, onBuild, openKnowledge }: 
   if (!catalog || !s.setup) return <div className="panel-body"><p className="dialog-note">Loading options…</p></div>;
   if (stage === 'chunker' || stage === 'embedder') return <IndexSettings key={s.setup.index.key} stage={stage} note={note} s={s} setup={s.setup} catalog={catalog} busy={busy} onBuild={onBuild} openKnowledge={openKnowledge} />;
   if (stage === 'query') return <QuerySettings s={s} setup={s.setup} />;
-  if (stage === 'reranker') return <RerankSettings key={JSON.stringify(s.setup.query.reranker)} s={s} setup={s.setup} catalog={catalog} />;
+  if (stage === 'reranker' || stage === 'generator') return <OnOffSettings key={stage + JSON.stringify(s.setup.query[stage])} stage={stage} s={s} setup={s.setup} catalog={catalog} />;
   return <>
     <div className="panel-body">
       <p className="panel-note">Writes the answer from the retrieved chunks and cites them.</p>
@@ -350,19 +350,42 @@ function Impact({ e, busy, apply, build, openKnowledge }: { e: Estimate; busy: b
   </>;
 }
 
-// Rerank is a search setting, not part of the index, so it applies right away. "Off" is drawn as one more card.
-const OFF: Spec = {
-  id: 'off', stage: 'reranker', label: 'Off', description: 'Keep the vector search order as it is.', provider: 'local', vendor: '—',
+// Rerank and Answer are search settings, not part of the index, so they apply right away. "Off" is drawn as one more card.
+type OnOffStage = 'reranker' | 'generator';
+const offSpec = (stage: OnOffStage, description: string): Spec => ({
+  id: 'off', stage, label: 'Off', description, provider: 'local', vendor: '—',
   params: [], status: 'ready', external: false, available: true, reason: '',
+});
+const ON_OFF: Record<OnOffStage, {
+  note: string; off: Spec;
+  inUse: (setup: Setup, cur: StageSetting) => string; offText: string;
+  title: (d: StageSetting) => string; cost: (d: StageSetting) => string;
+}> = {
+  reranker: {
+    note: 'Vector search finds candidates, then the reranker reads the question and each candidate together and puts them in a new order.',
+    off: offSpec('reranker', 'Keep the vector search order as it is.'),
+    inUse: (setup, cur) => `${setup.query.reranker_label} · reorders ${cur.params.candidates} candidates`,
+    offText: 'Results keep the vector search order.',
+    title: d => `Rerank ${d.params.candidates} candidates`,
+    cost: d => `Applies right away, no index to build. On this Mac (Docker, CPU) one chunk takes about 3 seconds, so each question waits about ${Math.round(Number(d.params.candidates) * 3.4 / 60 * 10) / 10} minutes.`,
+  },
+  generator: {
+    note: 'Writes a short answer from the top chunks and cites them as [1], [2]. Chunks from documents not allowed outside are left out.',
+    off: offSpec('generator', 'Search only. Playground shows the chunks without an answer.'),
+    inUse: (setup, cur) => `${setup.query.generator_label} · sends the top ${cur.params.sources} chunks`,
+    offText: 'Playground shows the chunks only.',
+    title: d => `Answer with ${d.params.model}`,
+    cost: d => `Applies right away. Each question sends the top ${d.params.sources} chunks (about 1,000 tokens for 3) and gets up to ${d.params.max_output} tokens back.`,
+  },
 };
-function RerankSettings({ s, setup, catalog }: { s: SetupApi; setup: Setup; catalog: Catalog }) {
-  const current = setup.query.reranker;
+function OnOffSettings({ stage, s, setup, catalog }: { stage: OnOffStage; s: SetupApi; setup: Setup; catalog: Catalog }) {
+  const text = ON_OFF[stage];
+  const current = setup.query[stage];
   const [draft, setDraft] = useState<StageSetting | null>(current);
   const [working, setWorking] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const spec = draft ? catalog.reranker.find(x => x.id === draft.id) ?? null : null;
+  const spec = draft ? catalog[stage].find(x => x.id === draft.id) ?? null : null;
   const changed = JSON.stringify(draft) !== JSON.stringify(current);
-  const candidates = Number(draft?.params.candidates ?? 0);
 
   function pick(next: Spec) {
     if (next.status !== 'ready' || !next.available) return;
@@ -370,20 +393,20 @@ function RerankSettings({ s, setup, catalog }: { s: SetupApi; setup: Setup; cata
   }
   async function apply() {
     setWorking(true);
-    setProblem(await s.update({ reranker: draft ?? 'off' }));
+    setProblem(await s.update({ [stage]: draft ?? 'off' }));
     setWorking(false);
   }
   return <>
     <div className="panel-body">
-      <p className="panel-note">Vector search finds candidates, then the reranker reads the question and each candidate together and puts them in a new order.</p>
-      <OptionList specs={[OFF, ...catalog.reranker]} selected={draft?.id ?? 'off'} pick={pick} />
+      <p className="panel-note">{text.note}</p>
+      <OptionList specs={[text.off, ...catalog[stage]]} selected={draft?.id ?? 'off'} pick={pick} />
       {spec && draft && <ParamInputs spec={spec} values={draft.params} set={(name, value) => setDraft({ ...draft, params: { ...draft.params, [name]: value } })} />}
     </div>
     <footer className="panel-impact" aria-live="polite">
-      {!changed ? <div className="impact-line is-ok"><Check size={15} /><span><b>In use</b><small>{current ? `${setup.query.reranker_label} · reorders ${current.params.candidates} candidates` : 'Results keep the vector search order.'}</small></span></div>
+      {!changed ? <div className="impact-line is-ok"><Check size={15} /><span><b>In use</b><small>{current ? text.inUse(setup, current) : text.offText}</small></span></div>
         : <>
-          <div className="impact-line"><Zap size={15} /><span><b>{draft ? `Rerank ${candidates} candidates` : 'Turn rerank off'}</b>
-            <small>{draft ? `Applies right away, no index to build. On this Mac (Docker, CPU) one chunk takes about 3 seconds, so each question waits about ${Math.round(candidates * 3.4 / 60 * 10) / 10} minutes.` : 'Applies right away.'}</small></span></div>
+          <div className="impact-line"><Zap size={15} /><span><b>{draft ? text.title(draft) : 'Turn it off'}</b>
+            <small>{draft ? text.cost(draft) : 'Applies right away.'}</small></span></div>
           <button className="primary-button impact-action" disabled={working} onClick={apply}>{working ? <LoaderCircle size={15} className="spin" /> : <Check size={15} />}Apply</button>
           <button className="text-button impact-reset" onClick={() => setDraft(current)}><RotateCcw size={12} />Keep current setting</button>
         </>}

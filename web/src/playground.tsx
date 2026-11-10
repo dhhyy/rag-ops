@@ -1,4 +1,4 @@
-// Playground: 질문을 넣으면 현재 설정으로 근거 조각을 찾는다. 답변 생성은 다음 단계라 자리만 잡아 둔다.
+// Playground: 질문을 넣으면 현재 설정으로 근거 조각을 찾고, 답변 생성이 켜져 있으면 앞쪽 조각으로 답을 쓴다.
 // 화면 나누기: 제목 줄·질문 줄·진행 줄·답변 자리 = Fixed, 결과 = Hybrid(목록 Fluid + 상세 400px Fixed, 좁은 화면에서는 누른 카드 밑에 펼침).
 // 엔진 POST /search가 단계마다 한 줄씩(JSON Lines) 보내 주므로, 리랭크가 1분 넘게 걸려도 어디까지 왔는지 보인다.
 import React, { useEffect, useRef, useState } from 'react';
@@ -12,11 +12,15 @@ type Hit = {
   document_id: number; title: string | null; source_repo: string; source_path: string; source_commit: string;
   env: string | null; doc_type: string | null; verification: string | null; checked_at: string | null;
 };
-type Start = { top_k: number; index_id: number; embedder: string; external: boolean; reranker: string | null; candidates: number | null };
+type Start = { price_checked: string; top_k: number; index_id: number; embedder: string; external: boolean; reranker: string | null; candidates: number | null };
+type Answer = {
+  state: 'writing' | 'ok' | 'error'; generator?: string; text?: string; message?: string;
+  sources?: number[]; skipped?: number[]; input_tokens?: number; output_tokens?: number; cached_tokens?: number; cost_usd?: number | null; ms?: number; status?: string;
+};
 type Run = {
   question: string; phase: 'running' | 'done' | 'error' | 'stopped'; start?: Start;
-  embedMs?: number; dbMs?: number; candidates?: number; rerankFrom?: number; rerank?: { done: number; total: number; ms: number };
-  vectorHits?: Hit[]; hits?: Hit[]; latency?: { embed: number; db: number; rerank: number }; error?: string; startedAt: number;
+  embedMs?: number; embedTokens?: number; embedCost?: number | null; dbMs?: number; candidates?: number; rerankFrom?: number; rerank?: { done: number; total: number; ms: number };
+  vectorHits?: Hit[]; hits?: Hit[]; latency?: { embed: number; db: number; rerank: number }; error?: string; startedAt: number; answer?: Answer;
 };
 
 const RECENT = 'playground-recent';
@@ -29,6 +33,7 @@ const body = (h: Hit) => h.content.replace(/^#{1,6} .*\n+/, '').replace(/\n\s*\n
 const plain = (s: string) => s.replace(/[#*`>|_-]/g, ' ').replace(/\s+/g, ' ').trim();
 const secs = (ms: number) => (ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)}초`);
 const short = (s: number) => (s < 60 ? `${Math.round(s)}초` : `${Math.floor(s / 60)}분 ${Math.round(s % 60)}초`);
+const usd = (v: number) => (v > 0 && v < 0.000001 ? '$0.000001 미만' : `$${v < 0.01 ? Number(v.toPrecision(2)).toFixed(Math.max(2, 1 - Math.floor(Math.log10(v || 1)))) : v.toFixed(4)}`);
 const doubtful = (v: string | null) => v !== '확인';
 
 function loadRecent(): string[] {
@@ -75,11 +80,14 @@ function useSearch() {
           if (!line) continue;
           const ev = JSON.parse(line);
           if (ev.type === 'start') patch({ start: ev });
-          else if (ev.type === 'embedded') patch({ embedMs: ev.ms });
+          else if (ev.type === 'embedded') patch({ embedMs: ev.ms, embedTokens: ev.tokens, embedCost: ev.cost_usd });
           else if (ev.type === 'candidates') { rerankStarted = Date.now(); patch({ dbMs: ev.ms, candidates: ev.count, vectorHits: ev.hits, rerankFrom: rerankStarted }); }
           else if (ev.type === 'rerank') patch({ rerank: { done: ev.done, total: ev.total, ms: Date.now() - rerankStarted } });
           else if (ev.type === 'done') patch({ phase: 'done', hits: ev.hits, latency: ev.latency_ms });
           else if (ev.type === 'error') patch({ phase: 'error', error: ev.message });
+          else if (ev.type === 'answering') patch({ answer: { state: 'writing', generator: ev.generator } });
+          else if (ev.type === 'answer') setRun(r => (r && r.startedAt === startedAt ? { ...r, answer: { ...r.answer, ...ev, state: 'ok' } } : r));
+          else if (ev.type === 'answer_error') setRun(r => (r && r.startedAt === startedAt ? { ...r, answer: { ...r.answer, state: 'error', message: ev.message } } : r));
         }
       }
       setRun(r => (r && r.startedAt === startedAt && r.phase === 'running' ? { ...r, phase: 'error', error: '검색이 중간에 끊겼어요' } : r));
@@ -257,7 +265,7 @@ export function Playground({ openPipeline, openKnowledge }: { openPipeline: () =
 
   const minutes = rerankSetting ? Math.max(1, Math.round(Number(rerankSetting.params.candidates) * SEC_PER_CHUNK / 60)) : 0;
   return <>
-    <div className="pg-head"><div><h1>Playground</h1><p>질문을 넣으면 지금 설정으로 근거 조각을 찾아요. 답변 생성은 다음 단계예요.</p></div>
+    <div className="pg-head"><div><h1>Playground</h1><p>질문을 넣으면 지금 설정으로 근거 조각을 찾고, 그 조각으로 답을 써요.</p></div>
       <SetupLine setup={setup} openPipeline={openPipeline} /></div>
 
     <Card className="pg-ask">
@@ -274,6 +282,7 @@ export function Playground({ openPipeline, openKnowledge }: { openPipeline: () =
         </span><small>이번 질문에만 적용돼요. 설정은 바뀌지 않아요.</small></>
           : <small>리랭크가 꺼져 있어요. Pipeline의 Rerank 카드에서 켤 수 있어요.</small>}
         {setup?.index.external && <small className="pg-ext"><CircleAlert size={12} />질문이 {setup.index.label.embedder.split(' ')[0]}로 보내져요 (임베딩)</small>}
+        {setup?.query.generator && <small className="pg-ext"><CircleAlert size={12} />질문과 상위 {setup.query.generator.params.sources}개 조각이 OpenAI로 보내져요 (답변)</small>}
       </div>
     </Card>
 
@@ -286,10 +295,52 @@ export function Playground({ openPipeline, openKnowledge }: { openPipeline: () =
       <AnimatePresence initial={false}>{running && <motion.div key="progress" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.25, ease }}>
         <Progress run={run} now={now} stop={stop} /></motion.div>}</AnimatePresence>
       {(run.phase === 'error' || run.phase === 'stopped') && <p className={`pg-note ${run.phase === 'error' ? 'is-error' : ''}`}><CircleAlert size={13} />{run.phase === 'error' ? run.error : '검색을 멈췄어요.'}</p>}
-      <Card className="pg-answer"><span className="pg-answer-ic"><Sparkles size={15} /></span>
-        <div><b>답변은 아직 만들지 않아요</b><small>지금은 근거가 될 조각만 보여 줘요. 답변 생성이 연결되면 여기에 답과 근거 번호가 나와요.</small></div></Card>
+      <AnswerCard run={run} generator={setup?.query.generator_label ?? null} />
       <Results run={run} openKnowledge={openKnowledge} />
       {recent.length > 1 && !running && <div className="pg-recent is-foot"><small>최근 질문</small>{recent.filter(q => q !== run.question).map(q => <button key={q} onClick={() => submit(q)}>{q}</button>)}</div>}
     </>}
   </>;
+}
+
+// 이번 질문의 OpenAI 비용. 임베딩(질문 → 벡터)과 답변을 따로 보여 준다. 단가는 엔진 코드의 표 기준이라 기준일을 함께 적는다.
+function CostLine({ run }: { run: Run }) {
+  const embed = run.embedCost ?? null;
+  const gen = run.answer?.cost_usd ?? null;
+  if (embed === null && gen === null) return null;
+  const parts = [embed !== null && `임베딩 ${usd(embed)} (${run.embedTokens?.toLocaleString()} 토큰)`, gen !== null && `답변 ${usd(gen)}`].filter(Boolean);
+  return <small className="pg-cost">이번 질문 비용 약 <b>{usd((embed ?? 0) + (gen ?? 0))}</b> · {parts.join(' + ')}{run.start && ` · 단가 기준 ${run.start.price_checked}`}</small>;
+}
+
+// 답변 카드. 답 속 [n]은 아래 근거 후보의 n번째 카드와 같은 번호다. 토큰 수는 OpenAI가 알려 준 실제 값이다.
+function AnswerCard({ run, generator }: { run: Run; generator: string | null }) {
+  const a = run.answer;
+  const hits = run.hits ?? run.vectorHits ?? [];
+  if (!a) {
+    if (!generator) return <Card className="pg-answer"><span className="pg-answer-ic"><Sparkles size={15} /></span>
+      <div><b>답변 생성이 꺼져 있어요</b><small>근거 조각만 보여 줘요. Pipeline의 Answer 카드에서 켤 수 있어요.</small><CostLine run={run} /></div></Card>;
+    if (run.phase !== 'running') return null;
+    return <Card className="pg-answer"><span className="pg-answer-ic"><Sparkles size={15} /></span>
+      <div><b>검색이 끝나면 답을 써요</b><small>{generator}</small></div></Card>;
+  }
+  if (a.state === 'writing') return <Card className="pg-answer is-live"><span className="pg-answer-ic"><LoaderCircle size={15} className="spin" /></span>
+    <div><b>답을 쓰고 있어요</b><small>{a.generator} · 앞쪽 조각을 보내는 중</small></div></Card>;
+  if (a.state === 'error') return <Card className="pg-answer is-error"><span className="pg-answer-ic"><CircleAlert size={15} /></span>
+    <div><b>답을 쓰지 못했어요</b><small>{a.message}</small></div></Card>;
+  const skipped = a.skipped ?? [];
+  return <Card className="pg-answer is-done">
+    <div className="pg-answer-top"><span className="pg-answer-ic"><Sparkles size={15} /></span><b>답변</b>
+      <small>{a.generator} · {secs(a.ms ?? 0)} · 입력 {a.input_tokens?.toLocaleString()}{a.cached_tokens ? ` (캐시 ${a.cached_tokens.toLocaleString()})` : ''} · 출력 {a.output_tokens?.toLocaleString()} 토큰</small></div>
+    {a.text ? <p className="pg-answer-text">{a.text.split(/(\[\d+\])/).map((part, i) => {
+      const m = part.match(/^\[(\d+)\]$/);
+      if (!m) return <React.Fragment key={i}>{part}</React.Fragment>;
+      const h = hits[Number(m[1]) - 1];
+      return <span key={i} className="pg-cite" title={h ? `${docTitle(h)} › ${lastHeading(h)}` : undefined}>{m[1]}</span>;
+    })}</p> : <p className="pg-answer-text is-empty">보낼 수 있는 조각이 없어서 답을 쓰지 않았어요.</p>}
+    <small className="pg-answer-foot">
+      보낸 조각 {a.sources?.join('·') || '없음'}번{skipped.length > 0 && ` · 외부 전송 불가라 뺀 조각 ${skipped.join('·')}번`}
+      {a.status && a.status !== 'completed' && ' · 길이 한도에서 끊겼어요'}
+      {' · 문서에 적힌 내용이에요. 지금 그렇게 동작하는지는 검증 상태를 확인하세요.'}
+    </small>
+    <CostLine run={run} />
+  </Card>;
 }

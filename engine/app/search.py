@@ -48,9 +48,10 @@ def load_setup(conn, name: str | None = None) -> dict:
 
 # 검색 설정 기본값: top-k 5, 리랭크 끔. 리랭크 설정은 normalize로 기본값(후보 수)을 채운다.
 def query_defaults(query: dict | None) -> dict:
-    q = {"top_k": 5, "reranker": None, **(query or {})}
-    if q["reranker"]:
-        q["reranker"] = comp.normalize("reranker", q["reranker"])
+    q = {"top_k": 5, "reranker": None, "generator": None, **(query or {})}
+    for stage in ("reranker", "generator"):
+        if q[stage]:
+            q[stage] = comp.normalize(stage, q[stage])
     return q
 
 
@@ -59,7 +60,8 @@ def query_defaults(query: dict | None) -> dict:
 def search(env: dict[str, str], index: dict, question: str, k: int) -> tuple[list[tuple], float, float, list[float]]:
     t0 = time.perf_counter()
     try:
-        vec = comp.make_embedder(index["embedder"], env).embed_query(question)
+        embedder = comp.make_embedder(index["embedder"], env)
+        vec = embedder.embed_query(question)
     except comp.ComponentError as e:
         raise IngestError(str(e)) from None
     t1 = time.perf_counter()
@@ -70,7 +72,7 @@ def search(env: dict[str, str], index: dict, question: str, k: int) -> tuple[lis
 
 
 # 검색 설정까지 적용한 검색을 단계마다 끊어서 진행한다. 단계가 끝날 때마다 (종류, 값)을 내보낸다.
-#   ("embedded", 초) → ("candidates", 후보 hits, 초) → ("reranked", 끝난 수, 전체 수)… → ("done", 결과 dict)
+#   ("embedded", (초, 토큰, 금액)) → ("candidates", 후보 hits, 초) → ("reranked", 끝난 수, 전체 수)… → ("done", 결과 dict)
 # Playground는 이것을 그대로 화면에 흘려보내고, 평가·CLI는 retrieve()로 마지막 결과만 쓴다.
 # 리랭크를 작은 묶음으로 나눠 보내므로, 받는 쪽이 중간에 멈추면 다음 묶음은 보내지 않는다.
 def retrieve_steps(env: dict[str, str], index: dict, query: dict, question: str, k: int):
@@ -79,11 +81,14 @@ def retrieve_steps(env: dict[str, str], index: dict, query: dict, question: str,
     n = max(k, rr.candidates) if rr else k
     t0 = time.perf_counter()
     try:
-        vec = comp.make_embedder(index["embedder"], env).embed_query(question)
+        embedder = comp.make_embedder(index["embedder"], env)
+        vec = embedder.embed_query(question)
     except comp.ComponentError as e:
         raise IngestError(str(e)) from None
     t_embed = time.perf_counter() - t0
-    yield "embedded", t_embed
+    # 외부 임베딩이면 API가 알려 준 토큰 수와 금액도 넘긴다 (로컬은 0, 금액 None).
+    tokens = getattr(embedder, "usage_tokens", 0)
+    yield "embedded", (t_embed, tokens, comp.cost_usd(getattr(embedder, "model", ""), tokens) if tokens else None)
     t1 = time.perf_counter()
     with connect(env) as conn:
         rows = conn.execute(SQL, {"q": json.dumps(vec), "k": n, "index": index["id"]}).fetchall()
@@ -114,6 +119,30 @@ def retrieve(env: dict[str, str], index: dict, query: dict, question: str, k: in
         if kind == "done":
             return value
     raise IngestError("검색이 끝나지 않았습니다")
+
+
+# 검색 결과 앞쪽 조각으로 답을 쓴다. 번호는 화면의 근거 순위와 같다.
+# 외부 LLM이면 외부 전송이 막힌 문서의 조각은 빼고 보낸다(check_external). 뺀 번호는 skipped로 알려 준다.
+def answer(env: dict[str, str], setting: dict, question: str, hits: list[dict]) -> dict:
+    gen = comp.make_generator(setting, env)
+    top = hits[:gen.sources]
+    with connect(env) as conn:
+        allowed = dict(conn.execute("SELECT id, external_ok FROM documents WHERE id = ANY(%s)",
+                                    ([h["row"][11] for h in top],)).fetchall())
+    sources, skipped = [], []
+    for n, h in enumerate(top, 1):
+        (_, _, _, path, content, _, spath, _, env_label, _, verif, doc_id, title, _, _) = h["row"]
+        try:
+            comp.check_external(setting, title or spath, allowed.get(doc_id, False), stage="generator")
+        except comp.ComponentError:
+            skipped.append(n)
+            continue
+        sources.append((n, f"{spath} > {path} (env: {env_label or '?'}, verification: {verif or '?'})", content))
+    if not sources:
+        return {"text": "", "sources": [], "skipped": skipped, "ms": 0}
+    t0 = time.perf_counter()
+    out = gen.generate(question, sources)
+    return out | {"sources": [n for n, _, _ in sources], "skipped": skipped, "ms": round((time.perf_counter() - t0) * 1000)}
 
 
 # 화면에 보낼 조각 하나. 출처·환경·검증 상태와 리랭크 전후 점수를 함께 담는다.

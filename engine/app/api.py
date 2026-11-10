@@ -31,7 +31,7 @@ import evaluate
 import indexes
 from ingest import STAGES, IngestError, connect, ingest_file, load_env
 from jobs import JOB_COLUMNS, fetch_job
-from search import hit_dict, load_setup, query_defaults, retrieve_steps
+from search import answer, hit_dict, load_setup, query_defaults, retrieve_steps
 from tasks import celery, ingest_task
 
 # 작업은 worker가 실행하므로 엔진을 다시 켜도 진행 중인 작업은 영향을 받지 않는다. (끊긴 작업 정리는 worker가 켜질 때 한다)
@@ -254,6 +254,7 @@ async def job_events(job_id: int) -> StreamingResponse:
 class SearchRequest(BaseModel):
     question: str
     rerank: Literal["setting", "off"] = "setting"   # off: 이번 질문만 리랭크 없이
+    answer: Literal["setting", "off"] = "setting"   # off: 이번 질문만 답변 없이 (검색만)
 
 
 # 현재 설정으로 검색하면서 단계마다 한 줄씩(JSON Lines) 흘려보낸다.
@@ -278,15 +279,16 @@ def search_stream(req: SearchRequest) -> StreamingResponse:
         return json.dumps(obj, ensure_ascii=False, default=str) + "\n"
 
     def stream():
-        yield line({"type": "start", "top_k": k, "index_id": index["id"],
+        yield line({"type": "start", "price_checked": comp.PRICE_CHECKED, "top_k": k, "index_id": index["id"],
                     "embedder": comp.describe("embedder", index["embedder"]),
                     "external": comp.is_external("embedder", index["embedder"]),
                     "reranker": comp.describe("reranker", query["reranker"]) if query["reranker"] else None,
                     "candidates": int(query["reranker"]["params"]["candidates"]) if query["reranker"] else None})
+        final: list[dict] = []
         try:
             for kind, value in retrieve_steps(env, index, query, question, k):
                 if kind == "embedded":
-                    yield line({"type": "embedded", "ms": round(value * 1000)})
+                    yield line({"type": "embedded", "ms": round(value[0] * 1000), "tokens": value[1], "cost_usd": value[2]})
                 elif kind == "candidates":
                     hits, t_db = value
                     yield line({"type": "candidates", "ms": round(t_db * 1000), "count": len(hits),
@@ -296,8 +298,18 @@ def search_stream(req: SearchRequest) -> StreamingResponse:
                 else:
                     lat = {key: round(v * 1000) for key, v in value["latency"].items()}
                     yield line({"type": "done", "latency_ms": lat, "hits": [hit_dict(h) for h in value["hits"][:k]]})
+                    final = value["hits"][:k]
         except IngestError as e:
             yield line({"type": "error", "message": str(e)})
+            return
+        gen = query["generator"] if req.answer == "setting" else None
+        if not gen or not final:
+            return
+        yield line({"type": "answering", "generator": comp.describe("generator", gen)})
+        try:
+            yield line({"type": "answer", **answer(env, gen, question, final)})
+        except comp.ComponentError as e:
+            yield line({"type": "answer_error", "message": str(e)})
 
     return StreamingResponse(stream(), media_type="application/x-ndjson",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -415,6 +427,7 @@ def get_setup() -> dict:
     index = next(i for i in indexes.list_indexes() if i["id"] == index_id)
     q = query_defaults(query)
     q["reranker_label"] = comp.describe("reranker", q["reranker"]) if q["reranker"] else None
+    q["generator_label"] = comp.describe("generator", q["generator"]) if q["generator"] else None
     return {"index": index, "query": q, "saved_as": saved[0] if saved else None, "updated_at": updated}
 
 
@@ -423,6 +436,7 @@ class SetupUpdate(BaseModel):
     top_k: int | None = None
     # 리랭크: {"id", "params"}면 켜고, "off"면 끈다. 주지 않으면 그대로 둔다.
     reranker: dict | Literal["off"] | None = None
+    generator: dict | Literal["off"] | None = None   # 답변 생성: 리랭크와 같은 방식
 
 
 # 현재 설정을 바꾼다. 색인은 조각이 하나라도 있어야 고를 수 있다. 검색 설정은 바로 적용된다.
@@ -441,7 +455,24 @@ def update_setup(req: SetupUpdate) -> dict:
         if req.reranker is not None:
             conn.execute("""UPDATE active_setup SET query = query || jsonb_build_object('reranker', %s::jsonb), updated_at=now()
                             WHERE id=1""", (Jsonb(check_reranker(req.reranker)),))
+        if req.generator is not None:
+            conn.execute("""UPDATE active_setup SET query = query || jsonb_build_object('generator', %s::jsonb), updated_at=now()
+                            WHERE id=1""", (Jsonb(check_generator(req.generator)),))
     return get_setup()
+
+
+# 답변 생성 설정을 검사한다. "off"는 None(끔). 키가 없으면 켤 수 없다.
+def check_generator(value: dict | str) -> dict | None:
+    if value == "off":
+        return None
+    try:
+        setting = comp.normalize("generator", value)
+    except comp.ComponentError as e:
+        raise HTTPException(400, str(e))
+    ok, reason = comp.GENERATORS[setting["id"]].availability(load_env())
+    if not ok:
+        raise HTTPException(409, reason)
+    return setting
 
 
 # 리랭크 설정을 검사한다. "off"는 None(끔). 리랭커 서버가 꺼져 있으면 켤 수 없다.
