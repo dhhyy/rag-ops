@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from datetime import date
 from pathlib import Path
 from typing import Literal
 
+import anyio
 import redis
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -33,6 +35,7 @@ from ingest import STAGES, IngestError, connect, ingest_file, load_env
 from jobs import JOB_COLUMNS, fetch_job
 from search import answer, hit_dict, load_setup, query_defaults, retrieve_steps
 from tasks import celery, ingest_task
+import usage
 
 # 작업은 worker가 실행하므로 엔진을 다시 켜도 진행 중인 작업은 영향을 받지 않는다. (끊긴 작업 정리는 worker가 켜질 때 한다)
 app = FastAPI(title="rag-ops engine")
@@ -257,9 +260,26 @@ class SearchRequest(BaseModel):
     answer: Literal["setting", "off"] = "setting"   # off: 이번 질문만 답변 없이 (검색만)
 
 
+# 동기 제너레이터를 한 단계씩 스레드에서 돌린다. 화면이 연결을 끊어 응답이 취소되면,
+# 돌고 있던 단계가 끝난 뒤 제너레이터를 닫아 finally(사용 기록)가 반드시 실행되게 한다.
+_END = object()
+
+
+async def closing_stream(gen):
+    try:
+        while True:
+            item = await anyio.to_thread.run_sync(next, gen, _END)
+            if item is _END:
+                break
+            yield item
+    finally:
+        with anyio.CancelScope(shield=True):
+            await anyio.to_thread.run_sync(gen.close)
+
+
 # 현재 설정으로 검색하면서 단계마다 한 줄씩(JSON Lines) 흘려보낸다.
 #   {"type":"start"…} → {"type":"embedded"} → {"type":"candidates", hits(벡터 순 상위 k)} → {"type":"rerank", done, total}… → {"type":"done", hits}
-# 화면이 연결을 끊으면(멈추기) 다음 리랭크 묶음 전에 멈춘다. 질문은 기록하지 않는다.
+# 화면이 연결을 끊으면(멈추기) 다음 리랭크 묶음 전에 멈춘다. 끝나면 사용 기록(usage_log)에 한 행 남긴다.
 @app.post("/search")
 def search_stream(req: SearchRequest) -> StreamingResponse:
     question = req.question.strip()
@@ -278,40 +298,71 @@ def search_stream(req: SearchRequest) -> StreamingResponse:
     def line(obj: dict) -> str:
         return json.dumps(obj, ensure_ascii=False, default=str) + "\n"
 
-    def stream():
-        yield line({"type": "start", "price_checked": comp.PRICE_CHECKED, "top_k": k, "index_id": index["id"],
-                    "embedder": comp.describe("embedder", index["embedder"]),
-                    "external": comp.is_external("embedder", index["embedder"]),
-                    "reranker": comp.describe("reranker", query["reranker"]) if query["reranker"] else None,
-                    "candidates": int(query["reranker"]["params"]["candidates"]) if query["reranker"] else None})
-        final: list[dict] = []
-        try:
-            for kind, value in retrieve_steps(env, index, query, question, k):
-                if kind == "embedded":
-                    yield line({"type": "embedded", "ms": round(value[0] * 1000), "tokens": value[1], "cost_usd": value[2]})
-                elif kind == "candidates":
-                    hits, t_db = value
-                    yield line({"type": "candidates", "ms": round(t_db * 1000), "count": len(hits),
-                                "hits": [hit_dict(h) for h in hits[:k]]})
-                elif kind == "reranked":
-                    yield line({"type": "rerank", "done": value[0], "total": value[1]})
-                else:
-                    lat = {key: round(v * 1000) for key, v in value["latency"].items()}
-                    yield line({"type": "done", "latency_ms": lat, "hits": [hit_dict(h) for h in value["hits"][:k]]})
-                    final = value["hits"][:k]
-        except IngestError as e:
-            yield line({"type": "error", "message": str(e)})
-            return
-        gen = query["generator"] if req.answer == "setting" else None
-        if not gen or not final:
-            return
-        yield line({"type": "answering", "generator": comp.describe("generator", gen)})
-        try:
-            yield line({"type": "answer", **answer(env, gen, question, final)})
-        except comp.ComponentError as e:
-            yield line({"type": "answer_error", "message": str(e)})
+    # 사용 기록에 남길 설정 요약 (사람이 읽는 이름 포함)
+    setup_rec = {"index_id": index["id"], "embedder": comp.describe("embedder", index["embedder"]),
+                 "reranker": comp.describe("reranker", query["reranker"]) if query["reranker"] else None,
+                 "generator": comp.describe("generator", query["generator"]) if query["generator"] and req.answer == "setting" else None,
+                 "top_k": k}
 
-    return StreamingResponse(stream(), media_type="application/x-ndjson",
+    def stream():
+        t_start = time.perf_counter()
+        rec: dict = {"status": "stopped", "question": question, "setup": setup_rec, "latency_ms": {}}
+        cost = 0.0
+        priced = False
+        try:
+            yield line({"type": "start", "price_checked": comp.PRICE_CHECKED, "top_k": k, "index_id": index["id"],
+                        "embedder": setup_rec["embedder"], "external": comp.is_external("embedder", index["embedder"]),
+                        "reranker": setup_rec["reranker"],
+                        "candidates": int(query["reranker"]["params"]["candidates"]) if query["reranker"] else None})
+            final: list[dict] = []
+            try:
+                for kind, value in retrieve_steps(env, index, query, question, k):
+                    if kind == "embedded":
+                        rec["embed_tokens"] = value[1]
+                        if value[2] is not None:
+                            cost, priced = cost + value[2], True
+                        yield line({"type": "embedded", "ms": round(value[0] * 1000), "tokens": value[1], "cost_usd": value[2]})
+                    elif kind == "candidates":
+                        hits, t_db = value
+                        yield line({"type": "candidates", "ms": round(t_db * 1000), "count": len(hits),
+                                    "hits": [hit_dict(h) for h in hits[:k]]})
+                    elif kind == "reranked":
+                        yield line({"type": "rerank", "done": value[0], "total": value[1]})
+                    else:
+                        lat = {key: round(v * 1000) for key, v in value["latency"].items()}
+                        rec["latency_ms"] = dict(lat)
+                        final = value["hits"][:k]
+                        shown = [hit_dict(h) for h in final]
+                        rec["hits"] = [{"chunk_id": h["chunk_id"], "document_id": h["document_id"], "title": h["title"],
+                                        "heading": h["heading_path"]} for h in shown]
+                        yield line({"type": "done", "latency_ms": lat, "hits": shown})
+            except IngestError as e:
+                rec.update(status="error", error=str(e))
+                yield line({"type": "error", "message": str(e)})
+                return
+            gen = query["generator"] if req.answer == "setting" else None
+            if gen and final:
+                yield line({"type": "answering", "generator": comp.describe("generator", gen)})
+                try:
+                    out = answer(env, gen, question, final)
+                except comp.ComponentError as e:
+                    rec.update(status="error", error=f"답변: {e}")
+                    yield line({"type": "answer_error", "message": str(e)})
+                    return
+                rec.update(answer=out.get("text"), sources=out.get("sources"), input_tokens=out.get("input_tokens", 0),
+                           cached_tokens=out.get("cached_tokens", 0), output_tokens=out.get("output_tokens", 0))
+                rec["latency_ms"]["answer"] = out.get("ms", 0)
+                if out.get("cost_usd") is not None:
+                    cost, priced = cost + out["cost_usd"], True
+                yield line({"type": "answer", **out})
+            rec["status"] = "ok"
+        finally:
+            # 정상·오류·멈춤(화면이 연결을 끊음) 모두 여기서 한 번 기록한다
+            rec["latency_ms"]["total"] = round((time.perf_counter() - t_start) * 1000)
+            rec["cost_usd"] = round(cost, 8) if priced else None
+            usage.record(env, rec)
+
+    return StreamingResponse(closing_stream(stream()), media_type="application/x-ndjson",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
@@ -587,6 +638,12 @@ def create_eval(req: EvalRequest) -> dict:
                                         (name, Jsonb(params))).fetchone()[0])
     enqueue(job_ids)
     return {"job_id": job_ids[0], "job_ids": job_ids}
+
+
+# 사용 기록: 오늘·이번 달·전체 요약, 최근 14일 일별, 최근 질문 50개.
+@app.get("/usage")
+def get_usage(service: str = "playground", days: int = Query(14, ge=1, le=90)) -> dict:
+    return usage.overview(load_env(), service, days)
 
 
 @app.get("/evals")

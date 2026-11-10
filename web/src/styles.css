@@ -548,3 +548,19 @@ button.cmp-row:hover{background:#faf8fd}
 @media (max-width:760px){.pg-answer-top small{margin-left:0;flex-basis:100%}}
 .pg-cost{display:block;margin-top:6px;color:#8a8494}.pg-cost b{font-weight:600;color:#5d4a7a}
 .pg-answer .pg-cost b{display:inline}
+/* 사용 기록 */
+.usage-h2{font-size:15px;font-weight:500;letter-spacing:-.3px;margin:0}
+.usage-chart{padding:18px 20px 14px;margin-bottom:24px}
+.usage-chart-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:12px}.usage-chart-head h2{font-size:15px;font-weight:500;margin:0}.usage-chart-head small{color:#9e92aa;font-size:11px}
+.usage-bars{display:grid;grid-template-columns:repeat(14,minmax(0,1fr));gap:6px;align-items:end}
+.usage-bar{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0}
+.usage-bar-track{width:100%;max-width:28px;height:110px;border-radius:8px;background:#f5f1f8;display:flex;align-items:flex-end;overflow:hidden}
+.usage-bar-track i{display:block;width:100%;border-radius:8px;background:#b9a1da}.usage-bar-track i.has-error{background:#e3b9a0}
+.usage-bar b{font-size:11px;font-weight:500;height:14px;font-variant-numeric:tabular-nums}.usage-bar small{font-size:10px;color:#a69aac}
+.usage-table td:nth-child(2){min-width:220px}
+.usage-modal{display:flex;flex-direction:column;gap:14px;max-width:100%}
+.usage-q{margin:0;font-weight:500;line-height:1.5;overflow-wrap:anywhere}
+.usage-answer{background:#faf7fd;border-radius:12px;padding:10px 12px}.usage-answer small,.usage-hits small{display:block;color:#9e92aa;font-size:11px;margin-bottom:4px}
+.usage-answer p{margin:0;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto}
+.usage-hits ol{margin:0;padding-left:20px;line-height:1.7;overflow-wrap:anywhere}.usage-hits span{color:#9e92aa}
+@media (max-width:560px){.usage-bars{gap:3px}.usage-bar-track{height:80px}.usage-bar small{font-size:9px}}

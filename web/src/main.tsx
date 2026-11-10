@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AnimatePresence, motion, MotionConfig, useReducedMotion } from 'motion/react';
 import {
-  ArrowLeftRight, ArrowRight, ArrowUpRight, Bell, BookOpen, Box, Check, CheckCheck,
+  ArrowLeftRight, Receipt, ArrowRight, ArrowUpRight, Bell, BookOpen, Box, Check, CheckCheck,
   ChevronDown, ChevronRight, CircleAlert, Clock3, Database, FileText, Folder, LoaderCircle,
   GitBranch, Home, Layers3, Maximize2, MessageSquare, Pause, Play,
   Plus, Search, Settings2, ShieldCheck, SkipBack, SkipForward, SlidersHorizontal,
@@ -14,9 +14,10 @@ import { api, Card, ColorIcon, CountUp, DetailRows, ease, Heading, IconButton, M
 import { Evaluations } from './evaluations';
 import { Compare } from './compare';
 import { Playground } from './playground';
+import { UsagePage } from './usage';
 import { SetupBar, StagePanel, useCatalog, useSetup, type BuildResponse, type IndexInfo, type PanelStage } from './setup';
 
-type Page = 'home' | 'knowledge' | 'pipeline' | 'playground' | 'compare' | 'evaluations' | 'runs' | 'conversations' | 'settings';
+type Page = 'home' | 'knowledge' | 'pipeline' | 'playground' | 'compare' | 'evaluations' | 'runs' | 'usage' | 'conversations' | 'settings';
 type Collection = { id: number; name: string; documents: number; color: string };
 type Chat = { id: number; title: string; prompt: string };
 type Run = { id: number; title: string; status: string; time: string };
@@ -30,6 +31,7 @@ const pages: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'compare', label: '비교', icon: ArrowLeftRight },
   { id: 'evaluations', label: 'Evaluations', icon: ChartNoAxesCombined },
   { id: 'runs', label: 'Run history', icon: Clock3 },
+  { id: 'usage', label: '사용 기록', icon: Receipt },
   { id: 'conversations', label: 'Conversations', icon: BookOpen },
 ];
 const stages = [
@@ -128,6 +130,7 @@ function App() {
         {page === 'compare' && <Compare />}
         {page === 'evaluations' && <Evaluations openPipeline={() => navigate('pipeline')} openCompare={() => navigate('compare')} />}
         {page === 'runs' && <Runs openPipeline={() => navigate('pipeline')} />}
+        {page === 'usage' && <UsagePage openPlayground={() => navigate('playground')} />}
         {page === 'conversations' && <Conversations chats={chats} open={chat => { setSelectedChat(chat); navigate('playground'); }} create={() => { setSelectedChat(null); navigate('playground'); }} remove={id => setChats(c => c.filter(chat => chat.id !== id))} />}
         {page === 'settings' && <Settings settings={settings} save={setSettings} notify={notify} />}
       </motion.div></AnimatePresence></main>
