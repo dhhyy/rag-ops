@@ -13,7 +13,7 @@ import './styles.css';
 import { api, Card, ColorIcon, CountUp, DetailRows, ease, Heading, IconButton, Modal, RAG_API, readError, shortTime, spring, Toggle } from './ui';
 import { Evaluations } from './evaluations';
 import { Compare } from './compare';
-import { Playground } from './playground';
+import { Playground, type DocTarget } from './playground';
 import { UsagePage } from './usage';
 import { SetupBar, StagePanel, useCatalog, useSetup, type BuildResponse, type IndexInfo, type PanelStage } from './setup';
 
@@ -45,6 +45,7 @@ const stages = [
 function App() {
   const [page, setPage] = useState<Page>('home');
   const [knowledgeView, setKnowledgeView] = useState<'all' | 'blocked'>('all');
+  const [docTarget, setDocTarget] = useState<DocTarget | null>(null);   // Playground에서 연 조각
   const [settings, setSettings] = useState<PreviewSettings>({ name: 'Local workspace', endpoint: 'http://localhost:11434' });
   const [dialog, setDialog] = useState<DialogState>(null);
   const [toast, setToast] = useState('');
@@ -124,9 +125,9 @@ function App() {
           </div>
           <div className="page-footer"><span><span className="local-dot" /> Local workspace</span><span>UI preview · Sample data</span></div>
         </>}
-        {page === 'knowledge' && <Knowledge view={knowledgeView} openPipeline={() => navigate('pipeline')} />}
+        {page === 'knowledge' && <Knowledge view={knowledgeView} target={docTarget} clearTarget={() => setDocTarget(null)} openPipeline={() => navigate('pipeline')} />}
         {page === 'pipeline' && <Pipeline enabled={enabled} flip={flip} openKnowledge={() => { navigate('knowledge'); setKnowledgeView('blocked'); }} />}
-        {page === 'playground' && <Playground openPipeline={() => navigate('pipeline')} openKnowledge={() => navigate('knowledge')} />}
+        {page === 'playground' && <Playground openPipeline={() => navigate('pipeline')} openKnowledge={t => { navigate('knowledge'); setDocTarget(t); }} />}
         {page === 'compare' && <Compare />}
         {page === 'evaluations' && <Evaluations openPipeline={() => navigate('pipeline')} openCompare={() => navigate('compare')} />}
         {page === 'runs' && <Runs openPipeline={() => navigate('pipeline')} />}
@@ -183,8 +184,8 @@ function useDocuments() {
   return { docs, error, setExternal };
 }
 
-function DocumentModal({ doc, close }: { doc: StoredDocument; close: () => void }) {
-  const { chunks, error } = useChunks(doc.id);
+function DocumentModal({ doc, target, close }: { doc: StoredDocument; target?: DocTarget | null; close: () => void }) {
+  const { chunks, error } = useChunks(doc.id, target?.indexId);
   return <Modal title={doc.title} close={close}>
     <DetailRows rows={[
       ['Source', `${doc.source_repo}/${doc.source_path}`],
@@ -195,20 +196,26 @@ function DocumentModal({ doc, close }: { doc: StoredDocument; close: () => void 
       ['External LLM', doc.external_ok ? 'Allowed' : 'Not allowed'],
       ['Ingested', shortTime(doc.ingested_at)],
     ]} />
-    <p className="muted document-chunks-heading">{chunks ? `${chunks.length} chunks` : error ?? 'Loading chunks…'}</p>
-    {chunks && <ChunkList chunks={chunks} />}
+    <p className="muted document-chunks-heading">{chunks ? `${chunks.length} chunks${target ? ` · Playground에서 본 조각 #${String(target.chunkIndex).padStart(2, '0')}을 강조했어요 (색인 #${target.indexId ?? '기본'})` : ''}` : error ?? 'Loading chunks…'}</p>
+    {chunks && <ChunkList chunks={chunks} highlight={target?.chunkIndex} />}
   </Modal>;
 }
 
 // Knowledge base: the documents the engine has stored, grouped by the git repository they came from.
 // view 'blocked': opened from a stage panel to allow documents for an external model, so start on the blocked ones.
-function Knowledge({ view, openPipeline }: { view: 'all' | 'blocked'; openPipeline: () => void }) {
+function Knowledge({ view, target, clearTarget, openPipeline }: { view: 'all' | 'blocked'; target: DocTarget | null; clearTarget: () => void; openPipeline: () => void }) {
   const { docs, error, setExternal } = useDocuments();
   const [filter, setFilter] = useState('');
   const [repo, setRepo] = useState<string | null>(null);
   const [open, setOpen] = useState<StoredDocument | null>(null);
   const [onlyBlocked, setOnlyBlocked] = useState(view === 'blocked');
   const [toggleError, setToggleError] = useState<string | null>(null);
+  // Playground에서 넘어왔으면 그 문서를 바로 연다
+  useEffect(() => {
+    if (!docs || !target) return;
+    const doc = docs.find(d => d.id === target.documentId);
+    if (doc) setOpen(doc); else clearTarget();
+  }, [docs, target]);   // eslint-disable-line react-hooks/exhaustive-deps
   const blockedCount = docs?.filter(d => !d.external_ok).length ?? 0;
   const repos = docs ? [...new Set(docs.map(d => d.source_repo))].map(name => {
     const list = docs.filter(d => d.source_repo === name);
@@ -263,7 +270,7 @@ function Knowledge({ view, openPipeline }: { view: 'all' | 'blocked'; openPipeli
     </Card>
     <p className="footnote">Stored in PostgreSQL · grouped by the git repository each document came from.</p>
 
-    {open && <DocumentModal doc={open} close={() => setOpen(null)} />}
+    {open && <DocumentModal doc={open} target={target?.documentId === open.id ? target : null} close={() => { setOpen(null); clearTarget(); }} />}
   </>;
 }
 // ---------- Live ingest pipeline (engine API: /api/rag) ----------
@@ -619,8 +626,16 @@ function GroupCard({ group, open, toggle, summary, badge, meter, delay, children
   </Card>;
 }
 
-function ChunkList({ chunks }: { chunks: Chunk[] }) {
-  return <div className="chunk-list">{chunks.map((c, i) => <motion.article className="chunk-item" key={c.chunk_index} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 12) * 0.035, duration: 0.35 }}>
+function ChunkList({ chunks, highlight }: { chunks: Chunk[]; highlight?: number }) {
+  // 강조할 조각이 있으면 그 조각까지 스크롤한다
+  const target = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const el = target.current;
+    const list = el?.parentElement;
+    // 목록과 창(모달)을 함께 움직여 그 조각이 화면 가운데 오게 한다
+    if (el && list) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [chunks, highlight]);
+  return <div className="chunk-list">{chunks.map((c, i) => <motion.article ref={c.chunk_index === highlight ? target : undefined} className={`chunk-item ${c.chunk_index === highlight ? 'is-target' : ''}`} key={c.chunk_index} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 12) * 0.035, duration: 0.35 }}>
     <header><span>#{String(c.chunk_index).padStart(2, '0')}</span><span>{c.token_count} tokens</span></header>
     <h4>{c.heading_path.split(' > ').slice(1).join(' › ') || c.heading_path}</h4>
     <p>{c.content.replace(/^#{2,3}\s.*\n+/, '')}</p>

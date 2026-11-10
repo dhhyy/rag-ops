@@ -130,7 +130,10 @@ function Move({ h, rank, reranked }: { h: Hit; rank: number; reranked: boolean }
   return <span className={`pg-move ${d > 0 ? '' : 'is-down'}`}>{d > 0 ? `↑${d}` : `↓${-d}`}<br />원래 {h.vector_rank}등</span>;
 }
 
-function Detail({ h, rank, reranked, openKnowledge }: { h: Hit; rank: number; reranked: boolean; openKnowledge: () => void }) {
+export type DocTarget = { documentId: number; indexId?: number; chunkIndex: number };
+type OpenDoc = (t: DocTarget) => void;
+
+function Detail({ h, rank, reranked, indexId, openKnowledge }: { h: Hit; rank: number; reranked: boolean; indexId?: number; openKnowledge: OpenDoc }) {
   return <div className="pg-detail-body">
     <div><small>{rank}번 근거 후보</small><h2>{lastHeading(h)}</h2><p className="pg-crumb">{h.heading_path.split(' > ').map(clean).join(' › ')}</p></div>
     <div className="pg-scores">
@@ -147,7 +150,7 @@ function Detail({ h, rank, reranked, openKnowledge }: { h: Hit; rank: number; re
       <dt>조각</dt><dd>{h.chunk_index + 1}번째 절</dd>
     </dl>
     <div><small>조각 원문</small><div className="pg-text">{body(h)}</div></div>
-    <button className="subtle-button pg-open" onClick={openKnowledge}>Knowledge에서 문서 보기 <ArrowUpRight size={13} /></button>
+    <button className="subtle-button pg-open" onClick={() => openKnowledge({ documentId: h.document_id, indexId, chunkIndex: h.chunk_index })}>Knowledge에서 이 조각 보기 <ArrowUpRight size={13} /></button>
   </div>;
 }
 
@@ -180,7 +183,7 @@ function Progress({ run, now, stop }: { run: Run; now: number; stop: () => void 
 
 // ---------- 결과 ----------
 
-function Results({ run, openKnowledge }: { run: Run; openKnowledge: () => void }) {
+function Results({ run, openKnowledge }: { run: Run; openKnowledge: OpenDoc }) {
   const final = run.phase === 'done' && !!run.hits;
   const hits = (final ? run.hits : run.vectorHits) ?? [];
   const reranked = final && !!run.start?.reranker;
@@ -218,21 +221,21 @@ function Results({ run, openKnowledge }: { run: Run; openKnowledge: () => void }
           </motion.button>
           {dup != null && <p className="pg-same">≈ {dup + 1}번과 같은 절이에요 (다른 문서에 같은 내용이 있어요)</p>}
           <AnimatePresence initial={false}>{final && isOpen && <motion.div className="pg-inline" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.25, ease }}>
-            <Detail h={h} rank={i + 1} reranked={reranked} openKnowledge={openKnowledge} />
+            <Detail h={h} rank={i + 1} reranked={reranked} indexId={run.start?.index_id} openKnowledge={openKnowledge} />
           </motion.div>}</AnimatePresence>
         </React.Fragment>;
       })}
     </Card>
     {final && <Card className="pg-detail"><AnimatePresence mode="wait" initial={false}>
       <motion.div key={hits[sel]?.chunk_id} initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -6 }} transition={{ duration: 0.2 }}>
-        {hits[sel] && <Detail h={hits[sel]} rank={sel + 1} reranked={reranked} openKnowledge={openKnowledge} />}
+        {hits[sel] && <Detail h={hits[sel]} rank={sel + 1} reranked={reranked} indexId={run.start?.index_id} openKnowledge={openKnowledge} />}
       </motion.div></AnimatePresence></Card>}
   </div>;
 }
 
 // ---------- 페이지 ----------
 
-export function Playground({ openPipeline, openKnowledge }: { openPipeline: () => void; openKnowledge: () => void }) {
+export function Playground({ openPipeline, openKnowledge }: { openPipeline: () => void; openKnowledge: OpenDoc }) {
   const { setup } = useSetup();
   const { run, ask, stop } = useSearch();
   const [input, setInput] = useState('');
