@@ -77,6 +77,15 @@ def git_source(path: Path) -> tuple[str, str, str]:
 # ---------- 자르기 ----------
 
 # 문서 맨 위 머리말(YAML 비슷한 부분)을 떼어 내고, 메타데이터와 본문으로 나눈다.
+# YAML 한 줄 값의 따옴표를 벗긴다. "..."는 \" 와 \\ 를, '...'는 '' 를 풀어 준다. 따옴표가 짝이 안 맞으면 그대로 둔다.
+def unquote(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        return value[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1].replace("''", "'")
+    return value
+
+
 def parse_front_matter(text: str) -> tuple[dict[str, str], str]:
     """맨 위 --- ... --- 머리말에서 한 줄짜리 값만 읽는다 (title, status 등)."""
     meta: dict[str, str] = {}
@@ -86,7 +95,7 @@ def parse_front_matter(text: str) -> tuple[dict[str, str], str]:
             for line in text[4:end].splitlines():
                 m = re.match(r"^(\w+):\s*(.+)$", line)
                 if m:
-                    meta[m.group(1)] = m.group(2).strip()
+                    meta[m.group(1)] = unquote(m.group(2).strip())
             text = text[end + 5:]
     return meta, text
 
