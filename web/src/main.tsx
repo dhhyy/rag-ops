@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AnimatePresence, motion, MotionConfig, useReducedMotion } from 'motion/react';
 import {
-  ArrowDown, ArrowLeftRight, ArrowRight, ArrowUpRight, Bell, BookOpen, Box, Check, CheckCheck,
+  ArrowLeftRight, ArrowRight, ArrowUpRight, Bell, BookOpen, Box, Check, CheckCheck,
   ChevronDown, ChevronRight, CircleAlert, Clock3, Database, FileText, Folder, LoaderCircle,
   GitBranch, Home, Layers3, Maximize2, MessageSquare, Pause, Play,
   Plus, Search, Settings2, ShieldCheck, SkipBack, SkipForward, SlidersHorizontal,
@@ -13,7 +13,8 @@ import './styles.css';
 import { api, Card, ColorIcon, CountUp, DetailRows, ease, Heading, IconButton, Modal, RAG_API, readError, shortTime, spring, Toggle } from './ui';
 import { Evaluations } from './evaluations';
 import { Compare } from './compare';
-import { SetupBar, SetupChips, StagePanel, useCatalog, useSetup, type BuildResponse, type IndexInfo, type PanelStage } from './setup';
+import { Playground } from './playground';
+import { SetupBar, StagePanel, useCatalog, useSetup, type BuildResponse, type IndexInfo, type PanelStage } from './setup';
 
 type Page = 'home' | 'knowledge' | 'pipeline' | 'playground' | 'compare' | 'evaluations' | 'runs' | 'conversations' | 'settings';
 type Collection = { id: number; name: string; documents: number; color: string };
@@ -53,7 +54,7 @@ function App() {
     { id: 3, name: 'Product knowledge', documents: 4, color: 'purple' },
   ]);
   const [chats, setChats] = useState<Chat[]>([]);
-  const [selectedChat, setSelectedChat] = useState<Chat | null>(null);
+  const [, setSelectedChat] = useState<Chat | null>(null);
   const [runs, setRuns] = useState<Run[]>([{ id: 1, title: 'Retrieval pipeline', status: 'Completed', time: 'Sample run' }, { id: 2, title: 'Baseline evaluation', status: 'Completed', time: 'Sample run' }, { id: 3, title: 'Document indexing', status: 'Completed', time: 'Sample run' }]);
   const [runStep, setRunStep] = useState(-1);
   const [runState, setRunState] = useState<'idle' | 'running' | 'paused' | 'complete'>('idle');
@@ -86,10 +87,6 @@ function App() {
   }
   function evaluate() { setScore(0); setEvaluating(true); }
   function flip(index: number) { setEnabled(e => e.map((v, i) => i === index ? !v : v)); }
-  function send(prompt: string) {
-    const chat = { id: Date.now(), title: prompt, prompt };
-    setChats(c => [chat, ...c]); setSelectedChat(chat);
-  }
 
   return <MotionConfig reducedMotion="user" transition={spring}><div className="desktop-stage"><div className="app-shell">
     <aside className="sidebar" aria-label="Main navigation">
@@ -127,7 +124,7 @@ function App() {
         </>}
         {page === 'knowledge' && <Knowledge view={knowledgeView} openPipeline={() => navigate('pipeline')} />}
         {page === 'pipeline' && <Pipeline enabled={enabled} flip={flip} openKnowledge={() => { navigate('knowledge'); setKnowledgeView('blocked'); }} />}
-        {page === 'playground' && <Playground chat={selectedChat} send={send} reset={() => setSelectedChat(null)} openPipeline={() => navigate('pipeline')} />}
+        {page === 'playground' && <Playground openPipeline={() => navigate('pipeline')} openKnowledge={() => navigate('knowledge')} />}
         {page === 'compare' && <Compare />}
         {page === 'evaluations' && <Evaluations openPipeline={() => navigate('pipeline')} openCompare={() => navigate('compare')} />}
         {page === 'runs' && <Runs openPipeline={() => navigate('pipeline')} />}
@@ -927,12 +924,6 @@ function Pipeline({ enabled, flip, openKnowledge }: { enabled: boolean[]; flip: 
   </>;
 }
 
-function Playground({ chat, send, reset, openPipeline }: { chat: Chat | null; send: (text: string) => void; reset: () => void; openPipeline: () => void }) {
-  const [input, setInput] = useState('');
-  const { setup } = useSetup();
-  return <><Heading title="Playground"><button className="subtle-button" onClick={reset}><Plus size={16} />New conversation</button></Heading><Card className="setup-summary-card"><SetupChips setup={setup} onChange={openPipeline} /></Card><Card className="chat-panel"><div className="chat-toolbar"><span><ColorIcon icon={GitBranch} color="purple" small />Retrieval pipeline <ChevronDown size={13} /></span><span className="tag">Demo mode</span></div><div className="chat-body">{chat ? <><motion.div className="chat-message user-message" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>{chat.prompt}</motion.div><motion.div className="chat-answer" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}><ColorIcon icon={Sparkles} color="lilac" /><div><h3>rag-ops</h3><p>This is a preview conversation. Once a local model and knowledge base are connected, your answer and source citations will appear here.</p><span className="tag">Sample response · No model connected</span></div></motion.div></> : <div className="chat-empty"><div className="empty-orb"><Sparkles size={31} strokeWidth={1.2} /></div><h2>Ask your knowledge.</h2><p>A space to try your retrieval pipeline.</p><div className="suggestion-row">{['Summarize my documents', 'Find related concepts'].map(t => <button key={t} onClick={() => setInput(t)}>{t}<ArrowUpRight size={14} /></button>)}</div></div>}</div><form className="composer" onSubmit={e => { e.preventDefault(); if (input.trim()) { send(input.trim()); setInput(''); } }}><input aria-label="Your message" value={input} onChange={e => setInput(e.target.value)} placeholder="Ask a question about your documents…" maxLength={2000} /><button className="send-button" disabled={!input.trim()} aria-label="Send message"><ArrowUp size={19} /></button></form><div className="composer-caption">Local workspace · Preview responses only</div></Card></>;
-}
-function ArrowUp({ size }: { size: number }) { return <ArrowDown size={size} style={{ transform: 'rotate(180deg)' }} />; }
 type QueueStatus = {
   online: boolean; workers: { name: string; active_job_ids: number[] }[]; redis_waiting: number | null;
   jobs: Record<JobStatus, number>; problems: string[];

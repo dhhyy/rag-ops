@@ -31,7 +31,7 @@ import evaluate
 import indexes
 from ingest import STAGES, IngestError, connect, ingest_file, load_env
 from jobs import JOB_COLUMNS, fetch_job
-from search import query_defaults
+from search import hit_dict, load_setup, query_defaults, retrieve_steps
 from tasks import celery, ingest_task
 
 # 작업은 worker가 실행하므로 엔진을 다시 켜도 진행 중인 작업은 영향을 받지 않는다. (끊긴 작업 정리는 worker가 켜질 때 한다)
@@ -246,6 +246,60 @@ async def job_events(job_id: int) -> StreamingResponse:
 
     # 프록시가 모았다가 보내지 않도록 캐시·버퍼링을 끈다.
     return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ---------- 검색 (Playground) ----------
+
+class SearchRequest(BaseModel):
+    question: str
+    rerank: Literal["setting", "off"] = "setting"   # off: 이번 질문만 리랭크 없이
+
+
+# 현재 설정으로 검색하면서 단계마다 한 줄씩(JSON Lines) 흘려보낸다.
+#   {"type":"start"…} → {"type":"embedded"} → {"type":"candidates", hits(벡터 순 상위 k)} → {"type":"rerank", done, total}… → {"type":"done", hits}
+# 화면이 연결을 끊으면(멈추기) 다음 리랭크 묶음 전에 멈춘다. 질문은 기록하지 않는다.
+@app.post("/search")
+def search_stream(req: SearchRequest) -> StreamingResponse:
+    question = req.question.strip()
+    if not question or len(question) > 2000:
+        raise HTTPException(400, "질문은 1~2000자로 적어 주세요")
+    env = load_env()
+    with connect(env) as conn:
+        setup = load_setup(conn)
+    query = setup["query"] if req.rerank == "setting" else {**setup["query"], "reranker": None}
+    index, k = setup["index"], setup["query"]["top_k"]
+    if query["reranker"]:
+        ok, reason = comp.RERANKERS[query["reranker"]["id"]].availability(env)
+        if not ok:
+            raise HTTPException(409, reason)
+
+    def line(obj: dict) -> str:
+        return json.dumps(obj, ensure_ascii=False, default=str) + "\n"
+
+    def stream():
+        yield line({"type": "start", "top_k": k, "index_id": index["id"],
+                    "embedder": comp.describe("embedder", index["embedder"]),
+                    "external": comp.is_external("embedder", index["embedder"]),
+                    "reranker": comp.describe("reranker", query["reranker"]) if query["reranker"] else None,
+                    "candidates": int(query["reranker"]["params"]["candidates"]) if query["reranker"] else None})
+        try:
+            for kind, value in retrieve_steps(env, index, query, question, k):
+                if kind == "embedded":
+                    yield line({"type": "embedded", "ms": round(value * 1000)})
+                elif kind == "candidates":
+                    hits, t_db = value
+                    yield line({"type": "candidates", "ms": round(t_db * 1000), "count": len(hits),
+                                "hits": [hit_dict(h) for h in hits[:k]]})
+                elif kind == "reranked":
+                    yield line({"type": "rerank", "done": value[0], "total": value[1]})
+                else:
+                    lat = {key: round(v * 1000) for key, v in value["latency"].items()}
+                    yield line({"type": "done", "latency_ms": lat, "hits": [hit_dict(h) for h in value["hits"][:k]]})
+        except IngestError as e:
+            yield line({"type": "error", "message": str(e)})
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 

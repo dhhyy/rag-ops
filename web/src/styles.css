@@ -464,3 +464,77 @@ button.cmp-row:hover{background:#faf8fd}
 .cmp-note{margin:0;font-size:11px;color:#8a7f96;line-height:1.5}
 .cmp-rank-before{display:block;font-size:9.5px;font-weight:500;opacity:.75;margin-top:1px}
 .cmp-hit-s small{display:block;font-size:9.5px;opacity:.7}
+
+/* ---------- Playground ---------- */
+/* Fixed: 제목 줄 */
+.pg-head{display:flex;align-items:flex-end;gap:12px 16px;flex-wrap:wrap;margin-bottom:16px}.pg-head>div:first-child{flex:1;min-width:240px}.pg-head p{margin-top:6px;color:var(--muted);font-size:12px}
+.pg-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.pg-chip{display:inline-flex;align-items:center;padding:6px 10px;border-radius:16px;background:#ffffffc4;border:1px solid #efe9f4;font-size:10.5px;color:#5f566b;white-space:nowrap}
+.pg-chip.is-on{background:#f3ecfb;border-color:#e3d4f3;color:#6a4f8d}.pg-chip.is-off{background:transparent;border-style:dashed;color:#9d94a8}
+.pg-link{display:inline-flex;align-items:center;gap:3px;font-size:11px;color:#7b62b0;padding:6px 4px;background:none}
+/* Fixed: 질문 줄 */
+.pg-ask{padding:14px 14px 12px 20px;display:flex;flex-direction:column;gap:10px;margin-bottom:14px}
+.pg-ask-row{display:flex;gap:10px;align-items:flex-end}
+.pg-ask textarea{flex:1;border:0;outline:0;resize:none;background:none;font:inherit;font-size:15px;line-height:1.5;padding:8px 0;min-height:38px;max-height:120px;color:var(--ink)}
+.pg-ask textarea::placeholder{color:#aaa3b4}
+.pg-send{width:42px;height:42px;border-radius:21px;background:#36343b;color:#fff;display:grid;place-items:center;flex-shrink:0}
+.pg-ask-foot{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap;border-top:1px solid #f0ecf4;padding-top:10px}
+.pg-ask-foot>small:first-of-type{flex:1;min-width:160px}
+.pg-seg button{font-size:11px;padding:6px 12px}
+.pg-ext{display:inline-flex;align-items:center;gap:5px;color:#a35f3b!important}
+/* Fixed: 진행 줄 */
+.pg-progress{padding:14px 18px;display:flex;gap:14px;align-items:center;margin-bottom:14px}
+.pg-step{display:flex;gap:9px;align-items:center;min-width:0;flex:1}
+.pg-step>div{min-width:0;flex:1}
+.pg-dot{width:24px;height:24px;border-radius:12px;display:grid;place-items:center;flex-shrink:0;background:#f0edf5;color:#a59cb0;font-size:11px}
+.pg-step.is-done .pg-dot{background:var(--lime);color:#4a4d12}.pg-step.is-run .pg-dot{background:var(--lilac);color:#4f2f72}
+.pg-step b{display:block;font-weight:500;font-size:12px;white-space:nowrap}.pg-step small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pg-step.is-wait b{color:#a59cb0}
+.pg-bar{display:block;height:4px;border-radius:2px;background:#f0edf5;overflow:hidden;margin-top:5px}.pg-bar i{display:block;height:100%;width:0;background:#9b81d3;border-radius:2px}
+.pg-stop{flex-shrink:0}
+.pg-note{display:flex;align-items:center;gap:6px;font-size:12px;color:#7a7085;margin:0 4px 12px}.pg-note.is-error{color:#b0553a}
+/* Fixed: 답변 자리 */
+.pg-answer{padding:14px 18px;display:flex;gap:12px;align-items:center;border:1px dashed #ddd3e8;background:#fdfcfe99;margin-bottom:14px}
+.pg-answer b{font-weight:500;display:block}.pg-answer small{display:block}
+.pg-answer-ic{width:32px;height:32px;border-radius:16px;background:#f3ecfb;color:#8b6bb6;display:grid;place-items:center;flex-shrink:0}
+/* Hybrid: 결과 (목록 Fluid + 상세 400px Fixed) */
+.pg-results{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:14px;align-items:start}.pg-results.is-solo{grid-template-columns:minmax(0,1fr)}
+.pg-list{padding:8px}.pg-list.is-pending .pg-hit{opacity:.62}
+.pg-list-head{display:flex;align-items:center;gap:4px 10px;padding:10px 12px 12px;flex-wrap:wrap}.pg-list-head h2{flex:1;white-space:nowrap}
+.pg-hit{display:grid;grid-template-columns:44px minmax(0,1fr) 92px;gap:12px;width:100%;text-align:left;padding:13px 12px;border-radius:13px;align-items:start;background:none}
+.pg-hit:hover:not(:disabled){background:#f8f6fb}.pg-hit:disabled{opacity:1}.pg-hit.is-selected{background:#f3eefa;box-shadow:inset 0 0 0 1px #e2d6f0}
+.pg-rank-col{display:flex;flex-direction:column;align-items:center}
+.pg-rank{font-size:19px;font-weight:500;letter-spacing:-.5px;color:#3e3a45;line-height:1}
+.pg-move{display:block;margin-top:6px;font-size:9.5px;font-weight:500;line-height:1.35;color:#5b8a2a;text-align:center;white-space:nowrap}.pg-move.is-down{color:#b06c4a}.pg-move.is-same{color:#b3abbd}
+.pg-hit-main{min-width:0;display:flex;flex-direction:column}
+.pg-hit-title{font-size:13px;font-weight:500;line-height:1.4}
+.pg-hit-doc{font-size:11px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pg-hit-snip{font-size:12px;color:#5d5866;line-height:1.55;margin-top:7px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pg-badges{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+.pg-b{font-size:9.5px;padding:3px 7px;border-radius:6px;background:#f0edf5;color:#7e7589;white-space:nowrap}.pg-b.is-warn{background:#fdeee4;color:#a35f3b}.pg-b.is-ok{background:#eef5d2;color:#5b6a14}
+.pg-score{text-align:right}.pg-score b{font-size:15px;font-weight:500;display:block}.pg-score small{display:block;font-size:9.5px}
+.pg-sbar{display:block;height:4px;background:#f0edf5;border-radius:2px;margin-top:6px;overflow:hidden}.pg-sbar i{display:block;height:100%;background:#9b81d3}
+.pg-same{margin:0 12px 8px 68px;font-size:10.5px;color:#8d8498}
+.pg-skel{height:78px;border-radius:13px;margin:8px 4px;background:linear-gradient(90deg,#f6f3f9 25%,#efebf4 50%,#f6f3f9 75%);background-size:200% 100%;animation:pg-sh 1.4s infinite}@keyframes pg-sh{to{background-position:-200% 0}}
+.pg-empty-note{padding:18px;color:var(--muted)}
+.pg-detail{position:sticky;top:calc(var(--rail-top,27px) + 70px);padding:18px 20px;max-height:calc(100vh - var(--rail-top,27px) - 94px);overflow:auto}
+.pg-inline{display:none;overflow:hidden;margin:0 6px 8px;border-radius:13px;background:#faf9fc}.pg-inline .pg-detail-body{padding:14px}
+.pg-detail-body{display:flex;flex-direction:column;gap:14px}
+.pg-detail-body h2{font-size:15px;line-height:1.4;margin-top:2px}.pg-crumb{font-size:11px;color:var(--muted);line-height:1.5;margin-top:4px}
+.pg-scores{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}.pg-scores div{background:#faf9fc;border-radius:11px;padding:10px 12px}.pg-scores small{display:block}.pg-scores b{display:block;font-size:16px;font-weight:500;margin:2px 0}
+.pg-inline .pg-scores div,.pg-inline .pg-text{background:#fff}
+.pg-callout{font-size:11px;line-height:1.55;color:#8a5a3e;background:#fdf1e9;border-radius:10px;padding:9px 11px}
+.pg-dl{display:grid;grid-template-columns:72px 1fr;gap:7px 10px;font-size:11.5px;margin:0}.pg-dl dt{color:var(--muted)}.pg-dl dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.pg-text{font-size:12.5px;line-height:1.7;color:#47434f;white-space:pre-wrap;overflow-wrap:anywhere;background:#faf9fc;border-radius:12px;padding:12px 14px;margin-top:4px}
+.pg-open{align-self:flex-start}
+/* 빈 화면 */
+.pg-empty{padding:46px 20px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:10px}
+.pg-orb{width:64px;height:64px;border-radius:32px;background:radial-gradient(circle at 35% 30%,#fff,#e6d9f5 60%,#d4c2ee);margin-bottom:6px}
+.pg-empty p{color:var(--muted);font-size:12px;max-width:460px;line-height:1.6}
+.pg-recent{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;align-items:center;margin-top:8px}
+.pg-recent button{font-size:11px;padding:6px 10px;border-radius:13px;background:#f6f3f9;color:#6b6078;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pg-recent.is-foot{justify-content:flex-start;margin:14px 4px 0}.pg-recent.is-foot button{background:#ffffffb0}
+@media(max-width:1100px){.pg-results{grid-template-columns:minmax(0,1fr)}.pg-detail{display:none}.pg-inline{display:block}.pg-hit.is-selected:not([aria-expanded="true"]){background:none;box-shadow:none}}
+@media(max-width:760px){.pg-progress{display:grid;grid-template-columns:1fr 1fr;gap:12px}.pg-stop{grid-column:1/-1;justify-self:start}
+  .pg-hit{grid-template-columns:30px minmax(0,1fr);gap:10px}.pg-score{grid-column:2;text-align:left;display:flex;gap:8px;align-items:center}.pg-score b{font-size:12px}.pg-score .pg-sbar{flex:1;margin:0}
+  .pg-same{margin-left:52px}.pg-ask{padding-left:16px}}

@@ -25,7 +25,8 @@ from indexes import get_index
 SQL = """
 SELECT c.id, 1 - (c.embedding <=> %(q)s::vector) AS score,
        c.chunk_index, c.heading_path, c.content,
-       d.source_repo, d.source_path, d.source_commit, d.env, d.doc_type, d.verification, c.embed_text
+       d.source_repo, d.source_path, d.source_commit, d.env, d.doc_type, d.verification,
+       d.id, d.title, d.checked_at, c.embed_text
 FROM chunks c JOIN documents d ON d.id = c.document_id
 WHERE c.index_id = %(index)s
 ORDER BY c.embedding <=> %(q)s::vector
@@ -68,26 +69,60 @@ def search(env: dict[str, str], index: dict, question: str, k: int) -> tuple[lis
     return rows, t1 - t0, t2 - t1, vec
 
 
-# 검색 설정까지 적용한 검색. 리랭크가 켜져 있으면 후보 N개를 리랭커 점수 순으로 다시 세운다.
-# hits는 후보 전체(리랭크 순)이고 부르는 쪽이 앞에서 k개를 쓴다. 평가는 리랭크 전 순위(vector_rank)도 함께 본다.
-def retrieve(env: dict[str, str], index: dict, query: dict, question: str, k: int) -> dict:
+# 검색 설정까지 적용한 검색을 단계마다 끊어서 진행한다. 단계가 끝날 때마다 (종류, 값)을 내보낸다.
+#   ("embedded", 초) → ("candidates", 후보 hits, 초) → ("reranked", 끝난 수, 전체 수)… → ("done", 결과 dict)
+# Playground는 이것을 그대로 화면에 흘려보내고, 평가·CLI는 retrieve()로 마지막 결과만 쓴다.
+# 리랭크를 작은 묶음으로 나눠 보내므로, 받는 쪽이 중간에 멈추면 다음 묶음은 보내지 않는다.
+def retrieve_steps(env: dict[str, str], index: dict, query: dict, question: str, k: int):
     reranker = query.get("reranker")
     rr = comp.make_reranker(reranker, env) if reranker else None
-    rows, t_embed, t_db, vec = search(env, index, question, max(k, rr.candidates) if rr else k)
+    n = max(k, rr.candidates) if rr else k
+    t0 = time.perf_counter()
+    try:
+        vec = comp.make_embedder(index["embedder"], env).embed_query(question)
+    except comp.ComponentError as e:
+        raise IngestError(str(e)) from None
+    t_embed = time.perf_counter() - t0
+    yield "embedded", t_embed
+    t1 = time.perf_counter()
+    with connect(env) as conn:
+        rows = conn.execute(SQL, {"q": json.dumps(vec), "k": n, "index": index["id"]}).fetchall()
+    t_db = time.perf_counter() - t1
     hits = [{"row": r, "score": float(r[1]), "vector_score": float(r[1]), "vector_rank": i} for i, r in enumerate(rows, 1)]
+    yield "candidates", (hits, t_db)
     t_rerank = 0.0
     if rr and rows:
-        t0 = time.perf_counter()
-        try:
-            scores = rr.score(question, [r[-1] for r in rows])
-        except comp.ComponentError as e:
-            raise IngestError(str(e)) from None
-        t_rerank = time.perf_counter() - t0
-        for h, sc in zip(hits, scores):
-            h["score"] = sc
+        texts = [r[-1] for r in rows]
+        for start in range(0, len(texts), comp.RERANK_BATCH):
+            t2 = time.perf_counter()
+            try:
+                scores = rr.score(question, texts[start:start + comp.RERANK_BATCH])
+            except comp.ComponentError as e:
+                raise IngestError(str(e)) from None
+            t_rerank += time.perf_counter() - t2
+            for h, sc in zip(hits[start:], scores):
+                h["score"] = sc
+            yield "reranked", (min(start + comp.RERANK_BATCH, len(texts)), len(texts))
         hits.sort(key=lambda h: -h["score"])
-    return {"hits": hits, "vec": vec, "candidates": len(rows) if rr else None,
-            "latency": {"embed": t_embed, "db": t_db, "rerank": t_rerank}}
+    yield "done", {"hits": hits, "vec": vec, "candidates": len(rows) if rr else None,
+                   "latency": {"embed": t_embed, "db": t_db, "rerank": t_rerank}}
+
+
+# 검색 설정까지 적용한 검색. hits는 후보 전체(리랭크했으면 리랭크 순)이고 부르는 쪽이 앞에서 k개를 쓴다.
+def retrieve(env: dict[str, str], index: dict, query: dict, question: str, k: int) -> dict:
+    for kind, value in retrieve_steps(env, index, query, question, k):
+        if kind == "done":
+            return value
+    raise IngestError("검색이 끝나지 않았습니다")
+
+
+# 화면에 보낼 조각 하나. 출처·환경·검증 상태와 리랭크 전후 점수를 함께 담는다.
+def hit_dict(h: dict) -> dict:
+    (cid, _, idx, path, content, repo, spath, commit, env_label, dtype, verif, doc_id, title, checked, _) = h["row"]
+    return {"chunk_id": cid, "score": round(h["score"], 4), "vector_score": round(h["vector_score"], 4),
+            "vector_rank": h["vector_rank"], "chunk_index": idx, "heading_path": path, "content": content,
+            "document_id": doc_id, "title": title, "source_repo": repo, "source_path": spath, "source_commit": commit,
+            "env": env_label, "doc_type": dtype, "verification": verif, "checked_at": checked.isoformat() if checked else None}
 
 
 # 명령줄 진입점: 질문을 받아 검색하고, 순위·점수·출처·조각 내용을 출력한다.
@@ -113,7 +148,7 @@ def main() -> None:
           + f" · 임베딩 {lat['embed']*1000:.0f}ms, 검색 {lat['db']*1000:.0f}ms"
           + (f", 리랭크 {lat['rerank']*1000:.0f}ms" if rr else "") + ")\n")
     for rank, h in enumerate(out["hits"][:k], 1):
-        _, _, idx, path, content, repo, spath, commit, env_label, dtype, verif, _ = h["row"]
+        _, _, idx, path, content, repo, spath, commit, env_label, dtype, verif, *_ = h["row"]
         moved = f"  (벡터 {h['vector_rank']}위 {h['vector_score']:.3f})" if rr else ""
         print(f"{rank}. {h['score']:.3f}  [{idx:02d}] {path}{moved}")
         print(f"   출처 {repo}/{spath}@{commit[:12]} · 환경 {env_label} · {dtype} · 검증 {verif}")
