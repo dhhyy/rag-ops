@@ -1,6 +1,10 @@
-"""가져오기 작업(ingest_jobs 테이블) 기록과 실행. API(작업 만들기·조회)와 Celery worker(실행)가 함께 쓴다.
+"""작업(ingest_jobs 테이블) 기록과 실행. API(작업 만들기·조회)와 Celery worker(실행)가 함께 쓴다.
 
-작업 하나 = 문서 하나. 상태는 queued(대기) → running(진행) → done(완료) / failed(실패) 순서로만 바뀐다.
+작업 종류(params.kind):
+  ingest  문서 하나를 가져와 기본 색인에 넣는다 (기본값)
+  build   저장된 문서 하나를 다른 색인에 넣는다 (색인 만들기·갱신)
+  eval    현재 설정으로 평가를 돌린다
+상태는 queued(대기) → running(진행) → done(완료) / failed(실패) 순서로만 바뀐다.
 """
 from __future__ import annotations
 
@@ -51,17 +55,41 @@ def run_job(job_id: int) -> None:
         return
     path, params = claimed
 
+    # 가져오기·색인 작업은 6단계(STAGES) 번호를 남기고, 평가처럼 단계가 다른 작업은 이름만 남긴다.
     def on_step(name: str, done: int | None, total: int | None) -> None:
-        update_job(job_id, stage=name, stage_index=STAGES.index(name) + 1,
+        update_job(job_id, stage=name, stage_index=STAGES.index(name) + 1 if name in STAGES else None,
                    progress_done=done, progress_total=total)
 
+    kind = params.get("kind", "ingest")
     try:
-        result = ingest_file(Path(path), env_label=params.get("env"), doc_type=params.get("doc_type"),
-                             verification=params.get("verification") or "미확인",
-                             checked_at=params.get("checked_at"), external_ok=bool(params.get("external_ok")),
-                             on_step=on_step)
+        if kind == "build":
+            from indexes import build_document
+            result = build_document(int(params["index_id"]), int(params["document_id"]), on_step)
+        elif kind == "eval":
+            from evaluate import run_eval
+            result = run_eval(label=params.get("label", ""), on_step=on_step,
+                              index_id=int(params["index_id"]) if params.get("index_id") else None,
+                              reranker=params.get("reranker"))
+        else:
+            result = ingest_file(Path(path), env_label=params.get("env"), doc_type=params.get("doc_type"),
+                                 verification=params.get("verification") or "미확인",
+                                 checked_at=params.get("checked_at"), external_ok=bool(params.get("external_ok")),
+                                 on_step=on_step)
         update_job(job_id, status="done", result=Jsonb(result), finished_at=NOW)
+        if kind == "build" and params.get("apply"):
+            apply_when_built(int(params["index_id"]), params.get("batch", ""))
     except IngestError as e:
         update_job(job_id, status="failed", error=str(e), finished_at=NOW)
     except Exception as e:  # TEI·DB 오류 등 예상 못 한 실패도 어느 단계였는지와 함께 남긴다
         update_job(job_id, status="failed", error=f"{type(e).__name__}: {e}", finished_at=NOW)
+
+
+# 색인 만들기 요청에서 "만들고 적용"을 골랐으면, 같은 요청(batch)의 작업이 모두 성공으로 끝났을 때 현재 설정을 그 색인으로 바꾼다.
+# 하나라도 실패했거나 아직 남아 있으면 바꾸지 않는다 (덜 만든 색인으로 검색하지 않게).
+def apply_when_built(index_id: int, batch: str) -> None:
+    with connect(load_env()) as conn:
+        left = conn.execute(
+            """SELECT count(*) FILTER (WHERE status IN ('queued', 'running')), count(*) FILTER (WHERE status = 'failed')
+               FROM ingest_jobs WHERE params->>'kind' = 'build' AND params->>'batch' = %s""", (batch,)).fetchone()
+        if left[0] == 0 and left[1] == 0:
+            conn.execute("UPDATE active_setup SET index_id=%s, updated_at=now() WHERE id=1", (index_id,))

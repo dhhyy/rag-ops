@@ -1,0 +1,231 @@
+"""검색 평가: 평가 질문으로 설정 하나(색인 + 검색 설정)를 돌려 지표를 재고 eval_runs에 저장한다.
+
+웹의 [현재 설정으로 평가]는 Celery 작업(jobs.py의 kind=eval)으로 이 파일의 run_eval을 부른다.
+명령줄은 eval/run.py를 쓴다.
+
+- 검색은 search.py와 같은 함수(같은 SQL, 같은 임베딩 구현)를 쓴다. 평가 대상이 실제 검색 경로여야 하기 때문이다.
+- 정답 판정: 꺼낸 조각이 근거와 같은 문서이고, 근거 문장(quote)을 포함하면 정답.
+  청킹 방식이 달라도 같은 기준을 쓸 수 있다. 비교 전에 마크다운 기호(*, `)와 공백 차이는 지운다.
+  quote가 없는 근거는 예전 방식(마지막 제목이 같은지)으로 보고, 결과에 match_by로 남긴다.
+- 답 없는 질문(abstain)은 성공률 계산에서 빼고, 무엇이 몇 점으로 올라왔는지만 기록한다. 보류 기준은 사용자가 정한다.
+- 그림 좌표: 그 색인의 조각 벡터로 PCA 축을 정하고 질문은 같은 축에 투영한다. 색인(모델)이 다르면 벡터 공간도 달라 그림끼리 직접 겹쳐 볼 수 없다.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import statistics
+import subprocess
+from pathlib import Path
+
+import numpy as np
+from psycopg.types.json import Jsonb
+
+import components as comp
+from ingest import ROOT, IngestError, OnStep, connect, load_env
+from indexes import get_index
+from search import load_setup, query_defaults, retrieve
+
+QUESTIONS = ROOT / "eval" / "questions.jsonl"
+TOP_K = 10               # 기록은 10개까지, 성공률은 1·3·5에서 본다
+RECALL_AT = (1, 3, 5)
+
+
+def norm(text: str) -> str:
+    return " ".join(re.sub(r"[*`]", "", text).split())
+
+
+def load_questions() -> tuple[list[dict], str]:
+    if not QUESTIONS.is_file():
+        raise IngestError(f"평가 질문 파일이 없습니다: {QUESTIONS}")
+    raw = QUESTIONS.read_bytes()
+    return [json.loads(line) for line in raw.decode().splitlines() if line.strip()], hashlib.sha256(raw).hexdigest()[:12]
+
+
+# 색인 안의 조각 전체와 벡터. 지도 좌표와 정답 판정에 쓴다.
+def load_chunks(conn, index_id: int) -> tuple[list[dict], np.ndarray]:
+    rows = conn.execute("""
+        SELECT c.id, d.source_path, d.title, c.chunk_index, c.heading_path, c.content, c.embedding::text
+        FROM chunks c JOIN documents d ON d.id = c.document_id
+        WHERE c.index_id = %s ORDER BY d.source_path, c.chunk_index""", (index_id,)).fetchall()
+    chunks, vecs = [], []
+    for cid, path, title, idx, heading_path, content, emb in rows:
+        chunks.append({"id": cid, "path": path, "title": title, "index": idx, "heading": heading_path.split(" > ")[-1],
+                       "heading_path": heading_path, "snippet": content[:240], "_norm": norm(content)})
+        vecs.append(json.loads(emb))
+    return chunks, np.array(vecs, dtype=np.float64)
+
+
+# 근거 하나에 맞는 조각인지. quote가 있으면 문장 포함, 없으면 마지막 제목 비교.
+def matches(chunk: dict, evidence: dict) -> bool:
+    if chunk["path"] != evidence["path"]:
+        return False
+    if evidence.get("quote"):
+        return norm(evidence["quote"]) in chunk["_norm"]
+    return chunk["heading"] == evidence.get("heading")
+
+
+# 조각 벡터로 PCA 2축을 구하고, 조각·질문 좌표와 2축이 담은 정보 비율을 돌려준다.
+def pca_2d(chunk_vecs: np.ndarray, question_vecs: np.ndarray) -> tuple[np.ndarray, np.ndarray, list[float]]:
+    mean = chunk_vecs.mean(axis=0)
+    centered = chunk_vecs - mean
+    _, s, vt = np.linalg.svd(centered, full_matrices=False)
+    axes = vt[:2].copy()
+    # 축 방향(부호)은 SVD 결과마다 뒤집힐 수 있어, 조각 좌표 합이 양수가 되게 맞춘다 (같은 데이터면 같은 그림).
+    for i in range(2):
+        if (centered @ axes[i]).sum() < 0:
+            axes[i] = -axes[i]
+    explained = (s ** 2) / (s ** 2).sum()
+    return centered @ axes.T, (question_vecs - mean) @ axes.T, [float(explained[0]), float(explained[1])]
+
+
+def code_commit() -> str:
+    try:
+        out = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain", "--", "engine"],
+                               capture_output=True, text=True).stdout.strip()
+        return out + ("-dirty" if dirty else "")
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"   # 컨테이너 안에는 이 저장소의 .git이 없다
+
+
+def _mean(xs: list[float]) -> float | None:
+    return round(statistics.fmean(xs), 4) if xs else None
+
+
+def _p95(xs: list[float]) -> float | None:
+    if not xs:
+        return None
+    s = sorted(xs)
+    return s[min(len(s) - 1, int(round(0.95 * (len(s) - 1))))]
+
+
+# 정답이 있는 질문 묶음의 지표: recall@k, MRR, 질문 수.
+def summarize(results: list[dict]) -> dict:
+    graded = [r for r in results if not r["abstain"]]
+    out: dict = {"questions": len(graded)}
+    for k in RECALL_AT:
+        out[f"recall@{k}"] = _mean([1.0 if r["rank"] and r["rank"] <= k else 0.0 for r in graded])
+    out["mrr"] = _mean([1.0 / r["rank"] if r["rank"] else 0.0 for r in graded])
+    return out
+
+
+# 설정 하나로 평가를 돌리고 eval_runs에 저장한다. setup_name이 없으면 현재 설정.
+# index_id를 주면 검색 설정은 그대로 두고 색인만 그것으로 바꿔 평가한다 (비교 화면의 A·B).
+# reranker를 주면 검색 설정의 리랭크만 그것으로 바꾼다. "off"면 끈다 (None이면 설정 그대로).
+def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | None = None,
+             index_id: int | None = None, reranker: dict | str | None = None) -> dict:
+    env = load_env()
+    questions, questions_sha = load_questions()
+    with connect(env) as conn:
+        setup = load_setup(conn, setup_name)
+        if index_id is not None:
+            setup["index"] = get_index(conn, index_id)
+        if reranker is not None:
+            setup["query"] = query_defaults({**setup["query"], "reranker": None if reranker == "off" else reranker})
+        index = setup["index"]
+        chunks, chunk_vecs = load_chunks(conn, index["id"])
+    if not chunks:
+        raise IngestError(f"색인 #{index['id']}에 조각이 없습니다. 먼저 색인을 만드세요")
+    by_id = {c["id"]: c for c in chunks}
+
+    results, qvecs = [], []
+    for i, q in enumerate(questions):
+        if on_step:
+            on_step("평가", i, len(questions))
+        out = retrieve(env, index, setup["query"], q["question"], TOP_K)
+        vec, lat = out["vec"], out["latency"]
+        qvecs.append(vec)
+        evidence = q.get("evidence", [])
+        gold_ids = [c["id"] for c in chunks if any(matches(c, e) for e in evidence)]
+        missing = [e for e in evidence if not any(matches(c, e) for c in chunks)]
+        ranked = [{"chunk_id": h["row"][0], "score": round(h["score"], 4),
+                   "vector_score": round(h["vector_score"], 4), "vector_rank": h["vector_rank"],
+                   "correct": any(matches(by_id[h["row"][0]], e) for e in evidence)} for h in out["hits"]]
+        retrieved = ranked[:TOP_K]
+        rank = next((n for n, h in enumerate(retrieved, 1) if h["correct"]), None)
+        # 리랭크 전(벡터 검색) 순위. 리랭크가 꺼져 있으면 rank와 같다. 후보 N개 안에 없으면 None.
+        rank_vector = min((h["vector_rank"] for h in ranked if h["correct"]), default=None)
+        results.append({**{k: q.get(k) for k in ("id", "kind", "question", "answer", "env", "abstain", "use")},
+                        "evidence": [{**e, "match_by": "quote" if e.get("quote") else "heading"} for e in evidence],
+                        "gold_chunk_ids": gold_ids, "missing_evidence": len(missing) > 0,
+                        "rank": rank, "rank_vector": rank_vector, "top1_score": retrieved[0]["score"] if retrieved else None,
+                        "retrieved": retrieved,
+                        "latency_ms": {"embed": round(lat["embed"] * 1000, 1), "db": round(lat["db"] * 1000, 1),
+                                       "rerank": round(lat["rerank"] * 1000, 1),
+                                       "total": round(sum(lat.values()) * 1000, 1)}})
+    if on_step:
+        on_step("평가", len(questions), len(questions))
+
+    chunk_xy, q_xy, explained = pca_2d(chunk_vecs, np.array(qvecs, dtype=np.float64))
+    for c, (x, y) in zip(chunks, chunk_xy):
+        c["x"], c["y"] = round(float(x), 5), round(float(y), 5)
+        c.pop("_norm")
+    for r, (x, y) in zip(results, q_xy):
+        r["x"], r["y"] = round(float(x), 5), round(float(y), 5)
+
+    totals = [r["latency_ms"]["total"] for r in results]
+    kinds = list(dict.fromkeys(r["kind"] for r in results))
+    summary = {
+        "all": summarize(results),
+        "by_kind": {k: summarize([r for r in results if r["kind"] == k]) for k in kinds
+                    if not all(r["abstain"] for r in results if r["kind"] == k)},
+        "abstain": {"questions": sum(bool(r["abstain"]) for r in results),
+                    "top1_scores": [r["top1_score"] for r in results if r["abstain"]]},
+        "latency_ms": {"mean": round(statistics.fmean(totals), 1), "p95": _p95(totals)},
+    }
+    snapshot = {
+        "name": setup["name"], "query": setup["query"],
+        "index": {"id": index["id"], "key": index["key"], "chunker": index["chunker"], "embedder": index["embedder"],
+                  "dims": index["dims"], "is_base": index["is_base"],
+                  "label": {"chunker": comp.describe("chunker", index["chunker"]),
+                            "embedder": comp.describe("embedder", index["embedder"])},
+                  "external": comp.is_external("embedder", index["embedder"])},
+        "reranker_label": comp.describe("reranker", setup["query"]["reranker"]) if setup["query"]["reranker"] else None,
+    }
+    meta = {"top_k": TOP_K, "recall_at": list(RECALL_AT), "code_commit": code_commit(),
+            "questions_file": "eval/questions.jsonl", "questions_sha256": questions_sha,
+            "documents": len({c["path"] for c in chunks}), "chunks": len(chunks),
+            "projection": {"method": "pca", "fit_on": "chunks", "explained": explained},
+            "external_query_calls": len(questions) if comp.is_external("embedder", index["embedder"]) else 0}
+    with connect(env) as conn:
+        run_id = conn.execute(
+            """INSERT INTO eval_runs (label, setup, index_id, questions_sha, summary, detail)
+               VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+            (label, Jsonb(snapshot), index["id"], questions_sha, Jsonb(summary),
+             Jsonb({"meta": meta, "questions": results, "chunks": chunks}))).fetchone()[0]
+    return {"status": "evaluated", "eval_run_id": run_id, "summary": summary["all"], "title": f"Evaluation #{run_id}"}
+
+
+# 저장된 평가 결과 하나를 화면·파일에 쓰는 모양으로 읽는다.
+def get_run(run_id: int) -> dict | None:
+    with connect(load_env()) as conn:
+        row = conn.execute("SELECT id, label, setup, summary, detail, created_at FROM eval_runs WHERE id=%s", (run_id,)).fetchone()
+    if row is None:
+        return None
+    rid, label, setup, summary, detail, created = row
+    meta = {**detail["meta"], "run_id": rid, "label": label, "created_at": created.isoformat(), "setup": setup}
+    return {"meta": meta, "summary": summary, "questions": detail["questions"], "chunks": detail["chunks"]}
+
+
+def list_runs(limit: int = 50) -> list[dict]:
+    with connect(load_env()) as conn:
+        rows = conn.execute("""SELECT id, label, setup, summary, created_at, detail->'meta'->>'questions_sha256'
+                               FROM eval_runs ORDER BY id DESC LIMIT %s""", (limit,)).fetchall()
+    return [{"run_id": r[0], "label": r[1], "setup": r[2], "summary": r[3]["all"], "latency_ms": r[3]["latency_ms"],
+             "created_at": r[4].isoformat(), "questions_sha256": r[5]} for r in rows]
+
+
+def export_run(run_id: int, out_dir: Path) -> Path:
+    run = get_run(run_id)
+    if run is None:
+        raise IngestError(f"Evaluation #{run_id} does not exist")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    idx = run["meta"]["setup"]["index"]
+    name = f"{run['meta']['created_at'][:19].replace(':', '').replace('-', '')}_{idx['key'].replace('|', '__')}.json"
+    name = re.sub(r"[^\w.\-=,\[\]]", "_", name)
+    path = out_dir / name
+    path.write_text(json.dumps(run, ensure_ascii=False, indent=1))
+    return path

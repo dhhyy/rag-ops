@@ -1,4 +1,4 @@
-"""문서 1개를 적재한다: 읽기 → 제목 단위로 자르기 → TEI 임베딩 → pgvector 저장.
+"""문서 1개를 적재한다: 읽기 → (기본 색인의 방식으로) 자르기 → 임베딩 → pgvector 저장.
 
 사용:
   python engine/app/ingest.py <문서 경로> --dry-run          # 자르기 결과만 보기 (DB·임베딩 안 함)
@@ -146,9 +146,9 @@ def make_embed_text(heading_path: list[str], body: str) -> str:
 # ---------- 임베딩 ----------
 
 # TEI(임베딩 서버)에 JSON을 POST하고 응답 JSON을 돌려준다. 외부 패키지 없이 urllib만 쓴다.
-def tei_post(url: str, payload: dict) -> list:
+def tei_post(url: str, payload: dict, timeout: float = 120) -> list:
     req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=120) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 
 
@@ -181,44 +181,27 @@ def connect(env: dict[str, str]):
                            f"user={env['POSTGRES_USER']} password={env['POSTGRES_PASSWORD']}")
 
 
-# 같은 문서가 같은 해시로 이미 저장돼 있는지 본다. 같으면 임베딩부터 건너뛴다.
-def unchanged(env: dict[str, str], doc: dict) -> int | None:
-    """이미 같은 내용이 들어 있으면 그 document_id, 아니면 None. 임베딩 전에 확인해서 계산을 아낀다."""
-    with connect(env) as conn:
-        row = conn.execute(
-            "SELECT id, content_hash FROM documents WHERE source_repo=%s AND source_path=%s",
-            (doc["source_repo"], doc["source_path"]),
-        ).fetchone()
-    return row[0] if row and row[1] == doc["content_hash"] else None
-
-
-# 문서 1행과 조각 여러 행을 한 트랜잭션으로 저장한다. 내용이 바뀌었으면 옛 문서를 지우고 다시 넣는다.
-def save(env: dict[str, str], doc: dict, rows: list[tuple]) -> tuple[str, int]:
-    """(결과, document_id)를 돌려준다. 결과는 inserted / replaced / skipped 중 하나."""
-    with connect(env) as conn:  # 블록이 끝나면 커밋, 오류면 전부 되돌린다
-        old = conn.execute(
-            "SELECT id, content_hash FROM documents WHERE source_repo=%s AND source_path=%s",
-            (doc["source_repo"], doc["source_path"]),
-        ).fetchone()
-        if old and old[1] == doc["content_hash"]:
-            return "skipped", old[0]
-        if old:
-            conn.execute("DELETE FROM documents WHERE id=%s", (old[0],))  # 조각도 함께 지워진다
-        doc_id = conn.execute(
-            """INSERT INTO documents (source_repo, source_path, source_commit, content_hash, title,
-                                      env, doc_type, verification, checked_at, external_ok)
-               VALUES (%(source_repo)s, %(source_path)s, %(source_commit)s, %(content_hash)s, %(title)s,
-                       %(env)s, %(doc_type)s, %(verification)s, %(checked_at)s, %(external_ok)s)
-               RETURNING id""",
-            doc,
-        ).fetchone()[0]
-        with conn.cursor() as cur:
-            cur.executemany(
-                """INSERT INTO chunks (document_id, chunk_index, heading_path, content, embed_text, token_count, embedding)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s::vector)""",
-                [(doc_id, *r) for r in rows],
-            )
-        return ("replaced" if old else "inserted"), doc_id
+# 문서 1행을 저장한다. 같은 저장소·경로가 있으면 그 행을 고쳐 쓴다 (id가 그대로라 다른 색인의 조각이 남는다 → "뒤처짐"으로 보인다).
+# 호출한 쪽의 트랜잭션 안에서 실행된다. (document_id, 새로 넣었는지)를 돌려준다.
+def upsert_document(conn, doc: dict) -> tuple[int, bool]:
+    row = conn.execute(
+        """UPDATE documents SET source_commit=%(source_commit)s, content_hash=%(content_hash)s, content=%(content)s,
+                  title=%(title)s, env=%(env)s, doc_type=%(doc_type)s, verification=%(verification)s,
+                  checked_at=%(checked_at)s, external_ok=%(external_ok)s, ingested_at=now()
+           WHERE source_repo=%(source_repo)s AND source_path=%(source_path)s RETURNING id""",
+        doc,
+    ).fetchone()
+    if row:
+        return row[0], False
+    row = conn.execute(
+        """INSERT INTO documents (source_repo, source_path, source_commit, content_hash, content, title,
+                                  env, doc_type, verification, checked_at, external_ok)
+           VALUES (%(source_repo)s, %(source_path)s, %(source_commit)s, %(content_hash)s, %(content)s, %(title)s,
+                   %(env)s, %(doc_type)s, %(verification)s, %(checked_at)s, %(external_ok)s)
+           RETURNING id""",
+        doc,
+    ).fetchone()
+    return row[0], True
 
 
 # ---------- 가져오기 (CLI·API 공용) ----------
@@ -250,7 +233,7 @@ def ingest_file(path: Path, *, env_label: str | None = None, doc_type: str | Non
     # 1. 확인: 문서를 읽고 머리말을 떼고 출처(git 저장소·커밋)를 구한다. git 밖의 파일은 출처를 남길 수 없어 거절한다.
     step("확인")
     raw = path.read_text(encoding="utf-8")
-    meta, text = parse_front_matter(raw)
+    meta, _ = parse_front_matter(raw)
     title = meta.get("title") or path.stem
     try:
         repo, rel, commit = git_source(path)
@@ -258,47 +241,38 @@ def ingest_file(path: Path, *, env_label: str | None = None, doc_type: str | Non
         raise IngestError("git 저장소 안의 파일이 아닙니다. 출처(저장소·커밋)를 기록할 수 없습니다")
 
     # 2. 중복 확인: content_hash(원문 전체의 sha256)가 DB와 같으면 여기서 끝낸다.
+    #    04 마이그레이션 전에 들어온 문서라 원문이 비어 있으면 원문만 채운다.
     step("중복 확인")
+    from indexes import base_index, prepare, store  # indexes가 이 파일을 불러오므로 여기서 불러온다 (순환 import 방지)
+
     env = load_env()
     doc = {
         "source_repo": repo, "source_path": rel, "source_commit": commit,
-        "content_hash": hashlib.sha256(raw.encode()).hexdigest(), "title": title,
+        "content_hash": hashlib.sha256(raw.encode()).hexdigest(), "content": raw, "title": title,
         "env": env_label, "doc_type": doc_type, "verification": verification,
         "checked_at": checked_at, "external_ok": external_ok,
     }
     result = {"source_repo": repo, "source_path": rel, "source_commit": commit, "title": title}
-    same_id = unchanged(env, doc)
-    if same_id is not None:
-        return {**result, "status": "skipped", "document_id": same_id, "chunks": None, "tokens": None}
+    with connect(env) as conn:
+        same = conn.execute("""SELECT id, content IS NULL FROM documents
+                               WHERE source_repo=%s AND source_path=%s AND content_hash=%s""",
+                            (repo, rel, doc["content_hash"])).fetchone()
+        if same and same[1]:
+            conn.execute("UPDATE documents SET content=%s WHERE id=%s", (raw, same[0]))
+        base = base_index(conn)
+    if same:
+        return {**result, "status": "skipped", "document_id": same[0], "chunks": None, "tokens": None}
 
-    # 3. 청킹: ##/### 제목마다 자르고, 임베딩할 글(제목 경로 + 본문)을 만든다.
-    step("청킹")
-    sections = split_sections(text, title)
-    if not sections:
-        raise IngestError("잘라 낸 조각이 없습니다 (빈 문서)")
-    embed_texts = [make_embed_text(s.heading_path, s.body) for s in sections]
+    # 3~5. 청킹 → 토큰 검사 → 임베딩: 기본 색인의 청킹 방식·임베딩 모델로 한다 (indexes.prepare).
+    rows, tokens = prepare(base, raw, title, external_ok, env, on_step)
 
-    # 4. 토큰 검사: 하나라도 한도를 넘으면 TEI가 조용히 자르기 전에 멈춘다.
-    step("토큰 검사")
-    base = embed_url(env)
-    tokens = count_tokens(base, embed_texts)
-    over = [i for i, t in enumerate(tokens) if t > MAX_TOKENS]
-    if over:
-        raise IngestError(f"{MAX_TOKENS}토큰을 넘는 조각: {over}. 잘림을 막기 위해 중단")
-
-    # 5. 임베딩: 8개씩 묶어 보내고, 묶음이 끝날 때마다 (끝낸 조각 수 / 전체)를 알린다.
-    step("임베딩", 0, len(embed_texts))
-    vecs = embed(base, embed_texts, on_batch=lambda done, total: step("임베딩", done, total))
-
-    # 6. 저장: 문서 1행과 조각 여러 행을 한 트랜잭션으로. 벡터는 pgvector가 읽는 '[...]' 문자열로 넘긴다.
+    # 6. 저장: 문서 1행과 기본 색인의 조각을 한 트랜잭션으로. 다른 색인은 건드리지 않는다 (사용자가 갱신을 누르면 그때).
     step("저장")
-    rows = [
-        (i, " > ".join(s.heading_path), s.body, t, n, json.dumps(v))
-        for i, (s, t, n, v) in enumerate(zip(sections, embed_texts, tokens, vecs))
-    ]
-    status, doc_id = save(env, doc, rows)
-    return {**result, "status": status, "document_id": doc_id, "chunks": len(rows),
-            "tokens": {"min": min(tokens), "max": max(tokens), "total": sum(tokens)}}
+    with connect(env) as conn:
+        doc_id, created = upsert_document(conn, doc)
+        store(conn, base["id"], doc_id, doc["content_hash"], rows)
+    return {**result, "status": "inserted" if created else "replaced", "document_id": doc_id,
+            "index_id": base["id"], "chunks": len(rows), "tokens": tokens}
 
 
 # ---------- 실행 ----------

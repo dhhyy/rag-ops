@@ -10,10 +10,15 @@ ENV GIT_OPTIONAL_LOCKS=0 PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# OpenAI 임베딩의 토큰 수를 세는 tiktoken은 첫 사용 때 인코딩 파일을 내려받는다. 이미지에 미리 받아 둔다
+ENV TIKTOKEN_CACHE_DIR=/srv/tiktoken
+RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" && chmod -R a+rX /srv/tiktoken
 
 # ingest.py는 자기 위치에서 두 단계 위를 저장소 루트로 본다. 같은 구조(engine/app)로 둔다
 COPY app/ /srv/engine/app/
 WORKDIR /srv/engine/app
+# celery는 앱을 불러올 때만 현재 폴더를 import 경로에 넣었다가 뺀다. 작업 도중 늦게 불러오는 모듈(indexes 등)도 찾도록 고정한다
+ENV PYTHONPATH=/srv/engine/app
 
 RUN useradd --create-home worker
 USER worker

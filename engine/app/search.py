@@ -2,57 +2,121 @@
 
 사용:
   python engine/app/search.py "도메인을 만들면 포트포워딩이 필요 없나?"
-  python engine/app/search.py "..." -k 10 --full     # 조각 원문 전체 보기
+  python engine/app/search.py "..." -k 10 --full          # 조각 원문 전체 보기
+  python engine/app/search.py "..." --setup Baseline      # 저장된 설정으로 (기본은 현재 설정)
 
+- 검색은 설정에 들어 있는 색인 하나 안에서만 한다. 질문도 그 색인과 같은 임베딩 모델로 임베딩해야 거리가 의미 있다.
 - 점수는 코사인 유사도(1 - 거리). 값 자체보다 순위를 본다 (무관한 글도 0.3~0.4가 나온다).
+- 리랭크를 켜면: 벡터 검색으로 후보 N개 → 리랭커가 질문과 조각을 함께 읽고 0~1 점수 → 그 점수 순으로 상위 k개.
+  리랭커에는 조각의 embed_text(색인이 임베딩한 글, 제목 경로 방식도 색인을 따른다)를 보낸다.
 - 답변 근거로 쓸 수 있도록 출처(저장소·경로·커밋)와 환경·검증 상태를 함께 보여 준다.
 """
-# 타입 힌트를 문자열로 늦게 해석한다.
 from __future__ import annotations
 
-# 표준 라이브러리. DB 접속·.env 읽기·TEI 호출은 ingest.py의 함수를 재사용한다.
 import argparse
 import json
 import time
 
-from ingest import connect, embed_url, load_env, tei_post
+import components as comp
+from ingest import IngestError, connect, load_env
+from indexes import get_index
 
-# 코사인 거리(<=>)가 가까운 순으로 상위 k개 조각을 가져온다. 출처·환경·검증 상태를 함께 붙이려고 documents와 조인한다.
+# 한 색인 안에서 코사인 거리(<=>)가 가까운 순으로 상위 k개 조각. 출처·환경·검증 상태를 함께 붙이려고 documents와 조인한다.
 SQL = """
-SELECT 1 - (c.embedding <=> %(q)s::vector) AS score,
+SELECT c.id, 1 - (c.embedding <=> %(q)s::vector) AS score,
        c.chunk_index, c.heading_path, c.content,
-       d.source_repo, d.source_path, d.source_commit, d.env, d.doc_type, d.verification
+       d.source_repo, d.source_path, d.source_commit, d.env, d.doc_type, d.verification, c.embed_text
 FROM chunks c JOIN documents d ON d.id = c.document_id
+WHERE c.index_id = %(index)s
 ORDER BY c.embedding <=> %(q)s::vector
 LIMIT %(k)s
 """
 
 
-# 질문을 임베딩한 뒤 SQL로 검색한다. 임베딩 시간과 DB 시간을 따로 재서 함께 돌려준다.
-def search(env: dict[str, str], question: str, k: int) -> tuple[list[tuple], float, float]:
+# 현재 설정(active_setup) 또는 이름 붙여 저장한 설정을 읽는다. 색인 정보까지 붙여 돌려준다.
+def load_setup(conn, name: str | None = None) -> dict:
+    if name:
+        row = conn.execute("SELECT index_id, query FROM setups WHERE name=%s", (name,)).fetchone()
+        if row is None:
+            raise IngestError(f"Setup {name!r} does not exist")
+    else:
+        row = conn.execute("SELECT index_id, query FROM active_setup WHERE id=1").fetchone()
+    index = get_index(conn, row[0])
+    return {"name": name, "index": index, "query": query_defaults(row[1])}
+
+
+# 검색 설정 기본값: top-k 5, 리랭크 끔. 리랭크 설정은 normalize로 기본값(후보 수)을 채운다.
+def query_defaults(query: dict | None) -> dict:
+    q = {"top_k": 5, "reranker": None, **(query or {})}
+    if q["reranker"]:
+        q["reranker"] = comp.normalize("reranker", q["reranker"])
+    return q
+
+
+# 질문을 그 색인의 임베딩 모델로 임베딩한 뒤 SQL로 검색한다.
+# (조각 행, 임베딩 시간, DB 시간, 질문 벡터)를 돌려준다. 평가는 질문 벡터를 지도에 다시 쓴다 (외부 API에 두 번 보내지 않게).
+def search(env: dict[str, str], index: dict, question: str, k: int) -> tuple[list[tuple], float, float, list[float]]:
     t0 = time.perf_counter()
-    vec = tei_post(f"{embed_url(env)}/embed", {"inputs": question})[0]
+    try:
+        vec = comp.make_embedder(index["embedder"], env).embed_query(question)
+    except comp.ComponentError as e:
+        raise IngestError(str(e)) from None
     t1 = time.perf_counter()
     with connect(env) as conn:
-        rows = conn.execute(SQL, {"q": json.dumps(vec), "k": k}).fetchall()
+        rows = conn.execute(SQL, {"q": json.dumps(vec), "k": k, "index": index["id"]}).fetchall()
     t2 = time.perf_counter()
-    return rows, t1 - t0, t2 - t1
+    return rows, t1 - t0, t2 - t1, vec
+
+
+# 검색 설정까지 적용한 검색. 리랭크가 켜져 있으면 후보 N개를 리랭커 점수 순으로 다시 세운다.
+# hits는 후보 전체(리랭크 순)이고 부르는 쪽이 앞에서 k개를 쓴다. 평가는 리랭크 전 순위(vector_rank)도 함께 본다.
+def retrieve(env: dict[str, str], index: dict, query: dict, question: str, k: int) -> dict:
+    reranker = query.get("reranker")
+    rr = comp.make_reranker(reranker, env) if reranker else None
+    rows, t_embed, t_db, vec = search(env, index, question, max(k, rr.candidates) if rr else k)
+    hits = [{"row": r, "score": float(r[1]), "vector_score": float(r[1]), "vector_rank": i} for i, r in enumerate(rows, 1)]
+    t_rerank = 0.0
+    if rr and rows:
+        t0 = time.perf_counter()
+        try:
+            scores = rr.score(question, [r[-1] for r in rows])
+        except comp.ComponentError as e:
+            raise IngestError(str(e)) from None
+        t_rerank = time.perf_counter() - t0
+        for h, sc in zip(hits, scores):
+            h["score"] = sc
+        hits.sort(key=lambda h: -h["score"])
+    return {"hits": hits, "vec": vec, "candidates": len(rows) if rr else None,
+            "latency": {"embed": t_embed, "db": t_db, "rerank": t_rerank}}
 
 
 # 명령줄 진입점: 질문을 받아 검색하고, 순위·점수·출처·조각 내용을 출력한다.
 def main() -> None:
     ap = argparse.ArgumentParser(description="벡터 검색")
     ap.add_argument("question")
-    ap.add_argument("-k", type=int, default=5, help="가져올 조각 수 (기본 5)")
+    ap.add_argument("-k", type=int, default=None, help="가져올 조각 수 (기본: 설정의 top_k)")
+    ap.add_argument("--setup", default=None, help="저장된 설정 이름 (기본: 현재 설정)")
     ap.add_argument("--full", action="store_true", help="조각 원문 전체 출력")
     a = ap.parse_args()
 
-    # 검색 결과를 순위대로 출력한다. --full이 아니면 조각을 160자로 줄여 보여 준다.
-    rows, t_embed, t_db = search(load_env(), a.question, a.k)
-    print(f"Q: {a.question}   (임베딩 {t_embed*1000:.0f}ms, 검색 {t_db*1000:.0f}ms)\n")
-    for rank, (score, idx, path, content, repo, spath, commit, env, dtype, verif) in enumerate(rows, 1):
-        print(f"{rank}. {score:.3f}  [{idx:02d}] {path}")
-        print(f"   출처 {repo}/{spath}@{commit[:12]} · 환경 {env} · {dtype} · 검증 {verif}")
+    env = load_env()
+    with connect(env) as conn:
+        setup = load_setup(conn, a.setup)
+    index = setup["index"]
+    k = a.k or setup["query"]["top_k"]
+    out = retrieve(env, index, setup["query"], a.question, k)
+    lat = out["latency"]
+    rr = setup["query"]["reranker"]
+    print(f"Q: {a.question}   (색인 #{index['id']} {comp.describe('chunker', index['chunker'])} × "
+          f"{comp.describe('embedder', index['embedder'])}"
+          + (f" · 리랭크 {comp.describe('reranker', rr)}" if rr else "")
+          + f" · 임베딩 {lat['embed']*1000:.0f}ms, 검색 {lat['db']*1000:.0f}ms"
+          + (f", 리랭크 {lat['rerank']*1000:.0f}ms" if rr else "") + ")\n")
+    for rank, h in enumerate(out["hits"][:k], 1):
+        _, _, idx, path, content, repo, spath, commit, env_label, dtype, verif, _ = h["row"]
+        moved = f"  (벡터 {h['vector_rank']}위 {h['vector_score']:.3f})" if rr else ""
+        print(f"{rank}. {h['score']:.3f}  [{idx:02d}] {path}{moved}")
+        print(f"   출처 {repo}/{spath}@{commit[:12]} · 환경 {env_label} · {dtype} · 검증 {verif}")
         text = content if a.full else content.replace("\n", " ")[:160] + "…"
         print(f"   {text}\n")
 

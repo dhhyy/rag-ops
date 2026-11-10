@@ -1,17 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AnimatePresence, animate, motion, MotionConfig, useMotionValue, useReducedMotion, useTransform } from 'motion/react';
+import { AnimatePresence, motion, MotionConfig, useReducedMotion } from 'motion/react';
 import {
-  ArrowDown, ArrowRight, ArrowUpRight, Bell, BookOpen, Box, Check, CheckCheck,
+  ArrowDown, ArrowLeftRight, ArrowRight, ArrowUpRight, Bell, BookOpen, Box, Check, CheckCheck,
   ChevronDown, ChevronRight, CircleAlert, Clock3, Database, FileText, Folder, LoaderCircle,
   GitBranch, Home, Layers3, Maximize2, MessageSquare, Pause, Play,
   Plus, Search, Settings2, ShieldCheck, SkipBack, SkipForward, SlidersHorizontal,
-  Sparkles, Trash2, X, Zap, ChartNoAxesCombined,
+  Sparkles, Trash2, Zap, ChartNoAxesCombined,
   type LucideIcon,
 } from 'lucide-react';
 import './styles.css';
+import { api, Card, ColorIcon, CountUp, DetailRows, ease, Heading, IconButton, Modal, RAG_API, readError, shortTime, spring, Toggle } from './ui';
+import { Evaluations } from './evaluations';
+import { Compare } from './compare';
+import { SetupBar, SetupChips, StagePanel, useCatalog, useSetup, type BuildResponse, type IndexInfo, type PanelStage } from './setup';
 
-type Page = 'home' | 'knowledge' | 'pipeline' | 'playground' | 'evaluations' | 'runs' | 'conversations' | 'settings';
+type Page = 'home' | 'knowledge' | 'pipeline' | 'playground' | 'compare' | 'evaluations' | 'runs' | 'conversations' | 'settings';
 type Collection = { id: number; name: string; documents: number; color: string };
 type Chat = { id: number; title: string; prompt: string };
 type Run = { id: number; title: string; status: string; time: string };
@@ -22,6 +26,7 @@ const pages: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'knowledge', label: 'Knowledge base', icon: Database },
   { id: 'pipeline', label: 'RAG pipeline', icon: GitBranch },
   { id: 'playground', label: 'Playground', icon: MessageSquare },
+  { id: 'compare', label: '비교', icon: ArrowLeftRight },
   { id: 'evaluations', label: 'Evaluations', icon: ChartNoAxesCombined },
   { id: 'runs', label: 'Run history', icon: Clock3 },
   { id: 'conversations', label: 'Conversations', icon: BookOpen },
@@ -33,31 +38,10 @@ const stages = [
   { name: 'Retrieval', detail: 'Top 5 · similarity', icon: Search, color: 'peach' },
   { name: 'Generation', detail: 'Local language model', icon: Sparkles, color: 'lilac' },
 ];
-const spring = { type: 'spring' as const, stiffness: 360, damping: 30 };
 
-function IconButton({ icon: Icon, label, onClick, className = '', disabled = false }: { icon: LucideIcon; label: string; onClick?: () => void; className?: string; disabled?: boolean }) {
-  return <button className={`icon-button ${className}`} aria-label={label} title={label} onClick={onClick} disabled={disabled}><Icon size={18} strokeWidth={1.7} /></button>;
-}
-function ColorIcon({ icon: Icon, color = 'lilac', small = false }: { icon: LucideIcon; color?: string; small?: boolean }) {
-  return <span className={`color-icon ${color} ${small ? 'small' : ''}`}><Icon size={small ? 15 : 19} strokeWidth={1.6} /></span>;
-}
-function Toggle({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) {
-  return <button role="switch" aria-checked={checked} aria-label={label} onClick={onChange} className={`switch ${checked ? 'checked' : ''}`}><motion.span animate={{ x: checked ? 17 : 0 }} transition={spring} /></button>;
-}
-function Card({ children, className = '', delay = 0 }: { children: React.ReactNode; className?: string; delay?: number }) {
-  const reduced = useReducedMotion();
-  return <motion.section className={`card ${className}`} initial={{ opacity: 0, y: reduced ? 0 : 22, filter: reduced ? 'none' : 'blur(7px)' }} animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }} transition={{ duration: reduced ? 0.1 : 0.65, delay: reduced ? 0 : delay, ease: [0.22, 1, 0.36, 1] }}>{children}</motion.section>;
-}
-function Heading({ title, subtitle, children }: { title: string; subtitle?: string; children?: React.ReactNode }) {
-  return <div className="page-heading"><div><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div><div className="heading-actions">{children}</div></div>;
-}
-function Modal({ children, title, close }: { children: React.ReactNode; title: string; close: () => void }) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => { ref.current?.showModal(); ref.current?.querySelector<HTMLInputElement>('input')?.focus(); }, []);
-  return <dialog ref={ref} className="dialog" onCancel={close} onClick={e => { if (e.target === e.currentTarget) close(); }} aria-labelledby="dialog-title"><motion.div className="dialog-inner" initial={{ opacity: 0, y: 16, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={spring}><div className="dialog-heading"><h2 id="dialog-title">{title}</h2><IconButton icon={X} label="Close dialog" onClick={close} /></div>{children}</motion.div></dialog>;
-}
 function App() {
   const [page, setPage] = useState<Page>('home');
+  const [knowledgeView, setKnowledgeView] = useState<'all' | 'blocked'>('all');
   const [settings, setSettings] = useState<PreviewSettings>({ name: 'Local workspace', endpoint: 'http://localhost:11434' });
   const [dialog, setDialog] = useState<DialogState>(null);
   const [toast, setToast] = useState('');
@@ -77,7 +61,7 @@ function App() {
   const [evaluating, setEvaluating] = useState(false);
   const reduced = useReducedMotion();
   const notify = (message: string) => setToast(message);
-  function navigate(next: Page) { setPage(next); setDialog(null); setWorkspaceOpen(false); window.scrollTo({ top: 0, behavior: 'instant' }); }
+  function navigate(next: Page) { if (next === 'knowledge') setKnowledgeView('all'); setPage(next); setDialog(null); setWorkspaceOpen(false); window.scrollTo({ top: 0, behavior: 'instant' }); }
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 3400); return () => clearTimeout(timer); }, [toast]);
   useEffect(() => {
     function handler(e: KeyboardEvent) { if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); setDialog({ type: 'search' }); } if (e.key === 'Escape') setWorkspaceOpen(false); }
@@ -116,7 +100,7 @@ function App() {
     <div className="main-shell">
       <header className="topbar">
         <div className="workspace-container"><button className="workspace-button" aria-expanded={workspaceOpen} onClick={() => setWorkspaceOpen(!workspaceOpen)}>My workspace <ChevronDown size={14} /></button><AnimatePresence>{workspaceOpen && <motion.div className="workspace-menu" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}><span className="overline">WORKSPACE</span><button onClick={() => setWorkspaceOpen(false)}><span className="local-dot" />Local workspace <Check size={14} /></button><small>UI preview · Sample data</small></motion.div>}</AnimatePresence></div>
-        <nav className="top-nav" aria-label="Workspace sections">{([{ id: 'knowledge', label: 'Knowledge' }, { id: 'pipeline', label: 'Pipelines' }, { id: 'evaluations', label: 'Evaluations' }, { id: 'playground', label: 'Playground' }] as { id: Page; label: string }[]).map(item => <button key={item.id} className={page === item.id ? 'selected' : ''} onClick={() => navigate(item.id)}>{item.label}</button>)}</nav>
+        <nav className="top-nav" aria-label="Workspace sections">{([{ id: 'knowledge', label: 'Knowledge' }, { id: 'pipeline', label: 'Pipelines' }, { id: 'compare', label: '비교' }, { id: 'evaluations', label: 'Evaluations' }, { id: 'playground', label: 'Playground' }] as { id: Page; label: string }[]).map(item => <button key={item.id} className={page === item.id ? 'selected' : ''} onClick={() => navigate(item.id)}>{item.label}</button>)}</nav>
         <div className="top-actions"><IconButton icon={Plus} label="Create knowledge base" onClick={() => setDialog({ type: 'create' })} /><IconButton icon={Search} label="Search workspace" onClick={() => setDialog({ type: 'search' })} /><IconButton icon={MessageSquare} label="Open conversations" onClick={() => navigate('conversations')} /><IconButton icon={Maximize2} label="Toggle full screen" onClick={() => { if (document.fullscreenElement) void document.exitFullscreen(); else void document.documentElement.requestFullscreen().catch(() => notify('Use your browser’s full-screen control')); }} /></div>
       </header>
       <main className="content" id="main-content"><AnimatePresence mode="wait"><motion.div key={page} className={`page page-${page}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, y: reduced ? 0 : -8, filter: reduced ? 'none' : 'blur(5px)' }} transition={{ duration: 0.2 }}>
@@ -141,10 +125,11 @@ function App() {
           </div>
           <div className="page-footer"><span><span className="local-dot" /> Local workspace</span><span>UI preview · Sample data</span></div>
         </>}
-        {page === 'knowledge' && <Knowledge openPipeline={() => navigate('pipeline')} />}
-        {page === 'pipeline' && <Pipeline enabled={enabled} flip={flip} />}
-        {page === 'playground' && <Playground chat={selectedChat} send={send} reset={() => setSelectedChat(null)} />}
-        {page === 'evaluations' && <Evaluations />}
+        {page === 'knowledge' && <Knowledge view={knowledgeView} openPipeline={() => navigate('pipeline')} />}
+        {page === 'pipeline' && <Pipeline enabled={enabled} flip={flip} openKnowledge={() => { navigate('knowledge'); setKnowledgeView('blocked'); }} />}
+        {page === 'playground' && <Playground chat={selectedChat} send={send} reset={() => setSelectedChat(null)} openPipeline={() => navigate('pipeline')} />}
+        {page === 'compare' && <Compare />}
+        {page === 'evaluations' && <Evaluations openPipeline={() => navigate('pipeline')} openCompare={() => navigate('compare')} />}
         {page === 'runs' && <Runs openPipeline={() => navigate('pipeline')} />}
         {page === 'conversations' && <Conversations chats={chats} open={chat => { setSelectedChat(chat); navigate('playground'); }} create={() => { setSelectedChat(null); navigate('playground'); }} remove={id => setChats(c => c.filter(chat => chat.id !== id))} />}
         {page === 'settings' && <Settings settings={settings} save={setSettings} notify={notify} />}
@@ -177,7 +162,6 @@ type StoredDocument = {
 };
 const verificationTone: Record<string, string> = { '확인': 'lime', '추정': 'blue', '미확인': 'neutral', '폐기': 'peach' };
 const repoColors = ['lime', 'blue', 'purple', 'peach'];
-const shortTime = (iso: string) => new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 // Every document stored in the DB (GET /documents). Reloads each time the page opens.
 function useDocuments() {
@@ -187,7 +171,16 @@ function useDocuments() {
     fetch(`${RAG_API}/documents`).then(async r => (r.ok ? r.json() : Promise.reject(await readError(r))))
       .then(setDocs).catch(e => setError(String(e)));
   }, []);
-  return { docs, error };
+  // Allow or block sending one document to external APIs. Shows the new value at once and puts it back if the engine refuses.
+  async function setExternal(id: number, value: boolean): Promise<string | null> {
+    setDocs(list => list?.map(d => (d.id === id ? { ...d, external_ok: value } : d)) ?? null);
+    try { await api(`/documents/${id}`, { method: 'PATCH', body: { external_ok: value } }); return null; }
+    catch (e) {
+      setDocs(list => list?.map(d => (d.id === id ? { ...d, external_ok: !value } : d)) ?? null);
+      return e instanceof Error ? e.message : String(e);
+    }
+  }
+  return { docs, error, setExternal };
 }
 
 function DocumentModal({ doc, close }: { doc: StoredDocument; close: () => void }) {
@@ -208,17 +201,21 @@ function DocumentModal({ doc, close }: { doc: StoredDocument; close: () => void 
 }
 
 // Knowledge base: the documents the engine has stored, grouped by the git repository they came from.
-function Knowledge({ openPipeline }: { openPipeline: () => void }) {
-  const { docs, error } = useDocuments();
+// view 'blocked': opened from a stage panel to allow documents for an external model, so start on the blocked ones.
+function Knowledge({ view, openPipeline }: { view: 'all' | 'blocked'; openPipeline: () => void }) {
+  const { docs, error, setExternal } = useDocuments();
   const [filter, setFilter] = useState('');
   const [repo, setRepo] = useState<string | null>(null);
   const [open, setOpen] = useState<StoredDocument | null>(null);
+  const [onlyBlocked, setOnlyBlocked] = useState(view === 'blocked');
+  const [toggleError, setToggleError] = useState<string | null>(null);
+  const blockedCount = docs?.filter(d => !d.external_ok).length ?? 0;
   const repos = docs ? [...new Set(docs.map(d => d.source_repo))].map(name => {
     const list = docs.filter(d => d.source_repo === name);
     return { name, documents: list.length, chunks: list.reduce((n, d) => n + d.chunks, 0) };
   }) : [];
   const query = filter.trim().toLowerCase();
-  const shown = (docs ?? []).filter(d => (!repo || d.source_repo === repo)
+  const shown = (docs ?? []).filter(d => (!repo || d.source_repo === repo) && (!onlyBlocked || !d.external_ok)
     && (!query || d.title.toLowerCase().includes(query) || d.source_path.toLowerCase().includes(query)));
   const totalChunks = docs?.reduce((n, d) => n + d.chunks, 0) ?? 0;
 
@@ -239,22 +236,30 @@ function Knowledge({ openPipeline }: { openPipeline: () => void }) {
 
     <div className="section-heading document-heading">
       <h2>Documents{repo && <span className="muted"> · {repo}</span>}</h2>
-      <label className="search-field"><Search size={16} /><input aria-label="Filter documents" placeholder="Search title or path" value={filter} onChange={e => setFilter(e.target.value)} /></label>
+      <div className="document-tools">
+        <button className={`eval-filter ${onlyBlocked ? 'is-active' : ''}`} aria-pressed={onlyBlocked} onClick={() => setOnlyBlocked(v => !v)}>External not allowed {blockedCount}</button>
+        <label className="search-field"><Search size={16} /><input aria-label="Filter documents" placeholder="Search title or path" value={filter} onChange={e => setFilter(e.target.value)} /></label>
+      </div>
     </div>
+    <AnimatePresence initial={false}>{onlyBlocked && <motion.p className="knowledge-hint" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>
+      An external model (for example OpenAI embeddings) receives the text of every chunk. Allow only documents you are fine sending outside — company material stays off.
+    </motion.p>}</AnimatePresence>
+    {toggleError && <p className="source-error queue-problems">{toggleError}</p>}
     <Card className="table-card documents-table" delay={0.2}>
       <table>
-        <thead><tr><th>Title</th><th>Environment</th><th>Type</th><th>Verification</th><th>Chunks</th><th>Ingested</th><th /></tr></thead>
+        <thead><tr><th>Title</th><th>Environment</th><th>Type</th><th>Verification</th><th title="May this document be sent to external APIs?">External</th><th>Chunks</th><th>Ingested</th><th /></tr></thead>
         <tbody>{shown.map((d, i) => <motion.tr key={d.id} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 14) * 0.03, duration: 0.3 }} onClick={() => setOpen(d)}>
           <td><span className="file-label"><FileText size={17} /><span className="doc-name"><b>{d.title}</b><small>{d.source_repo}/{d.source_path}</small></span></span></td>
           <td>{d.env ?? '—'}</td>
           <td>{d.doc_type ?? '—'}</td>
           <td><span className={`pill ${verificationTone[d.verification] ?? 'neutral'}`}>{d.verification}</span></td>
+          <td onClick={e => e.stopPropagation()}><span className="external-cell"><Toggle checked={d.external_ok} label={`Allow sending ${d.title} to external APIs`} onChange={async () => setToggleError(await setExternal(d.id, !d.external_ok))} /><small>{d.external_ok ? 'Allowed' : 'Off'}</small></span></td>
           <td className="num">{d.chunks}</td>
           <td className="num">{shortTime(d.ingested_at)}</td>
           <td><IconButton icon={ArrowUpRight} label={`Open ${d.title}`} onClick={() => setOpen(d)} /></td>
         </motion.tr>)}</tbody>
       </table>
-      {docs && !shown.length && <div className="empty-state compact"><Search size={24} /><p>{docs.length ? `No documents match “${filter}”.` : 'No documents stored yet.'}</p></div>}
+      {docs && !shown.length && <div className="empty-state compact"><Search size={24} /><p>{!docs.length ? 'No documents stored yet.' : onlyBlocked && !blockedCount ? 'Every document is allowed for external APIs.' : `No documents match “${filter}”.`}</p></div>}
     </Card>
     <p className="footnote">Stored in PostgreSQL · grouped by the git repository each document came from.</p>
 
@@ -265,9 +270,11 @@ function Knowledge({ openPipeline }: { openPipeline: () => void }) {
 
 type JobStatus = 'queued' | 'running' | 'done' | 'failed';
 type JobResult = {
-  status: 'inserted' | 'replaced' | 'skipped'; document_id: number; chunks: number | null;
+  status: 'inserted' | 'replaced' | 'skipped' | 'evaluated'; document_id: number; chunks: number | null;
   tokens: { min: number; max: number; total: number } | null;
   source_repo: string; source_path: string; source_commit: string; title: string;
+  index_id?: number;  // build jobs: the index they filled (ingest jobs fill the base index)
+  eval_run_id?: number; summary?: { 'recall@1': number | null };  // eval jobs
 };
 type Job = {
   id: number; path: string; params: Record<string, unknown> | null; status: JobStatus; stage: string | null; stage_index: number | null;
@@ -277,38 +284,34 @@ type Job = {
 type Chunk = { chunk_index: number; heading_path: string; token_count: number; content: string; embed_text: string };
 type Moment = { key: string; label: string; detail?: string; tone: 'run' | 'done' | 'fail'; at: number };
 type NodeState = 'idle' | 'waiting' | 'current' | 'done' | 'skipped' | 'failed' | 'planned';
-type StageNode = { name: string; detail: string; icon: LucideIcon; color: string; stage?: string; note?: string };
+// settings: which stage panel the card opens. live: the card is in use even though it is not an ingest stage.
+type StageNode = { name: string; detail: string; icon: LucideIcon; color: string; stage?: string; note?: string; settings?: PanelStage; live?: boolean };
 type GroupId = 'indexing' | 'retrieval' | 'generation';
 type Group = { id: GroupId; title: string; icon: LucideIcon; color: string; nodes: StageNode[] };
 
-const RAG_API = '/api/rag';
 const LAST_PATH_KEY = 'rag-ops:last-ingest-path';
 const ENV_OPTIONS = ['혼합', '운영', '개발', '샘플'];
 const DOC_TYPE_OPTIONS = ['해설', '설정', '실행 결과', '장애 기록'];
-// Same values as engine/app/ingest.py (MAX_TOKENS, EMBED_BATCH) and the bge-m3 vector size.
-const MAX_TOKENS = 2048;
-const EMBED_BATCH = 8;
-const EMBED_DIMS = 1024;
-const ease = [0.22, 1, 0.36, 1] as const;
+const jobKind = (j: Job) => String(j.params?.kind ?? 'ingest') as 'ingest' | 'build' | 'eval';
 
-// The whole RAG flow in three groups. Only Indexing is wired to the engine; each of its cards is one engine stage.
+// The whole RAG flow in three groups. Indexing cards are engine stages; cards with settings open the stage panel.
 const groups: Group[] = [
   { id: 'indexing', title: 'Indexing', icon: Layers3, color: 'lime', nodes: [
     { name: 'Source', detail: 'Front matter · git', icon: FileText, color: 'lime', stage: '확인', note: 'Reads the file, its front matter and the git commit it came from.' },
     { name: 'Dedupe', detail: 'sha256 compare', icon: CheckCheck, color: 'lime', stage: '중복 확인', note: 'Compares the content hash with the stored copy of the same path.' },
-    { name: 'Chunking', detail: '## / ### headings', icon: Layers3, color: 'blue', stage: '청킹', note: 'Splits the body at ## and ### headings. Each chunk keeps its heading path.' },
-    { name: 'Tokens', detail: `Up to ${MAX_TOKENS} each`, icon: SlidersHorizontal, color: 'blue', stage: '토큰 검사', note: `Counts tokens with the embedding tokenizer. Any chunk over ${MAX_TOKENS} stops the run.` },
-    { name: 'Embedding', detail: `bge-m3 · ${EMBED_DIMS} dims`, icon: Box, color: 'purple', stage: '임베딩', note: `Turns every chunk into a ${EMBED_DIMS}-dim vector, ${EMBED_BATCH} chunks per request.` },
-    { name: 'Storage', detail: 'PostgreSQL · pgvector', icon: Database, color: 'peach', stage: '저장', note: 'Writes the document and its chunks in one transaction.' },
+    { name: 'Chunking', detail: '## / ### headings', icon: Layers3, color: 'blue', stage: '청킹', settings: 'chunker', note: 'Splits the body into chunks. Each chunk keeps its heading path.' },
+    { name: 'Tokens', detail: 'Model tokenizer', icon: SlidersHorizontal, color: 'blue', stage: '토큰 검사', settings: 'embedder', note: "Counts tokens with the embedding model's tokenizer. A chunk over the model's limit stops the run." },
+    { name: 'Embedding', detail: 'Index model', icon: Box, color: 'purple', stage: '임베딩', settings: 'embedder', note: "Turns every chunk into a vector with the index's embedding model." },
+    { name: 'Storage', detail: 'PostgreSQL · pgvector', icon: Database, color: 'peach', stage: '저장', note: 'Writes the chunks of one document into its index in one transaction.' },
   ] },
   { id: 'retrieval', title: 'Retrieval', icon: Search, color: 'blue', nodes: [
-    { name: 'Query', detail: 'Embed the question', icon: MessageSquare, color: 'neutral' },
-    { name: 'Hybrid search', detail: 'Vector + BM25', icon: Search, color: 'neutral' },
-    { name: 'Rerank', detail: 'bge-reranker-v2-m3', icon: Zap, color: 'neutral' },
+    { name: 'Query', detail: 'Embed the question', icon: MessageSquare, color: 'blue', settings: 'query', live: true },
+    { name: 'Vector search', detail: 'pgvector · cosine', icon: Search, color: 'blue', settings: 'query', live: true },
+    { name: 'Rerank', detail: 'Reorder candidates', icon: Zap, color: 'blue', settings: 'reranker', live: true },
   ] },
   { id: 'generation', title: 'Generation', icon: Sparkles, color: 'purple', nodes: [
     { name: 'Context', detail: 'Pick the evidence', icon: BookOpen, color: 'neutral' },
-    { name: 'Answer', detail: 'External LLM', icon: Sparkles, color: 'neutral' },
+    { name: 'Answer', detail: 'Coming later', icon: Sparkles, color: 'neutral', settings: 'generator' },
     { name: 'Citations', detail: 'Sources · status', icon: ShieldCheck, color: 'neutral' },
   ] },
 ];
@@ -316,12 +319,13 @@ const indexing = groups[0].nodes;
 
 const stageLabels: Record<string, string> = {
   '확인': 'Checking source', '중복 확인': 'Comparing with stored copy', '청킹': 'Splitting by headings',
-  '토큰 검사': 'Counting tokens', '임베딩': 'Embedding chunks', '저장': 'Saving to pgvector',
+  '토큰 검사': 'Counting tokens', '임베딩': 'Embedding chunks', '저장': 'Saving to pgvector', '평가': 'Evaluating',
 };
 const resultTone: Record<JobResult['status'], { label: string; color: string; note: string }> = {
   inserted: { label: 'Inserted', color: 'lime', note: 'No stored copy of this path yet, so it was saved as a new document.' },
   replaced: { label: 'Replaced', color: 'blue', note: 'The content hash changed, so the old chunks were replaced.' },
   skipped: { label: 'Unchanged', color: 'neutral', note: 'Same hash as the stored copy, so nothing was re-chunked or re-embedded.' },
+  evaluated: { label: 'Evaluated', color: 'lilac', note: 'The evaluation set was run against the setup.' },
 };
 
 // 0-based index of the stage the job is on (or stopped at).
@@ -363,14 +367,6 @@ function stageSub(job: Job | null, index: number, state: NodeState) {
   return node.detail;
 }
 
-async function readError(res: Response): Promise<string> {
-  try {
-    const body = await res.json();
-    if (typeof body.detail === 'string') return body.detail;
-    if (Array.isArray(body.detail)) return body.detail.map((d: { msg: string }) => d.msg).join(' · ');
-  } catch { /* fall through */ }
-  return res.status === 502 ? 'Engine is not reachable. Start the engine API first.' : `Request failed (${res.status})`;
-}
 
 const isActive = (j: Job) => j.status === 'queued' || j.status === 'running';
 
@@ -442,7 +438,7 @@ function useIngestQueue() {
   }
 
   async function readQueue(): Promise<Job[]> {
-    const r = await fetch(`${RAG_API}/jobs?limit=200`);
+    const r = await fetch(`${RAG_API}/jobs?limit=200&kind=ingest,build`);
     if (!r.ok) throw new Error(String(r.status));
     return r.json();
   }
@@ -512,7 +508,17 @@ function useIngestQueue() {
     }
   }
 
-  return { jobs, job, select, moments, offline, start };
+  // Shows jobs that were started somewhere else (index build or refresh from the setup panel).
+  function adopt(created: { job_id: number; path: string }[], params: Record<string, unknown>) {
+    const at = new Date().toISOString();
+    const list: Job[] = created.map(j => ({ id: j.job_id, path: j.path, params, status: 'queued', stage: null, stage_index: null, progress_done: null, progress_total: null, error: null, result: null, created_at: at, started_at: null, finished_at: null }));
+    if (!list.length) return;
+    pinned.current = false;
+    setJobs(list);
+    setSelectedId(list[0].id);
+  }
+
+  return { jobs, job, select, moments, offline, start, adopt };
 }
 
 function useNow(active: boolean) {
@@ -525,26 +531,19 @@ function useNow(active: boolean) {
   return now;
 }
 
-function useChunks(documentId: number | null) {
+// Chunks of one document in one index (the base index when indexId is not given).
+function useChunks(documentId: number | null, indexId?: number) {
   const [chunks, setChunks] = useState<Chunk[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (documentId === null) return;
-    fetch(`${RAG_API}/documents/${documentId}/chunks`).then(async r => (r.ok ? r.json() : Promise.reject(await readError(r))))
+    setChunks(null);
+    fetch(`${RAG_API}/documents/${documentId}/chunks${indexId ? `?index_id=${indexId}` : ''}`).then(async r => (r.ok ? r.json() : Promise.reject(await readError(r))))
       .then(setChunks).catch(e => setError(String(e)));
-  }, [documentId]);
+  }, [documentId, indexId]);
   return { chunks, error };
 }
 
-function CountUp({ value }: { value: number }) {
-  const count = useMotionValue(0);
-  const text = useTransform(count, v => Math.round(v).toLocaleString());
-  useEffect(() => {
-    const controls = animate(count, value, { duration: 1.1, ease });
-    return () => controls.stop();
-  }, [value]);
-  return <motion.span>{text}</motion.span>;
-}
 
 function elapsed(job: Job | null, now: number) {
   if (!job?.started_at) return null;
@@ -552,13 +551,14 @@ function elapsed(job: Job | null, now: number) {
   return Math.max(0, (end - Date.parse(job.started_at)) / 1000);
 }
 
-function StageCard({ node, state, sub, progress, onOpen }: { node: StageNode; state: NodeState; sub: string; progress?: number | null; onOpen?: () => void }) {
+// chip: what this stage is set to now (e.g. "bge-m3 · Local"). Cards with a chip open their settings.
+function StageCard({ node, state, sub, progress, chip, onOpen }: { node: StageNode; state: NodeState; sub: string; progress?: number | null; chip?: { text: string; external?: boolean } | null; onOpen?: () => void }) {
   const isCurrent = state === 'current';
   return <motion.button
-    className={`flow-node ingest-node is-${state}`}
+    className={`flow-node ingest-node is-${state} ${chip ? 'has-chip' : ''}`}
     onClick={onOpen}
     disabled={!onOpen}
-    aria-label={onOpen ? `${node.name} details` : node.name}
+    aria-label={onOpen ? `${node.name}: ${node.settings ? 'settings and details' : 'details'}` : node.name}
     animate={state === 'failed' ? { x: [0, -6, 6, -4, 4, 0], scale: 1 } : { x: 0, scale: isCurrent ? 1.04 : 1 }}
     transition={state === 'failed' ? { duration: 0.5 } : spring}
   >
@@ -572,6 +572,7 @@ function StageCard({ node, state, sub, progress, onOpen }: { node: StageNode; st
     <AnimatePresence mode="wait" initial={false}>
       <motion.small key={sub} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.25 }}>{sub}</motion.small>
     </AnimatePresence>
+    {chip && <span className={`node-chip ${chip.external ? 'is-external' : ''}`} title={chip.text}>{chip.text}</span>}
     {progress != null && <div className="node-progress" aria-label={`${node.name} ${progress}%`}>
       <motion.span initial={{ width: 0 }} animate={{ width: `${progress}%` }} transition={{ duration: 0.7, ease }} />
     </div>}
@@ -596,7 +597,7 @@ function GroupCard({ group, open, toggle, summary, badge, meter, delay, children
   group: Group; open: boolean; toggle: () => void; summary: string; badge: React.ReactNode;
   meter?: { value: number; tone: string }; delay: number; children: React.ReactNode;
 }) {
-  const planned = group.nodes.every(n => !n.stage);
+  const planned = group.nodes.every(n => !n.stage && !n.live);
   return <Card className={`pipeline-canvas group-card ${open ? 'is-open' : ''} ${planned ? 'is-planned' : ''}`} delay={delay}>
     <button className="group-head" onClick={toggle} aria-expanded={open}>
       <ColorIcon icon={group.icon} color={planned ? 'neutral' : group.color} small />
@@ -626,40 +627,40 @@ function ChunkList({ chunks }: { chunks: Chunk[] }) {
   </motion.article>)}</div>;
 }
 
-function ChunkModal({ documentId, close }: { documentId: number; close: () => void }) {
-  const { chunks, error } = useChunks(documentId);
+function ChunkModal({ documentId, indexId, close }: { documentId: number; indexId?: number; close: () => void }) {
+  const { chunks, error } = useChunks(documentId, indexId);
   return <Modal title={`Chunks · document #${documentId}`} close={close}>
-    <p className="muted">{chunks ? `${chunks.length} chunks, split by headings` : error ?? 'Loading…'}</p>
+    <p className="muted">{chunks ? `${chunks.length} chunks${indexId ? ` in index #${indexId}` : ''}` : error ?? 'Loading…'}</p>
     {chunks && <ChunkList chunks={chunks} />}
   </Modal>;
 }
 
-function DetailRows({ rows }: { rows: [string, React.ReactNode][] }) {
-  return <dl className="detail-rows">{rows.map(([k, v], i) => <motion.div key={k} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04, duration: 0.3 }}>
-    <dt>{k}</dt><dd>{v ?? '—'}</dd>
-  </motion.div>)}</dl>;
-}
 
-// What one indexing stage did in the latest run. Uses only the job record and the stored chunks.
-function StageModal({ index, job, close }: { index: number; job: Job; close: () => void }) {
+// What one indexing stage did in the latest run (the "Last run" tab of the stage panel).
+// index: the index the job filled, for its model, size and token limit.
+function StageRun({ index, job, info, maxTokens }: { index: number; job: Job; info?: IndexInfo; maxTokens?: number }) {
   const node = indexing[index];
   const state = nodeState(job, index);
   const r = job.result;
-  const { chunks, error } = useChunks(r && index >= 2 && index <= 4 ? r.document_id : null);
+  const { chunks, error } = useChunks(r && index >= 2 && index <= 4 ? r.document_id : null, r?.index_id);
   const params = job.params ?? {};
   const waiting = <p className="dialog-note">{error ?? 'Loading…'}</p>;
   const pending = <p className="dialog-note">Details appear once the run finishes.</p>;
+  const limit = maxTokens ?? Math.max(1, ...(chunks ?? []).map(c => c.token_count));
 
   let body: React.ReactNode = null;
   if (index === 0) body = <DetailRows rows={[
+    ['Job', jobKind(job) === 'build' ? `Index build #${String(params.index_id ?? '?')}` : 'Ingest'],
     ['File', job.path],
     ['Repository', r?.source_repo],
     ['Path in repo', r?.source_path],
     ['Commit', r && <>{r.source_commit}{r.source_commit.endsWith('-dirty') && <em className="detail-hint">-dirty: the file had uncommitted edits</em>}</>],
     ['Title', r?.title],
-    ['Environment', String(params.env ?? '—')],
-    ['Document type', String(params.doc_type ?? '—')],
-    ['Verification', String(params.verification ?? '미확인')],
+    ...(jobKind(job) === 'ingest' ? [
+      ['Environment', String(params.env ?? '—')],
+      ['Document type', String(params.doc_type ?? '—')],
+      ['Verification', String(params.verification ?? '미확인')],
+    ] as [string, React.ReactNode][] : []),
   ]} />;
   else if (!r) body = pending;
   else if (index === 1) body = <div className="verdict">
@@ -667,7 +668,7 @@ function StageModal({ index, job, close }: { index: number; job: Job; close: () 
     <p>{resultTone[r.status].note}</p>
     <small>Document #{r.document_id}</small>
   </div>;
-  else if (index === 2) body = chunks ? <><p className="muted">{chunks.length} chunks</p><ChunkList chunks={chunks} /></> : waiting;
+  else if (index === 2) body = chunks ? <><p className="muted">{chunks.length} chunks · {info?.label.chunker ?? 'stored index'}</p><ChunkList chunks={chunks} /></> : waiting;
   else if (index === 3) body = chunks ? <>
     <div className="result-stats">
       <div><strong>{Math.min(...chunks.map(c => c.token_count))}</strong><small>Min</small></div>
@@ -676,34 +677,36 @@ function StageModal({ index, job, close }: { index: number; job: Job; close: () 
     </div>
     <div className="token-bars">{chunks.map((c, i) => <div className="token-row" key={c.chunk_index}>
       <span>#{String(c.chunk_index).padStart(2, '0')}</span>
-      <span className="token-track"><motion.span initial={{ width: 0 }} animate={{ width: `${Math.min(100, (c.token_count / MAX_TOKENS) * 100)}%` }} transition={{ delay: Math.min(i, 30) * 0.02, duration: 0.6, ease }} /></span>
+      <span className="token-track"><motion.span initial={{ width: 0 }} animate={{ width: `${Math.min(100, (c.token_count / limit) * 100)}%` }} transition={{ delay: Math.min(i, 30) * 0.02, duration: 0.6, ease }} /></span>
       <span>{c.token_count}</span>
     </div>)}</div>
-    <p className="dialog-note">Bars are scaled to the {MAX_TOKENS}-token limit.</p>
+    <p className="dialog-note">{maxTokens ? `Bars are scaled to the ${maxTokens.toLocaleString()}-token limit of ${info?.label.embedder ?? 'the model'}.` : 'Bars are scaled to the longest chunk.'}</p>
   </> : waiting;
   else if (index === 4) body = chunks ? <>
     <div className="result-stats">
       <div><strong><CountUp value={chunks.length} /></strong><small>Vectors</small></div>
-      <div><strong>{EMBED_DIMS}</strong><small>Dimensions</small></div>
-      <div><strong>{Math.ceil(chunks.length / EMBED_BATCH)}</strong><small>Requests of {EMBED_BATCH}</small></div>
+      <div><strong>{info?.dims ?? '—'}</strong><small>Dimensions</small></div>
+      <div><strong>{info ? (info.external ? 'External' : 'Local') : '—'}</strong><small>{info?.label.embedder ?? 'Model'}</small></div>
     </div>
-    <p className="muted">What gets embedded — the heading path is put in front of the chunk text.</p>
+    <p className="muted">What gets embedded{info?.chunker.params.prefix === 'none' ? ' — the section text only.' : ' — the heading path is put in front of the chunk text.'}</p>
     {chunks[0] && <article className="chunk-item embed-preview"><header><span>#{String(chunks[0].chunk_index).padStart(2, '0')}</span><span>{chunks[0].token_count} tokens</span></header><p>{chunks[0].embed_text}</p></article>}
   </> : waiting;
   else body = <DetailRows rows={[
     ['Document', `#${r.document_id}`],
+    ['Index', info ? `#${info.id} · ${info.label.chunker} × ${info.label.embedder}${info.is_base ? ' ★' : ''}` : r.index_id ? `#${r.index_id}` : 'Base index'],
     ['Result', resultTone[r.status].label],
     ['Chunks stored', r.chunks ?? 'unchanged'],
     ['Finished', job.finished_at ? new Date(job.finished_at).toLocaleString() : null],
     ['Tables', 'documents · chunks (pgvector)'],
   ]} />;
 
-  return <Modal title={node.name} close={close}>
+  return <>
     <div className="node-summary"><ColorIcon icon={state === 'failed' ? CircleAlert : node.icon} color={state === 'failed' ? 'peach' : node.color} /><div><h3>{stageLabels[node.stage!]}</h3><small>{node.note}</small></div></div>
+    <p className="run-of">Job #{job.id} · {fileName(job.path)}</p>
     {state === 'failed' && <p className="result-error">{job.error}</p>}
     {state === 'skipped' && <p className="dialog-note">This stage did not run because the document is unchanged. Showing the stored copy.</p>}
     {body}
-  </Modal>;
+  </>;
 }
 
 // One chip per document in the latest request. The chip being shown is highlighted; the running one fills as it goes.
@@ -723,18 +726,22 @@ function QueueStrip({ jobs, selected, select }: { jobs: Job[]; selected: number 
   </div>;
 }
 
-function Pipeline({ enabled, flip }: { enabled: boolean[]; flip: (i: number) => void }) {
-  const { jobs, job, select, moments, offline, start } = useIngestQueue();
+function Pipeline({ enabled, flip, openKnowledge }: { enabled: boolean[]; flip: (i: number) => void; openKnowledge: () => void }) {
+  const { jobs, job, select, moments, offline, start, adopt } = useIngestQueue();
+  const s = useSetup();
+  const { catalog } = useCatalog();
   const [path, setPath] = useState(() => { try { return localStorage.getItem(LAST_PATH_KEY) ?? ''; } catch { return ''; } });
   const [env, setEnv] = useState(ENV_OPTIONS[0]);
   const [docType, setDocType] = useState(DOC_TYPE_OPTIONS[0]);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [chunksOf, setChunksOf] = useState<number | null>(null);
-  const [detail, setDetail] = useState<number | null>(null);
-  const [open, setOpen] = useState<Record<GroupId, boolean>>({ indexing: true, retrieval: false, generation: false });
-  const busy = submitting || jobs.some(isActive);
+  const [chunksOf, setChunksOf] = useState<{ doc: number; index?: number } | null>(null);
+  const [panel, setPanel] = useState<{ group: GroupId; node: number } | null>(null);
+  const [open, setOpen] = useState<Record<GroupId, boolean>>({ indexing: true, retrieval: true, generation: false });
+  const queueActive = jobs.some(isActive);
+  const busy = submitting || queueActive;
+  const building = jobs.some(j => jobKind(j) === 'build');
   const jobBusy = !!job && isActive(job);
   const now = useNow(job?.status === 'running' || job?.status === 'queued');
   const seconds = elapsed(job, now);
@@ -744,6 +751,9 @@ function Pipeline({ enabled, flip }: { enabled: boolean[]; flip: (i: number) => 
 
   // A run that starts while Indexing is folded opens it again.
   useEffect(() => { if (busy) setOpen(o => (o.indexing ? o : { ...o, indexing: true })); }, [busy]);
+  // When the queue goes quiet, read the setup again: a finished build may have switched it, and an ingest leaves other indexes behind.
+  const wasActive = useRef(false);
+  useEffect(() => { if (wasActive.current && !queueActive) void s.reload(); wasActive.current = queueActive; }, [queueActive]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -758,10 +768,39 @@ function Pipeline({ enabled, flip }: { enabled: boolean[]; flip: (i: number) => 
     setSubmitting(false);
   }
 
+  // A build or refresh started from the setup bar or a stage panel: follow its jobs in the same queue.
+  function followBuild(r: BuildResponse) {
+    setPanel(null);
+    setError(null);
+    if (!r.jobs.length) { setNote(r.applied ? 'Applied. The index already had every document.' : 'Nothing to refresh. The index is up to date.'); return; }
+    const index = s.indexes.find(i => i.id === r.index_id);
+    setNote(`Building index #${r.index_id}${index ? ` (${index.label.embedder})` : ''}: ${r.jobs.length} document${r.jobs.length === 1 ? '' : 's'}. It becomes the current setup when every document is done.`);
+    adopt(r.jobs, { kind: 'build', index_id: r.index_id });
+  }
+
+  // The index the shown job filled: its model, size and token limit explain the "Last run" tab.
+  const base = s.indexes.find(i => i.is_base);
+  const jobIndexId = job?.result?.index_id ?? (job && jobKind(job) === 'build' ? Number(job.params?.index_id) : base?.id);
+  const jobInfo = s.indexes.find(i => i.id === jobIndexId);
+  const limitOf = (info?: IndexInfo) => catalog?.embedder.find(e => e.id === info?.embedder.id)?.max_tokens;
+  const cur = s.setup?.index;
+
+  function chipFor(n: StageNode): { text: string; external?: boolean } | null {
+    if (!cur || !s.setup) return null;
+    if (n.settings === 'chunker') return { text: cur.label.chunker };
+    if (n.settings === 'embedder') return n.name === 'Tokens'
+      ? { text: `≤ ${limitOf(cur)?.toLocaleString() ?? '?'} · ${cur.label.embedder}` }
+      : { text: `${cur.label.embedder} · ${cur.dims}d`, external: cur.external };
+    if (n.settings === 'reranker') return { text: s.setup.query.reranker_label ?? 'Off' };
+    if (n.settings === 'query') return n.name === 'Query' ? { text: cur.label.embedder, external: cur.external } : { text: `top-k ${s.setup.query.top_k}` };
+    if (n.settings) return { text: 'Not set' };
+    return null;
+  }
+
   const time = seconds !== null ? ` · ${seconds.toFixed(1)}s` : '';
   const finished = jobs.filter(j => !isActive(j)).length;
   const failedCount = jobs.filter(j => j.status === 'failed').length;
-  const queuePrefix = jobs.length > 1 ? `${finished} / ${jobs.length} documents · ` : '';
+  const queuePrefix = (building ? `Index #${String(jobs[0].params?.index_id ?? '?')} · ` : '') + (jobs.length > 1 ? `${finished} / ${jobs.length} documents · ` : '');
   const jobSummary = !job ? 'Not run yet · document → chunks → vectors'
     : status === 'done' && job.result ? `Job #${job.id} · ${job.result.chunks ?? 'no new'} chunks${time}`
     : status === 'failed' ? `Job #${job.id} · stopped at ${indexing[currentIndex(job)].name}`
@@ -780,11 +819,14 @@ function Pipeline({ enabled, flip }: { enabled: boolean[]; flip: (i: number) => 
   const embedPct = states[embedIndex] === 'done' ? 100
     : states[embedIndex] === 'current' && job?.progress_total ? Math.round(((job.progress_done ?? 0) / job.progress_total) * 100)
     : states[embedIndex] === 'current' ? 0 : null;
+  const target = panel ? groups.find(g => g.id === panel.group)!.nodes[panel.node] : null;
 
   return <>
-    <Heading title="RAG pipeline" subtitle="Ingest a document and follow every stage live">
+    <Heading title="RAG pipeline" subtitle="Pick what each stage uses, ingest documents and follow every stage live">
       <span className="tag">{offline ? 'Engine offline' : 'Local engine'}</span>
     </Heading>
+
+    <SetupBar s={s} onBuild={followBuild} />
 
     <Card className="source-card">
       <form className="source-form" onSubmit={submit}>
@@ -793,7 +835,7 @@ function Pipeline({ enabled, flip }: { enabled: boolean[]; flip: (i: number) => 
         <select className="chip-select" aria-label="Environment" value={env} onChange={e => setEnv(e.target.value)}>{ENV_OPTIONS.map(o => <option key={o}>{o}</option>)}</select>
         <select className="chip-select" aria-label="Document type" value={docType} onChange={e => setDocType(e.target.value)}>{DOC_TYPE_OPTIONS.map(o => <option key={o}>{o}</option>)}</select>
         <button className="primary-button" disabled={busy || !path.trim()}>
-          {busy ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}{busy ? 'Ingesting…' : 'Run ingest'}
+          {busy ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}{busy ? (building ? 'Building…' : 'Ingesting…') : 'Run ingest'}
         </button>
       </form>
       <AnimatePresence>{note && !error && <motion.p className="source-note" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>{note}</motion.p>}</AnimatePresence>
@@ -805,26 +847,26 @@ function Pipeline({ enabled, flip }: { enabled: boolean[]; flip: (i: number) => 
         const live = g.id === 'indexing';
         const toggle = () => setOpen(o => ({ ...o, [g.id]: !o[g.id] }));
         return <GroupCard key={g.id} group={g} open={open[g.id]} toggle={toggle} delay={0.05 + gi * 0.06}
-          summary={live ? indexingSummary : g.nodes.map(n => n.name).join(' → ')}
-          badge={live ? indexingBadge : <span className="tag">Soon</span>}
+          summary={live ? indexingSummary : g.id === 'retrieval' && s.setup ? `Question → ${s.setup.query.reranker ? `${s.setup.query.reranker.params.candidates} candidates → rerank → ` : ''}top ${s.setup.query.top_k} chunks from index #${s.setup.index.id}${s.setup.query.reranker ? '' : ' · rerank off'}` : g.nodes.map(n => n.name).join(' → ')}
+          badge={live ? indexingBadge : g.id === 'retrieval' ? <span className="tag">Used by Evaluations</span> : <span className="tag">Soon</span>}
           meter={live ? { value: queueProgress, tone: queueTone } : undefined}>
           {live ? <>
             {jobs.length > 1 && <QueueStrip jobs={jobs} selected={job?.id ?? null} select={select} />}
             <div className="flow-nodes">{indexing.map((n, i) => <React.Fragment key={n.name}>
-              <StageCard node={n} state={states[i]} sub={stageSub(job, i, states[i])} progress={i === embedIndex ? embedPct : null}
-                onOpen={job && ['done', 'skipped', 'failed'].includes(states[i]) ? () => setDetail(i) : undefined} />
+              <StageCard node={n} state={states[i]} sub={stageSub(job, i, states[i])} progress={i === embedIndex ? embedPct : null} chip={chipFor(n)}
+                onOpen={n.settings || (job && ['done', 'skipped', 'failed'].includes(states[i])) ? () => setPanel({ group: 'indexing', node: i }) : undefined} />
               {i < indexing.length - 1 && <StageConnector from={states[i]} to={states[i + 1]} />}
             </React.Fragment>)}</div>
             <div className="canvas-footer">
-              <span><GitBranch size={14} />{job?.result ? `${job.result.source_repo}/${job.result.source_path}` : job?.path.split('/').slice(-2).join('/') ?? 'No document yet'}</span>
-              <span>{status === 'done' || status === 'failed' ? 'Click a stage for details' : 'Stages light up as the engine reports them'}</span>
+              <span><GitBranch size={14} />{job?.result ? `${job.result.source_repo}/${job.result.source_path}` : job?.path.split('/').slice(-2).join('/') ?? 'No document yet'}{jobInfo && job ? ` · index #${jobInfo.id}${jobInfo.is_base ? ' ★' : ''}` : ''}</span>
+              <span>Chunking, Tokens and Embedding open their settings</span>
             </div>
           </> : <>
             <div className="flow-nodes">{g.nodes.map((n, i) => <React.Fragment key={n.name}>
-              <StageCard node={n} state="planned" sub={n.detail} />
-              {i < g.nodes.length - 1 && <StageConnector from="planned" to="planned" />}
+              <StageCard node={n} state={n.live ? 'idle' : 'planned'} sub={n.detail} chip={chipFor(n)} onOpen={n.settings ? () => setPanel({ group: g.id, node: i }) : undefined} />
+              {i < g.nodes.length - 1 && <StageConnector from={n.live ? 'done' : 'planned'} to={g.nodes[i + 1].live ? 'idle' : 'planned'} />}
             </React.Fragment>)}</div>
-            <div className="canvas-footer"><span><GitBranch size={14} />Planned</span><span>Not connected to the engine yet</span></div>
+            <div className="canvas-footer"><span><GitBranch size={14} />{g.id === 'retrieval' ? 'Search runs in Evaluations today' : 'Planned'}</span><span>{g.id === 'retrieval' ? 'Changes apply right away' : 'Not connected to the engine yet'}</span></div>
           </>}
         </GroupCard>;
       })}
@@ -856,8 +898,8 @@ function Pipeline({ enabled, flip }: { enabled: boolean[]; flip: (i: number) => 
               <div><strong>{job.result.tokens ? <CountUp value={job.result.tokens.max} /> : '—'}</strong><small>Max tokens</small></div>
               <div><strong>{seconds !== null ? `${seconds.toFixed(1)}s` : '—'}</strong><small>Elapsed</small></div>
             </div>
-            <p className="result-source">{job.result.source_repo}/{job.result.source_path}<br />@ {job.result.source_commit.slice(0, 12)}</p>
-            <button className="subtle-button result-action" onClick={() => setChunksOf(job.result!.document_id)}>View chunks <ArrowUpRight size={14} /></button>
+            <p className="result-source">{job.result.source_repo}/{job.result.source_path}<br />@ {job.result.source_commit.slice(0, 12)}{jobInfo ? <><br />index #{jobInfo.id} · {jobInfo.label.embedder}</> : null}</p>
+            <button className="subtle-button result-action" onClick={() => setChunksOf({ doc: job.result!.document_id, index: job.result!.index_id })}>View chunks <ArrowUpRight size={14} /></button>
           </motion.div>
           : status === 'failed' ? <motion.div key="failed" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
             <h3 className="result-title">Stopped at {indexing[currentIndex(job!)].name}</h3>
@@ -877,282 +919,20 @@ function Pipeline({ enabled, flip }: { enabled: boolean[]; flip: (i: number) => 
     <div className="section-heading pipeline-options-heading"><h2>Pipeline options</h2><span className="tag">Preview settings</span></div>
     <div className="quick-grid">{['Retrieval', 'Reranking', 'Streaming', 'Citations'].map((name, i) => <Card className="option-card" key={name} delay={0.15 + i * 0.06}><span>{name}</span><Toggle checked={enabled[i]} onChange={() => flip(i)} label={name} /></Card>)}</div>
 
-    {chunksOf !== null && <ChunkModal documentId={chunksOf} close={() => setChunksOf(null)} />}
-    {detail !== null && job && <StageModal index={detail} job={job} close={() => setDetail(null)} />}
+    {chunksOf !== null && <ChunkModal documentId={chunksOf.doc} indexId={chunksOf.index} close={() => setChunksOf(null)} />}
+    <AnimatePresence>{target && panel && <StagePanel key={`${panel.group}-${panel.node}`} title={target.name} icon={target.icon} color={target.color} settings={target.settings ?? null}
+      note={target.name === 'Tokens' ? "There is nothing to pick for the token check: it follows the embedding model. Each chunk must fit that model's limit, counted with its own tokenizer." : undefined}
+      lastRun={panel.group === 'indexing' && job && job.status !== 'queued' ? <StageRun index={panel.node} job={job} info={jobInfo} maxTokens={limitOf(jobInfo)} /> : null}
+      s={s} catalog={catalog} busy={queueActive} close={() => setPanel(null)} onBuild={followBuild} openKnowledge={openKnowledge} />}</AnimatePresence>
   </>;
 }
 
-function Playground({ chat, send, reset }: { chat: Chat | null; send: (text: string) => void; reset: () => void }) {
+function Playground({ chat, send, reset, openPipeline }: { chat: Chat | null; send: (text: string) => void; reset: () => void; openPipeline: () => void }) {
   const [input, setInput] = useState('');
-  return <><Heading title="Playground"><button className="subtle-button" onClick={reset}><Plus size={16} />New conversation</button></Heading><Card className="chat-panel"><div className="chat-toolbar"><span><ColorIcon icon={GitBranch} color="purple" small />Retrieval pipeline <ChevronDown size={13} /></span><span className="tag">Demo mode</span></div><div className="chat-body">{chat ? <><motion.div className="chat-message user-message" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>{chat.prompt}</motion.div><motion.div className="chat-answer" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}><ColorIcon icon={Sparkles} color="lilac" /><div><h3>rag-ops</h3><p>This is a preview conversation. Once a local model and knowledge base are connected, your answer and source citations will appear here.</p><span className="tag">Sample response · No model connected</span></div></motion.div></> : <div className="chat-empty"><div className="empty-orb"><Sparkles size={31} strokeWidth={1.2} /></div><h2>Ask your knowledge.</h2><p>A space to try your retrieval pipeline.</p><div className="suggestion-row">{['Summarize my documents', 'Find related concepts'].map(t => <button key={t} onClick={() => setInput(t)}>{t}<ArrowUpRight size={14} /></button>)}</div></div>}</div><form className="composer" onSubmit={e => { e.preventDefault(); if (input.trim()) { send(input.trim()); setInput(''); } }}><input aria-label="Your message" value={input} onChange={e => setInput(e.target.value)} placeholder="Ask a question about your documents…" maxLength={2000} /><button className="send-button" disabled={!input.trim()} aria-label="Send message"><ArrowUp size={19} /></button></form><div className="composer-caption">Local workspace · Preview responses only</div></Card></>;
+  const { setup } = useSetup();
+  return <><Heading title="Playground"><button className="subtle-button" onClick={reset}><Plus size={16} />New conversation</button></Heading><Card className="setup-summary-card"><SetupChips setup={setup} onChange={openPipeline} /></Card><Card className="chat-panel"><div className="chat-toolbar"><span><ColorIcon icon={GitBranch} color="purple" small />Retrieval pipeline <ChevronDown size={13} /></span><span className="tag">Demo mode</span></div><div className="chat-body">{chat ? <><motion.div className="chat-message user-message" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>{chat.prompt}</motion.div><motion.div className="chat-answer" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}><ColorIcon icon={Sparkles} color="lilac" /><div><h3>rag-ops</h3><p>This is a preview conversation. Once a local model and knowledge base are connected, your answer and source citations will appear here.</p><span className="tag">Sample response · No model connected</span></div></motion.div></> : <div className="chat-empty"><div className="empty-orb"><Sparkles size={31} strokeWidth={1.2} /></div><h2>Ask your knowledge.</h2><p>A space to try your retrieval pipeline.</p><div className="suggestion-row">{['Summarize my documents', 'Find related concepts'].map(t => <button key={t} onClick={() => setInput(t)}>{t}<ArrowUpRight size={14} /></button>)}</div></div>}</div><form className="composer" onSubmit={e => { e.preventDefault(); if (input.trim()) { send(input.trim()); setInput(''); } }}><input aria-label="Your message" value={input} onChange={e => setInput(e.target.value)} placeholder="Ask a question about your documents…" maxLength={2000} /><button className="send-button" disabled={!input.trim()} aria-label="Send message"><ArrowUp size={19} /></button></form><div className="composer-caption">Local workspace · Preview responses only</div></Card></>;
 }
 function ArrowUp({ size }: { size: number }) { return <ArrowDown size={size} style={{ transform: 'rotate(180deg)' }} />; }
-// ---------- Evaluations: retrieval scores from eval/run.py and the embedding map ----------
-type EvalSummary = { questions: number; 'recall@1': number | null; 'recall@3': number | null; 'recall@5': number | null; mrr: number | null };
-type EvalHit = { chunk_id: number; score: number; correct: boolean };
-type EvalQuestion = {
-  id: string; kind: string; question: string; answer: string; env: string; abstain: boolean; use: string;
-  evidence: { path: string; heading: string }[]; gold_chunk_ids: number[]; missing_evidence: boolean;
-  rank: number | null; top1_score: number | null; retrieved: EvalHit[];
-  latency_ms: { embed: number; db: number; total: number }; x: number; y: number;
-};
-type EvalChunk = { id: number; path: string; title: string; index: number; heading: string; heading_path: string; snippet: string; x: number; y: number };
-type EvalMeta = {
-  run_id: string; created_at: string; label: string; model: string; model_revision: string; chunking: string;
-  top_k: number; recall_at: number[]; code_commit: string; questions_file: string; questions_sha256: string;
-  documents: number; chunks: number; projection: { method: string; fit_on: string; explained: number[] };
-};
-type EvalRun = {
-  meta: EvalMeta; questions: EvalQuestion[]; chunks: EvalChunk[];
-  summary: { all: EvalSummary; by_kind: Record<string, EvalSummary>; abstain: { questions: number; top1_scores: number[] }; latency_ms: { mean: number; p95: number } };
-};
-type EvalIndexEntry = { run_id: string; created_at: string; label: string; model: string; chunking: string; chunks: number; summary: EvalSummary };
-
-const EVAL_API = '/api/eval';
-const SHOWN_HITS = 5;
-const pct = (v: number | null | undefined) => v == null ? '—' : `${Math.round(v * 100)}%`;
-
-// 결과 하나가 어떤 상태인지: 1위 / 상위 5위 안 / 그 밖 / 못 찾음 / 답 없는 질문.
-function evalOutcome(q: EvalQuestion): { label: string; tone: 'lime' | 'blue' | 'peach' | 'neutral'; color: string } {
-  if (q.abstain) return { label: 'No answer', tone: 'neutral', color: '#b3a9bd' };
-  if (q.rank === 1) return { label: '#1', tone: 'lime', color: '#b9c43c' };
-  if (q.rank && q.rank <= SHOWN_HITS) return { label: `#${q.rank}`, tone: 'blue', color: '#8ea6ec' };
-  if (q.rank) return { label: `#${q.rank}`, tone: 'peach', color: '#f29e70' };
-  return { label: 'Missed', tone: 'peach', color: '#f29e70' };
-}
-
-function useEvalRuns() {
-  const [index, setIndex] = useState<EvalIndexEntry[] | null>(null);
-  const [runId, setRunId] = useState<string | null>(null);
-  const [run, setRun] = useState<EvalRun | null>(null);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    fetch(`${EVAL_API}/index.json`, { cache: 'no-store' })
-      .then(r => r.status === 404 ? [] : r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then((list: EvalIndexEntry[]) => { setIndex(list); setRunId(id => id ?? list[0]?.run_id ?? null); })
-      .catch(e => setError(`Could not load evaluation runs (${e.message})`));
-  }, []);
-
-  useEffect(() => {
-    if (!runId) return;
-    let alive = true;
-    fetch(`${EVAL_API}/${encodeURIComponent(runId)}.json`, { cache: 'no-store' })
-      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then((data: EvalRun) => { if (alive) { setRun(data); setError(''); } })
-      .catch(e => alive && setError(`Could not load ${runId} (${e.message})`));
-    return () => { alive = false; };
-  }, [runId]);
-
-  return { index, run, runId, setRunId, error };
-}
-
-// 요소 크기를 따라가는 훅. 지도는 폭·높이가 바뀌어도 x·y 축척을 같게 유지해야 하므로 실제 픽셀 크기가 필요하다.
-function useSize<T extends HTMLElement>() {
-  const ref = useRef<T>(null);
-  const [size, setSize] = useState({ width: 0, height: 0 });
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const ro = new ResizeObserver(([entry]) => setSize({ width: entry.contentRect.width, height: entry.contentRect.height }));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  return [ref, size] as const;
-}
-
-function MetricCard({ icon, color, label, value, note, delay }: { icon: LucideIcon; color: string; label: string; value: string; note: string; delay: number }) {
-  return <Card className="queue-card" delay={delay}><ColorIcon icon={icon} color={color} small /><div><small>{label}</small><strong>{value}</strong><em title={note}>{note}</em></div></Card>;
-}
-
-// 1위 점수 분포: 정답 있는 질문과 답 없는 질문을 같은 눈금에 찍는다. 겹치면 점수 하나로는 보류를 가를 수 없다.
-function ScoreStrip({ run, selected, select }: { run: EvalRun; selected: string | null; select: (id: string) => void }) {
-  const scored = run.questions.filter(q => q.top1_score != null);
-  if (!scored.length) return null;
-  const values = scored.map(q => q.top1_score!);
-  const lo = Math.floor((Math.min(...values) - 0.02) * 50) / 50;
-  const hi = Math.ceil((Math.max(...values) + 0.02) * 50) / 50;
-  const pos = (v: number) => `${((v - lo) / (hi - lo)) * 100}%`;
-  const answerable = scored.filter(q => !q.abstain).map(q => q.top1_score!);
-  const noAnswer = scored.filter(q => q.abstain).map(q => q.top1_score!);
-  const overlap = answerable.length && noAnswer.length && Math.max(...noAnswer) >= Math.min(...answerable);
-  return <Card className="eval-score-card" delay={0.2}>
-    <div className="eval-score-head"><small>Top-1 score</small><em>{noAnswer.length ? overlap ? 'No-answer questions overlap answerable ones' : 'No-answer questions score lower' : 'No no-answer questions'}</em></div>
-    {[{ label: 'Has answer', abstain: false }, { label: 'No answer', abstain: true }].map(row => <div className="eval-score-row" key={row.label}>
-      <span>{row.label}</span>
-      <div className="eval-score-track">
-        {scored.filter(q => q.abstain === row.abstain).map(q => <button key={q.id} className={`eval-score-dot ${selected === q.id ? 'is-selected' : ''}`} style={{ left: pos(q.top1_score!), background: evalOutcome(q).color }} onClick={() => select(q.id)} aria-label={`${q.id} top-1 score ${q.top1_score!.toFixed(3)}`} title={`${q.id} · ${q.top1_score!.toFixed(3)}`} />)}
-      </div>
-    </div>)}
-    <div className="eval-score-axis"><span>{lo.toFixed(2)}</span><span>{hi.toFixed(2)}</span></div>
-  </Card>;
-}
-
-type MapTip = { x: number; y: number; title: string; sub: string } | null;
-
-// 임베딩 지도: 조각(점)과 질문(마름모)을 PCA 2축에 찍고, 고른 질문에서 상위 5개 조각으로 선을 긋는다.
-function EvalMap({ run, selected, select, focusChunk, setFocusChunk }: {
-  run: EvalRun; selected: EvalQuestion | null; select: (id: string) => void;
-  focusChunk: number | null; setFocusChunk: (id: number | null) => void;
-}) {
-  const [ref, { width, height }] = useSize<HTMLDivElement>();
-  const [tip, setTip] = useState<MapTip>(null);
-  const reduced = useReducedMotion();
-  const chunkById = new Map(run.chunks.map(c => [c.id, c]));
-  const pts = [...run.chunks, ...run.questions];
-  const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
-  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
-  const pad = 26;
-  // x·y에 같은 축척을 써야 그림 속 거리가 2D 투영 거리 그대로 보인다.
-  const scale = Math.min((width - pad * 2) / (x1 - x0 || 1), (height - pad * 2) / (y1 - y0 || 1));
-  const ox = (width - (x1 - x0) * scale) / 2, oy = (height - (y1 - y0) * scale) / 2;
-  const sx = (x: number) => ox + (x - x0) * scale;
-  const sy = (y: number) => height - (oy + (y - y0) * scale);
-
-  const top = selected ? selected.retrieved.slice(0, SHOWN_HITS) : [];
-  const rankOf = new Map(top.map((h, i) => [h.chunk_id, i + 1]));
-  const gold = new Set(selected?.gold_chunk_ids ?? []);
-  const focusPath = focusChunk != null ? chunkById.get(focusChunk)?.path : undefined;
-  const explained = run.meta.projection.explained.reduce((a, b) => a + b, 0);
-
-  return <Card className="eval-map-card" delay={0.25}>
-    <div className="card-heading"><div><h2>Embedding map</h2><small>{run.chunks.length} chunks · {run.questions.length} questions · PCA fitted on chunks</small></div><span className="tag" title="Share of the original variance the two axes keep">2 axes keep {Math.round(explained * 100)}%</span></div>
-    <div className="eval-map" ref={ref} onMouseLeave={() => { setTip(null); setFocusChunk(null); }}>
-      {width > 0 && height > 0 && <svg width={width} height={height} role="img" aria-label="Chunks and questions projected to two dimensions">
-        {/* 선택한 질문 → 상위 5개 조각 */}
-        {selected && top.map((h, i) => { const c = chunkById.get(h.chunk_id); if (!c) return null; return <motion.line key={`${selected.id}-${h.chunk_id}`} x1={sx(selected.x)} y1={sy(selected.y)} x2={sx(c.x)} y2={sy(c.y)} className={`eval-link ${h.correct ? 'is-correct' : ''}`} initial={{ pathLength: reduced ? 1 : 0, opacity: 0 }} animate={{ pathLength: 1, opacity: 1 - i * 0.14 }} transition={{ duration: 0.45, delay: reduced ? 0 : i * 0.05, ease }} />; })}
-        {run.chunks.map(c => {
-          const rank = rankOf.get(c.id);
-          const cls = ['eval-chunk', rank ? 'is-hit' : '', gold.has(c.id) ? 'is-gold' : '', focusPath && c.path === focusPath ? 'is-doc' : '', focusChunk === c.id ? 'is-focus' : ''].filter(Boolean).join(' ');
-          return <g key={c.id} transform={`translate(${sx(c.x)} ${sy(c.y)})`} className={cls}
-            onMouseEnter={() => { setFocusChunk(c.id); setTip({ x: sx(c.x), y: sy(c.y), title: c.heading, sub: `${c.title} · chunk ${c.index}${rank ? ` · rank ${rank}` : ''}` }); }}>
-            {gold.has(c.id) && <circle r={8.5} className="eval-gold-ring" />}
-            <circle r={rank ? 5.5 : 4} />
-            {rank && <text y={-10} textAnchor="middle">{rank}</text>}
-          </g>;
-        })}
-        {run.questions.map(q => {
-          const on = selected?.id === q.id, o = evalOutcome(q), s = on ? 7 : 5;
-          return <g key={q.id} transform={`translate(${sx(q.x)} ${sy(q.y)})`} className={`eval-question ${on ? 'is-selected' : ''} ${q.abstain ? 'is-abstain' : ''}`}
-            onClick={() => select(q.id)} onMouseEnter={() => setTip({ x: sx(q.x), y: sy(q.y), title: q.question, sub: `${q.id} · ${q.kind} · ${o.label}` })}>
-            <rect x={-s} y={-s} width={s * 2} height={s * 2} transform="rotate(45)" style={{ fill: q.abstain ? '#fff' : o.color, stroke: q.abstain ? o.color : undefined }} />
-            {on && <text y={-13} textAnchor="middle">{q.id}</text>}
-          </g>;
-        })}
-      </svg>}
-      <AnimatePresence>{tip && <motion.div className="eval-tip" style={{ left: Math.min(tip.x, width - 230), top: tip.y + 14 }} initial={{ opacity: 0, y: -3 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.12 }}><b>{tip.title}</b><small>{tip.sub}</small></motion.div>}</AnimatePresence>
-    </div>
-    <div className="eval-legend">
-      <span><i className="lg-chunk" />Chunk</span><span><i className="lg-hit" />Retrieved (rank)</span><span><i className="lg-gold" />Expected evidence</span>
-      <span><i className="lg-q" style={{ background: '#b9c43c' }} />#1</span><span><i className="lg-q" style={{ background: '#8ea6ec' }} />#2–5</span><span><i className="lg-q" style={{ background: '#f29e70' }} />Missed</span><span><i className="lg-q is-hollow" />No answer</span>
-    </div>
-    <p className="eval-caption">Close on this map does not always mean close in search: search uses all 1024 dimensions, the map shows two.</p>
-  </Card>;
-}
-
-function EvalDetail({ q, run, setFocusChunk }: { q: EvalQuestion | null; run: EvalRun; setFocusChunk: (id: number | null) => void }) {
-  if (!q) return <Card className="eval-detail" delay={0.3}><div className="empty-state compact"><p>Select a question.</p></div></Card>;
-  const chunkById = new Map(run.chunks.map(c => [c.id, c]));
-  const o = evalOutcome(q);
-  const hits = q.retrieved.slice(0, SHOWN_HITS);
-  const rankOfChunk = new Map(q.retrieved.map((h, i) => [h.chunk_id, i + 1]));
-  const scores = q.retrieved.map(h => h.score);
-  const lo = Math.min(...scores) - 0.05, hi = Math.max(...scores);
-  return <Card className="eval-detail" delay={0.3}>
-    <AnimatePresence mode="wait" initial={false}>
-      <motion.div key={q.id} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.2 }}>
-        <div className="eval-detail-head"><span className="eval-id">{q.id}</span><span className="tag">{q.kind}</span><span className="tag">{q.use}</span><span className={`pill ${o.tone}`}>{o.label}</span></div>
-        <h3 className="eval-detail-question">{q.question}</h3>
-        <dl className="eval-answer"><dt>Expected</dt><dd>{q.answer}</dd></dl>
-
-        <h4 className="eval-subhead">Evidence</h4>
-        {q.evidence.length ? <ul className="eval-evidence">{q.evidence.map(e => {
-          const chunk = run.chunks.find(c => c.path === e.path && c.heading === e.heading);
-          const rank = chunk ? rankOfChunk.get(chunk.id) : undefined;
-          return <li key={`${e.path}#${e.heading}`} onMouseEnter={() => chunk && setFocusChunk(chunk.id)} onMouseLeave={() => setFocusChunk(null)}>
-            <span className={`eval-rank-badge ${rank ? (rank <= SHOWN_HITS ? 'is-in' : 'is-low') : 'is-out'}`}>{rank ?? '—'}</span>
-            <span className="doc-name"><b>{e.heading}</b><small>{e.path}{chunk ? '' : ' · not in index'}</small></span>
-          </li>;
-        })}</ul> : <p className="eval-note">No evidence: this question should be declined. The decline rule is not set yet — the top-1 score was <b>{q.top1_score?.toFixed(3)}</b>.</p>}
-
-        <h4 className="eval-subhead">Retrieved · top {SHOWN_HITS}</h4>
-        <ol className="eval-hits">{hits.map((h, i) => { const c = chunkById.get(h.chunk_id); return <li key={h.chunk_id} className={h.correct ? 'is-correct' : ''} onMouseEnter={() => setFocusChunk(h.chunk_id)} onMouseLeave={() => setFocusChunk(null)}>
-          <span className="eval-hit-rank">{i + 1}</span>
-          <span className="doc-name"><b>{c?.heading ?? `chunk ${h.chunk_id}`}</b><small>{c?.title}</small></span>
-          <span className="eval-hit-score"><em>{h.score.toFixed(3)}</em><i><motion.span initial={{ width: 0 }} animate={{ width: `${Math.max(4, ((h.score - lo) / (hi - lo || 1)) * 100)}%` }} transition={{ duration: 0.5, delay: i * 0.04, ease }} /></i></span>
-          {h.correct ? <Check size={14} className="eval-hit-check" /> : <span className="eval-hit-check" />}
-        </li>; })}</ol>
-        <p className="eval-latency">Embed {q.latency_ms.embed.toFixed(0)} ms · DB {q.latency_ms.db.toFixed(0)} ms</p>
-      </motion.div>
-    </AnimatePresence>
-  </Card>;
-}
-
-type EvalFilter = 'all' | 'missed' | string;
-
-function Evaluations() {
-  const { index, run, runId, setRunId, error } = useEvalRuns();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<EvalFilter>('all');
-  const [focusChunk, setFocusChunk] = useState<number | null>(null);
-
-  // 실행 결과를 바꿔도 같은 질문을 계속 보게 하고, 없으면 첫 질문을 고른다.
-  useEffect(() => {
-    if (run && !run.questions.some(q => q.id === selectedId)) setSelectedId(run.questions[0]?.id ?? null);
-  }, [run, selectedId]);
-
-  if (index && !index.length) return <>
-    <Heading title="Evaluations" subtitle="Retrieval quality on the evaluation set" />
-    <Card className="empty-state"><ColorIcon icon={ChartNoAxesCombined} color="peach" /><h2>No evaluation runs yet</h2><p>Run <code>.venv/bin/python eval/run.py</code> from the repository root.<br />Results are written to eval/results/.</p></Card>
-  </>;
-
-  const meta = run?.meta, s = run?.summary;
-  const kinds = run ? [...new Set(run.questions.map(q => q.kind))] : [];
-  const shown = (run?.questions ?? []).filter(q => filter === 'all' ? true : filter === 'missed' ? !q.abstain && q.rank !== 1 : q.kind === filter);
-  const selected = run?.questions.find(q => q.id === selectedId) ?? null;
-  const byKind = s ? Object.entries(s.by_kind).map(([k, v]) => `${k} ${pct(v['recall@1'])}`).join(' · ') : '';
-  const graded = s?.all.questions ?? 0;
-  const firstHits = run ? run.questions.filter(q => !q.abstain && q.rank === 1).length : 0;
-
-  return <>
-    <Heading title="Evaluations" subtitle={meta ? `${meta.model} · ${meta.chunking} · ${meta.documents} documents · ${meta.chunks} chunks · code ${meta.code_commit}` : 'Retrieval quality on the evaluation set'}>
-      {index && index.length > 0 && <label className="eval-run-select"><span>Run</span><select value={runId ?? ''} onChange={e => setRunId(e.target.value)} aria-label="Evaluation run">
-        {index.map(e => <option key={e.run_id} value={e.run_id}>{shortTime(e.created_at)}{e.label ? ` · ${e.label}` : ''} · {e.model} · R@1 {pct(e.summary['recall@1'])}</option>)}
-      </select><ChevronDown size={14} /></label>}
-    </Heading>
-    {error && <p className="source-error queue-problems">{error}</p>}
-
-    {run && s && meta ? <>
-      <div className="eval-metrics">
-        <MetricCard icon={Check} color="lime" label="Recall@1" value={pct(s.all['recall@1'])} note={`${firstHits} of ${graded} · ${byKind}`} delay={0} />
-        <MetricCard icon={Layers3} color="blue" label="Recall@3 · @5" value={`${pct(s.all['recall@3'])} · ${pct(s.all['recall@5'])}`} note="Evidence anywhere in the top 3 / 5" delay={0.05} />
-        <MetricCard icon={ChartNoAxesCombined} color="purple" label="MRR" value={s.all.mrr?.toFixed(2) ?? '—'} note="Mean of 1 / rank of first evidence" delay={0.1} />
-        <MetricCard icon={Clock3} color="neutral" label="Latency" value={`${Math.round(s.latency_ms.mean)} ms`} note={`p95 ${Math.round(s.latency_ms.p95)} ms · embed + DB`} delay={0.15} />
-        <ScoreStrip run={run} selected={selectedId} select={setSelectedId} />
-      </div>
-
-      <div className="eval-workspace">
-        <Card className="eval-list" delay={0.2}>
-          <div className="eval-filters" role="tablist" aria-label="Filter questions">
-            {[{ id: 'all', label: `All ${run.questions.length}` }, ...kinds.map(k => ({ id: k, label: `${k} ${run.questions.filter(q => q.kind === k).length}` })), { id: 'missed', label: `Not #1 ${run.questions.filter(q => !q.abstain && q.rank !== 1).length}` }].map(f =>
-              <button key={f.id} role="tab" aria-selected={filter === f.id} className={`eval-filter ${filter === f.id ? 'is-active' : ''}`} onClick={() => setFilter(f.id)}>{f.label}</button>)}
-          </div>
-          <div className="eval-questions">
-            {shown.map(q => { const o = evalOutcome(q); return <button key={q.id} className={`eval-q ${selectedId === q.id ? 'is-selected' : ''}`} onClick={() => setSelectedId(q.id)} aria-pressed={selectedId === q.id}>
-              <span className="eval-id">{q.id}</span>
-              <span className="eval-q-text"><b>{q.question}</b><small>{q.kind} · top-1 {q.top1_score?.toFixed(3)}</small></span>
-              <span className={`pill ${o.tone}`}>{o.label}</span>
-            </button>; })}
-            {!shown.length && <div className="empty-state compact"><p>No questions in this filter.</p></div>}
-          </div>
-          <div className="eval-list-foot"><span>{meta.questions_file}</span><span>sha {meta.questions_sha256}</span></div>
-        </Card>
-        <EvalMap run={run} selected={selected} select={setSelectedId} focusChunk={focusChunk} setFocusChunk={setFocusChunk} />
-        <EvalDetail q={selected} run={run} setFocusChunk={setFocusChunk} />
-      </div>
-    </> : !error && <Card className="empty-state compact"><p>Loading evaluation…</p></Card>}
-  </>;
-}
 type QueueStatus = {
   online: boolean; workers: { name: string; active_job_ids: number[] }[]; redis_waiting: number | null;
   jobs: Record<JobStatus, number>; problems: string[];
@@ -1162,6 +942,15 @@ const jobTone: Record<JobStatus, { label: string; color: string }> = {
   done: { label: 'Done', color: 'lime' }, failed: { label: 'Failed', color: 'peach' },
 };
 const fileName = (path: string) => path.split('/').pop() ?? path;
+const kindLabel = (j: Job) => jobKind(j) === 'build' ? `Index #${String(j.params?.index_id ?? '?')}` : jobKind(j) === 'eval' ? 'Evaluation' : 'Ingest';
+// What a finished or stopped job came to, in one short phrase.
+function jobOutcome(j: Job) {
+  if (j.result?.status === 'evaluated') return `R@1 ${j.result.summary?.['recall@1'] != null ? Math.round(j.result.summary['recall@1'] * 100) + '%' : '—'} · run #${j.result.eval_run_id}`;
+  if (j.result) return resultTone[j.result.status].label;
+  if (j.status === 'failed') return `Stopped at ${j.stage ? stageLabels[j.stage] ?? j.stage : 'start'}`;
+  if (j.stage) return j.progress_total && jobKind(j) === 'eval' ? `${stageLabels[j.stage]} ${j.progress_done ?? 0} / ${j.progress_total}` : stageLabels[j.stage] ?? j.stage;
+  return '—';
+}
 function duration(job: Job) {
   if (!job.started_at || !job.finished_at) return '—';
   return `${((Date.parse(job.finished_at) - Date.parse(job.started_at)) / 1000).toFixed(1)}s`;
@@ -1195,18 +984,23 @@ function useRunHistory() {
 function JobModal({ job, close }: { job: Job; close: () => void }) {
   const r = job.result;
   return <Modal title={`Job #${job.id}`} close={close}>
-    <div className="node-summary"><ColorIcon icon={job.status === 'failed' ? CircleAlert : FileText} color={job.status === 'failed' ? 'peach' : 'lime'} /><div><h3>{r?.title ?? fileName(job.path)}</h3><small>{job.path}</small></div></div>
+    <div className="node-summary"><ColorIcon icon={job.status === 'failed' ? CircleAlert : jobKind(job) === 'eval' ? ChartNoAxesCombined : FileText} color={job.status === 'failed' ? 'peach' : jobKind(job) === 'eval' ? 'lilac' : 'lime'} /><div><h3>{r?.title ?? fileName(job.path)}</h3><small>{job.path}</small></div></div>
     {job.error && <p className="result-error">{job.error}</p>}
     <DetailRows rows={[
+      ['Kind', kindLabel(job)],
       ['Status', jobTone[job.status].label],
-      ['Result', r ? resultTone[r.status].label : '—'],
-      ['Last stage', job.stage ? `${job.stage_index ?? '?'} / 6 · ${stageLabels[job.stage] ?? job.stage}` : '—'],
-      ['Chunks', r?.chunks ?? '—'],
-      ['Document', r ? `#${r.document_id}` : '—'],
+      ['Result', jobOutcome(job)],
+      ...(jobKind(job) === 'eval' ? [] : [
+        ['Last stage', job.stage ? `${job.stage_index ?? '?'} / 6 · ${stageLabels[job.stage] ?? job.stage}` : '—'],
+        ['Chunks', r?.chunks ?? '—'],
+        ['Document', r ? `#${r.document_id}` : '—'],
+      ] as [string, React.ReactNode][]),
       ['Queued', shortTime(job.created_at)],
       ['Took', duration(job)],
-      ['Environment', String(job.params?.env ?? '—')],
-      ['Document type', String(job.params?.doc_type ?? '—')],
+      ...(jobKind(job) === 'ingest' ? [
+        ['Environment', String(job.params?.env ?? '—')],
+        ['Document type', String(job.params?.doc_type ?? '—')],
+      ] as [string, React.ReactNode][] : []),
     ]} />
   </Modal>;
 }
@@ -1224,7 +1018,7 @@ function Runs({ openPipeline }: { openPipeline: () => void }) {
   const offline = !!error && !queue;
 
   return <>
-    <Heading title="Run history" subtitle="Ingest jobs and the Celery worker that runs them">
+    <Heading title="Run history" subtitle="Ingest, index build and evaluation jobs, and the Celery worker that runs them">
       <button className="subtle-button" onClick={openPipeline}><Play size={15} />New ingest</button>
     </Heading>
 
@@ -1237,7 +1031,7 @@ function Runs({ openPipeline }: { openPipeline: () => void }) {
         <ColorIcon icon={runningJob ? LoaderCircle : Check} color={runningJob ? 'purple' : 'neutral'} small />
         <div><small>Processing</small>
           <AnimatePresence mode="wait" initial={false}><motion.strong key={runningJob?.id ?? 'idle'} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}>{runningJob ? fileName(runningJob.path) : 'Idle'}</motion.strong></AnimatePresence>
-          <em>{runningJob ? `Job #${runningJob.id} · ${runningJob.stage ? stageLabels[runningJob.stage] : 'starting'}` : 'Nothing running'}</em></div>
+          <em>{runningJob ? `Job #${runningJob.id} · ${kindLabel(runningJob)} · ${runningJob.stage ? stageLabels[runningJob.stage] ?? runningJob.stage : 'starting'}` : 'Nothing running'}</em></div>
       </Card>
       <Card className="queue-card" delay={0.1}>
         <ColorIcon icon={Clock3} color={waiting ? 'blue' : 'neutral'} small />
@@ -1253,19 +1047,19 @@ function Runs({ openPipeline }: { openPipeline: () => void }) {
     <div className="table-toolbar"><label className="search-field"><Search size={16} /><input aria-label="Search jobs" placeholder="Search file, job # or status" value={query} onChange={e => setQuery(e.target.value)} /></label><span className="tag">Latest 100 jobs</span></div>
     <Card className="table-card documents-table" delay={0.2}>
       <table>
-        <thead><tr><th>#</th><th>Document</th><th>Status</th><th>Result</th><th>Chunks</th><th>Took</th><th>Queued</th><th /></tr></thead>
+        <thead><tr><th>#</th><th>Job</th><th>Status</th><th>Result</th><th>Chunks</th><th>Took</th><th>Queued</th><th /></tr></thead>
         <tbody>{shown.map((j, i) => <motion.tr key={j.id} layout initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 14) * 0.02, duration: 0.3 }} onClick={() => setOpen(j)}>
           <td className="num">{j.id}</td>
-          <td><span className="file-label">{j.status === 'running' ? <LoaderCircle size={16} className="spin" /> : <FileText size={16} />}<span className="doc-name"><b>{j.result?.title ?? fileName(j.path)}</b><small>{j.result ? `${j.result.source_repo}/${j.result.source_path}` : j.path}</small></span></span></td>
+          <td><span className="file-label">{j.status === 'running' ? <LoaderCircle size={16} className="spin" /> : jobKind(j) === 'eval' ? <ChartNoAxesCombined size={16} /> : <FileText size={16} />}<span className="doc-name"><b>{j.result?.title ?? fileName(j.path)}</b><small>{kindLabel(j)} · {j.result?.source_repo ? `${j.result.source_repo}/${j.result.source_path}` : j.path}</small></span></span></td>
           <td><span className={`pill ${jobTone[j.status].color}`}>{jobTone[j.status].label}</span></td>
-          <td>{j.result ? resultTone[j.result.status].label : j.status === 'failed' ? `Stopped at ${j.stage ? stageLabels[j.stage] ?? j.stage : 'start'}` : j.stage ? stageLabels[j.stage] : '—'}</td>
+          <td>{jobOutcome(j)}</td>
           <td className="num">{j.result?.chunks ?? '—'}</td>
           <td className="num">{duration(j)}</td>
           <td className="num">{shortTime(j.created_at)}</td>
           <td><IconButton icon={ArrowUpRight} label={`Open job ${j.id}`} onClick={() => setOpen(j)} /></td>
         </motion.tr>)}</tbody>
       </table>
-      {jobs && !shown.length && <div className="empty-state compact"><p>{jobs.length ? 'No matching jobs.' : 'No ingest jobs yet.'}</p></div>}
+      {jobs && !shown.length && <div className="empty-state compact"><p>{jobs.length ? 'No matching jobs.' : 'No jobs yet.'}</p></div>}
       {!jobs && <div className="empty-state compact"><p>{offline ? error : 'Loading…'}</p></div>}
     </Card>
     <div className="table-footer"><span>{shown.length} {shown.length === 1 ? 'job' : 'jobs'}</span><span>Recorded in ingest_jobs · run by Celery</span></div>

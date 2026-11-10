@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -25,8 +26,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from psycopg.types.json import Jsonb
 
+import components as comp
+import evaluate
+import indexes
 from ingest import STAGES, IngestError, connect, ingest_file, load_env
 from jobs import JOB_COLUMNS, fetch_job
+from search import query_defaults
 from tasks import celery, ingest_task
 
 # 작업은 worker가 실행하므로 엔진을 다시 켜도 진행 중인 작업은 영향을 받지 않는다. (끊긴 작업 정리는 worker가 켜질 때 한다)
@@ -113,7 +118,8 @@ def list_documents() -> list[dict]:
         cur = conn.execute(
             """SELECT d.id, d.source_repo, d.source_path, d.source_commit, d.title, d.env, d.doc_type,
                       d.verification, d.checked_at, d.external_ok, d.ingested_at, count(c.id) AS chunks
-               FROM documents d LEFT JOIN chunks c ON c.document_id = d.id
+               FROM documents d
+               LEFT JOIN chunks c ON c.document_id = d.id AND c.index_id = (SELECT id FROM indexes WHERE is_base)
                GROUP BY d.id ORDER BY d.ingested_at DESC"""
         )
         cols = [c.name for c in cur.description]
@@ -121,6 +127,18 @@ def list_documents() -> list[dict]:
 
 
 # ---------- 가져오기 작업 (Celery 대기열 + 상태 기록 + 스트리밍) ----------
+
+# 작업 행을 커밋한 뒤에 대기열에 넣는다. 그래야 worker가 꺼냈을 때 행이 반드시 있다.
+# Redis에 넣지 못하면 그 작업들을 실패로 표시하고 503을 돌려준다.
+def enqueue(job_ids: list[int]) -> None:
+    try:
+        for job_id in job_ids:
+            ingest_task.delay(job_id)
+    except Exception as e:
+        with connect(load_env()) as conn:
+            conn.execute("""UPDATE ingest_jobs SET status='failed', error='대기열(Redis)에 넣지 못함', finished_at=now()
+                            WHERE id = ANY(%s) AND status='queued'""", (job_ids,))
+        raise HTTPException(503, f"대기열(Redis)에 연결할 수 없습니다: {type(e).__name__}")
 
 # 가져오기 작업을 만든다. 파일이면 1개, 폴더면 안의 .md마다 1개씩. 경로 검사는 바로 하고, 통과한 문서만 대기열에 넣는다.
 @app.post("/jobs", status_code=202)
@@ -139,7 +157,7 @@ def create_jobs(req: IngestRequest) -> dict:
     except ValueError as e:
         raise HTTPException(400, str(e))
 
-    params = Jsonb(req.model_dump(mode="json", exclude={"path"}))
+    params = Jsonb(req.model_dump(mode="json", exclude={"path"}) | {"kind": "ingest"})
     created = []
     with connect(load_env()) as conn:
         for path in files:
@@ -153,27 +171,21 @@ def create_jobs(req: IngestRequest) -> dict:
                                   (str(path), params)).fetchone()[0]
             created.append({"job_id": job_id, "path": str(path)})
 
-    # 작업 행을 커밋한 뒤에 대기열에 넣는다. 그래야 worker가 꺼냈을 때 행이 반드시 있다.
-    try:
-        for job in created:
-            ingest_task.delay(job["job_id"])
-    except Exception as e:
-        ids = [j["job_id"] for j in created]
-        with connect(load_env()) as conn:
-            conn.execute("""UPDATE ingest_jobs SET status='failed', error='대기열(Redis)에 넣지 못함', finished_at=now()
-                            WHERE id = ANY(%s) AND status='queued'""", (ids,))
-        raise HTTPException(503, f"대기열(Redis)에 연결할 수 없습니다: {type(e).__name__}")
-
+    enqueue([j["job_id"] for j in created])
     if not created and len(files) == 1 and not target.is_dir():
         raise HTTPException(409, skipped[0]["reason"])
     return {"jobs": created, "skipped": skipped, "stages": STAGES}
 
 
-# 최근 작업 목록 (기본 20개, 최대 200개).
+# 최근 작업 목록 (기본 20개, 최대 200개). kind로 종류를 고를 수 있다 (예: kind=ingest,build).
 @app.get("/jobs")
-def list_jobs(limit: int = Query(20, ge=1, le=200)) -> list[dict]:
+def list_jobs(limit: int = Query(20, ge=1, le=200), kind: str | None = None) -> list[dict]:
+    kinds = [k for k in (kind or "").split(",") if k]
     with connect(load_env()) as conn:
-        cur = conn.execute(f"SELECT {JOB_COLUMNS} FROM ingest_jobs ORDER BY id DESC LIMIT %s", (limit,))
+        cur = conn.execute(f"""SELECT {JOB_COLUMNS} FROM ingest_jobs
+                               WHERE %(all)s OR coalesce(params->>'kind', 'ingest') = ANY(%(kinds)s)
+                               ORDER BY id DESC LIMIT %(limit)s""",
+                           {"all": not kinds, "kinds": kinds, "limit": limit})
         return [dict(zip([c.name for c in cur.description], row)) for row in cur.fetchall()]
 
 
@@ -237,16 +249,269 @@ async def job_events(job_id: int) -> StreamingResponse:
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-# 문서 하나의 조각 목록. 벡터(embedding)는 크고 화면에 쓸 일이 없어서 뺀다.
+# 문서 하나의 조각 목록 (기본 색인, 또는 index_id로 고른 색인). 벡터(embedding)는 크고 화면에 쓸 일이 없어서 뺀다.
 @app.get("/documents/{doc_id}/chunks")
-def list_chunks(doc_id: int) -> list[dict]:
+def list_chunks(doc_id: int, index_id: int | None = None) -> list[dict]:
     with connect(load_env()) as conn:
         if conn.execute("SELECT 1 FROM documents WHERE id=%s", (doc_id,)).fetchone() is None:
             raise HTTPException(404, f"document {doc_id} 없음")
         cur = conn.execute(
             """SELECT chunk_index, heading_path, token_count, content, embed_text
-               FROM chunks WHERE document_id=%s ORDER BY chunk_index""",
-            (doc_id,),
+               FROM chunks WHERE document_id=%s
+                 AND index_id = coalesce(%s, (SELECT id FROM indexes WHERE is_base))
+               ORDER BY chunk_index""",
+            (doc_id, index_id),
         )
         cols = [c.name for c in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+# ---------- 단계 구현·색인·현재 설정 (웹의 Pipeline 단계 패널) ----------
+
+# 단계 설정 하나: {"id": 구현 이름, "params": {...}}
+class StageSetting(BaseModel):
+    id: str
+    params: dict[str, str] = {}
+
+
+class IndexRequest(BaseModel):
+    chunker: StageSetting
+    embedder: StageSetting
+    apply: bool = True   # 다 만들어지면 현재 설정으로 바꾼다
+
+
+def normalized(req: IndexRequest) -> tuple[dict, dict]:
+    try:
+        return (comp.normalize("chunker", req.chunker.model_dump()), comp.normalize("embedder", req.embedder.model_dump()))
+    except comp.ComponentError as e:
+        raise HTTPException(400, str(e))
+
+
+# 단계마다 고를 수 있는 구현과 파라미터, 지금 쓸 수 있는지와 이유. 비밀값(API 키)은 있음/없음만 알려 준다.
+@app.get("/components")
+def components_catalog() -> dict:
+    return comp.catalog(load_env())
+
+
+@app.get("/indexes")
+def list_indexes() -> list[dict]:
+    return indexes.list_indexes()
+
+
+# 조합을 고르면 바로 보여 줄 미리보기 (색인이 있는지, 만들면 얼마나 걸리는지, 막힌 문서가 있는지). 아무것도 바꾸지 않는다.
+@app.post("/indexes/estimate")
+def estimate_index(req: IndexRequest) -> dict:
+    chunker, embedder = normalized(req)
+    return indexes.estimate(chunker, embedder)
+
+
+# 색인 만들기·갱신 작업을 문서마다 하나씩 대기열에 넣는다. 필요한 문서가 없으면 작업 없이 (apply면) 바로 적용한다.
+def queue_build(index: dict, apply: bool) -> dict:
+    batch = uuid.uuid4().hex
+    created = []
+    with connect(load_env()) as conn:
+        busy = conn.execute("""SELECT count(*) FROM ingest_jobs WHERE params->>'kind' = 'build'
+                               AND (params->>'index_id')::bigint = %s AND status IN ('queued', 'running')""",
+                            (index["id"],)).fetchone()[0]
+        if busy:
+            raise HTTPException(409, f"이 색인을 만드는 작업이 이미 진행 중입니다 ({busy}개 남음)")
+        docs = indexes.pending_documents(conn, index["id"])
+        for d in docs:
+            params = {"kind": "build", "index_id": index["id"], "document_id": d["id"], "apply": apply, "batch": batch}
+            job_id = conn.execute("INSERT INTO ingest_jobs (path, params) VALUES (%s, %s) RETURNING id",
+                                  (f"{d['source_repo']}/{d['source_path']}", Jsonb(params))).fetchone()[0]
+            created.append({"job_id": job_id, "path": f"{d['source_repo']}/{d['source_path']}"})
+        if not docs and apply:
+            conn.execute("UPDATE active_setup SET index_id=%s, updated_at=now() WHERE id=1", (index["id"],))
+    enqueue([j["job_id"] for j in created])
+    return {"index_id": index["id"], "jobs": created, "skipped": [], "stages": STAGES, "applied": not docs and apply}
+
+
+# 색인을 만든다 (같은 조합이 있으면 그 색인을 쓰고, 빠진 문서만 넣는다).
+@app.post("/indexes", status_code=202)
+def create_index(req: IndexRequest) -> dict:
+    chunker, embedder = normalized(req)
+    est = indexes.estimate(chunker, embedder)
+    if not est["can_build"]:
+        reason = (est["reason"] or (f"외부 전송이 허용되지 않은 문서 {len(est['blocked'])}개" if est["blocked"] else "")
+                  or (f"원문이 없는 문서 {len(est['missing_content'])}개" if est["missing_content"] else "")
+                  or f"토큰 한도를 넘는 조각 {est['over_limit']}개")
+        raise HTTPException(409, reason)
+    return queue_build(indexes.ensure_index(chunker, embedder), req.apply)
+
+
+# 뒤처진 색인 갱신: 바뀌었거나 빠진 문서만 다시 넣는다. 외부 전송 검사는 문서마다 작업 안에서 다시 한다.
+@app.post("/indexes/{index_id}/refresh", status_code=202)
+def refresh_index(index_id: int) -> dict:
+    with connect(load_env()) as conn:
+        try:
+            index = indexes.get_index(conn, index_id)
+        except IngestError as e:
+            raise HTTPException(404, str(e))
+    return queue_build(index, apply=False)
+
+
+# 현재 설정: 쓰는 색인(상태 포함)과 검색 설정. 같은 값으로 저장된 설정이 있으면 그 이름도 알려 준다.
+@app.get("/setup")
+def get_setup() -> dict:
+    with connect(load_env()) as conn:
+        index_id, query, updated = conn.execute("SELECT index_id, query, updated_at FROM active_setup WHERE id=1").fetchone()
+        saved = conn.execute("SELECT name FROM setups WHERE index_id=%s AND query=%s ORDER BY id LIMIT 1",
+                             (index_id, Jsonb(query))).fetchone()
+    index = next(i for i in indexes.list_indexes() if i["id"] == index_id)
+    q = query_defaults(query)
+    q["reranker_label"] = comp.describe("reranker", q["reranker"]) if q["reranker"] else None
+    return {"index": index, "query": q, "saved_as": saved[0] if saved else None, "updated_at": updated}
+
+
+class SetupUpdate(BaseModel):
+    index_id: int | None = None
+    top_k: int | None = None
+    # 리랭크: {"id", "params"}면 켜고, "off"면 끈다. 주지 않으면 그대로 둔다.
+    reranker: dict | Literal["off"] | None = None
+
+
+# 현재 설정을 바꾼다. 색인은 조각이 하나라도 있어야 고를 수 있다. 검색 설정은 바로 적용된다.
+@app.put("/setup")
+def update_setup(req: SetupUpdate) -> dict:
+    with connect(load_env()) as conn:
+        if req.index_id is not None:
+            if conn.execute("SELECT 1 FROM chunks WHERE index_id=%s LIMIT 1", (req.index_id,)).fetchone() is None:
+                raise HTTPException(409, "아직 만들어지지 않은 색인입니다. 먼저 만드세요")
+            conn.execute("UPDATE active_setup SET index_id=%s, updated_at=now() WHERE id=1", (req.index_id,))
+        if req.top_k is not None:
+            if not 1 <= req.top_k <= 20:
+                raise HTTPException(400, "top_k는 1~20 사이여야 합니다")
+            conn.execute("""UPDATE active_setup SET query = query || jsonb_build_object('top_k', %s::int), updated_at=now()
+                            WHERE id=1""", (req.top_k,))
+        if req.reranker is not None:
+            conn.execute("""UPDATE active_setup SET query = query || jsonb_build_object('reranker', %s::jsonb), updated_at=now()
+                            WHERE id=1""", (Jsonb(check_reranker(req.reranker)),))
+    return get_setup()
+
+
+# 리랭크 설정을 검사한다. "off"는 None(끔). 리랭커 서버가 꺼져 있으면 켤 수 없다.
+def check_reranker(value: dict | str) -> dict | None:
+    if value == "off":
+        return None
+    try:
+        setting = comp.normalize("reranker", value)
+    except comp.ComponentError as e:
+        raise HTTPException(400, str(e))
+    ok, reason = comp.RERANKERS[setting["id"]].availability(load_env())
+    if not ok:
+        raise HTTPException(409, reason)
+    return setting
+
+
+@app.get("/setups")
+def list_setups() -> list[dict]:
+    with connect(load_env()) as conn:
+        cur = conn.execute("SELECT id, name, index_id, query, created_at FROM setups ORDER BY id")
+        return [dict(zip([c.name for c in cur.description], r)) for r in cur.fetchall()]
+
+
+class SetupSave(BaseModel):
+    name: str
+
+
+# 현재 설정을 이름 붙여 저장한다. 같은 이름이 있으면 덮어쓴다.
+@app.post("/setups")
+def save_setup(req: SetupSave) -> dict:
+    name = req.name.strip()
+    if not name or len(name) > 60:
+        raise HTTPException(400, "이름은 1~60자로 적어 주세요")
+    with connect(load_env()) as conn:
+        conn.execute("""INSERT INTO setups (name, index_id, query) SELECT %s, index_id, query FROM active_setup WHERE id=1
+                        ON CONFLICT (name) DO UPDATE SET index_id=EXCLUDED.index_id, query=EXCLUDED.query""", (name,))
+    return get_setup()
+
+
+# 저장된 설정을 현재 설정으로 불러온다.
+@app.post("/setups/{setup_id}/load")
+def load_saved_setup(setup_id: int) -> dict:
+    with connect(load_env()) as conn:
+        row = conn.execute("SELECT index_id, query FROM setups WHERE id=%s", (setup_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, f"setup {setup_id} 없음")
+        conn.execute("UPDATE active_setup SET index_id=%s, query=%s, updated_at=now() WHERE id=1", (row[0], Jsonb(row[1])))
+    return get_setup()
+
+
+@app.delete("/setups/{setup_id}")
+def delete_setup(setup_id: int) -> dict:
+    with connect(load_env()) as conn:
+        conn.execute("DELETE FROM setups WHERE id=%s", (setup_id,))
+    return {"deleted": setup_id}
+
+
+class DocumentUpdate(BaseModel):
+    external_ok: bool
+
+
+# 문서의 외부 전송 허용을 바꾼다 (Knowledge 화면 토글). 이미 만든 외부 색인의 조각은 지우지 않는다.
+@app.patch("/documents/{doc_id}")
+def update_document(doc_id: int, req: DocumentUpdate) -> dict:
+    with connect(load_env()) as conn:
+        row = conn.execute("UPDATE documents SET external_ok=%s WHERE id=%s RETURNING id, external_ok",
+                           (req.external_ok, doc_id)).fetchone()
+    if row is None:
+        raise HTTPException(404, f"document {doc_id} 없음")
+    return {"id": row[0], "external_ok": row[1]}
+
+
+# ---------- 평가 ----------
+
+class EvalSide(BaseModel):
+    index_id: int | None = None                       # 비우면 현재 설정의 색인
+    reranker: dict | Literal["off"] | None = None     # 비우면 현재 설정의 리랭크, "off"면 끔
+
+
+class EvalRequest(BaseModel):
+    label: str = ""
+    index_ids: list[int] = []      # 예전 방식: 색인만 바꿔 평가
+    sides: list[EvalSide] = []     # 비교 화면의 A·B: 색인과 리랭크를 함께 정한다
+
+
+# 평가 작업을 대기열에 넣는다. 색인을 여러 개 주면 색인마다 하나씩, 준 순서대로 넣는다 (worker가 하나라 차례로 돈다).
+# 결과는 끝나면 /evals에 나타난다.
+@app.post("/evals", status_code=202)
+def create_eval(req: EvalRequest) -> dict:
+    sides = req.sides or [EvalSide(index_id=i) for i in req.index_ids] or [EvalSide()]
+    if len(sides) > 2:
+        raise HTTPException(400, "한 번에 설정 두 개까지 평가할 수 있습니다")
+    rerankers = [check_reranker(s.reranker) if s.reranker is not None else None for s in sides]
+    with connect(load_env()) as conn:
+        busy = conn.execute("""SELECT id FROM ingest_jobs WHERE params->>'kind'='eval' AND status IN ('queued','running')""").fetchone()
+        if busy:
+            raise HTTPException(409, f"평가가 이미 진행 중입니다 (job {busy[0]})")
+        for side in sides:
+            if side.index_id is not None and conn.execute("SELECT 1 FROM chunks WHERE index_id=%s LIMIT 1", (side.index_id,)).fetchone() is None:
+                raise HTTPException(409, f"색인 #{side.index_id}이 아직 만들어지지 않았습니다. 먼저 만드세요")
+        batch = uuid.uuid4().hex
+        job_ids = []
+        for side, rr in zip(sides, rerankers):
+            params = {"kind": "eval", "label": req.label[:60], "batch": batch}
+            if side.index_id is not None:
+                params["index_id"] = side.index_id
+            if side.reranker is not None:
+                params["reranker"] = rr or "off"
+            name = (f"eval: {req.label or 'current setup'}" + (f" · index {side.index_id}" if side.index_id is not None else "")
+                    + (f" · rerank {'off' if rr is None else rr['params']['candidates']}" if side.reranker is not None else ""))
+            job_ids.append(conn.execute("INSERT INTO ingest_jobs (path, params) VALUES (%s, %s) RETURNING id",
+                                        (name, Jsonb(params))).fetchone()[0])
+    enqueue(job_ids)
+    return {"job_id": job_ids[0], "job_ids": job_ids}
+
+
+@app.get("/evals")
+def list_evals(limit: int = Query(50, ge=1, le=200)) -> list[dict]:
+    return evaluate.list_runs(limit)
+
+
+@app.get("/evals/{run_id}")
+def get_eval(run_id: int) -> dict:
+    run = evaluate.get_run(run_id)
+    if run is None:
+        raise HTTPException(404, f"evaluation {run_id} 없음")
+    return run
