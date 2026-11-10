@@ -69,7 +69,8 @@ def run_job(job_id: int) -> None:
             from evaluate import run_eval
             result = run_eval(label=params.get("label", ""), on_step=on_step,
                               index_id=int(params["index_id"]) if params.get("index_id") else None,
-                              reranker=params.get("reranker"), keyword=params.get("keyword"))
+                              reranker=params.get("reranker"), keyword=params.get("keyword"),
+                              answers=bool(params.get("answers")))
         else:
             result = ingest_file(Path(path), env_label=params.get("env"), doc_type=params.get("doc_type"),
                                  verification=params.get("verification") or "미확인",

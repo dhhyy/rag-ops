@@ -634,6 +634,7 @@ class EvalRequest(BaseModel):
     label: str = ""
     index_ids: list[int] = []      # 예전 방식: 색인만 바꿔 평가
     sides: list[EvalSide] = []     # 비교 화면의 A·B: 색인과 리랭크를 함께 정한다
+    answers: bool = False          # 답변까지 쓰게 하고 인용·보류를 채점한다 (외부 LLM 호출, 질문마다 한 번)
 
 
 # 평가 작업을 대기열에 넣는다. 색인을 여러 개 주면 색인마다 하나씩, 준 순서대로 넣는다 (worker가 하나라 차례로 돈다).
@@ -656,6 +657,8 @@ def create_eval(req: EvalRequest) -> dict:
         job_ids = []
         for side, rr, kwd in zip(sides, rerankers, keywords):
             params = {"kind": "eval", "label": req.label[:60], "batch": batch}
+            if req.answers:
+                params["answers"] = True
             if side.index_id is not None:
                 params["index_id"] = side.index_id
             if side.reranker is not None:

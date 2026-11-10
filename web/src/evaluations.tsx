@@ -16,6 +16,17 @@ export type EvalQuestion = {
   evidence: { path: string; heading: string; quote?: string; match_by: 'quote' | 'heading' }[]; gold_chunk_ids: number[]; missing_evidence: boolean;
   rank: number | null; rank_vector?: number | null; top1_score: number | null; retrieved: EvalHit[];
   latency_ms: { embed: number; db: number; rerank?: number; total: number }; x: number; y: number;
+  answer_eval?: AnswerEval;
+};
+export type AnswerVerdict = '근거 맞음' | '근거 틀림' | '인용 없음' | '잘못된 보류' | '보류 맞음' | '보류 안 함' | '오류';
+export type AnswerEval = {
+  verdict: AnswerVerdict; text?: string; error?: string; sent?: number[]; skipped?: number[]; cited?: number[]; cited_correct?: number[];
+  invalid_cites?: number[]; says_missing?: string | null; gold_in_sent?: boolean; model?: string; cost_usd?: number | null; ms?: number;
+};
+export type AnswerSummary = {
+  answered: number; graded: number; abstain: number; correct: number; wrong: number; no_cite: number; wrong_abstain: number;
+  proper_abstain: number; missed_abstain: number; errors: number; gold_in_sent: number; cost_usd: number | null;
+  input_tokens: number; output_tokens: number; mean_ms: number; model: string | null;
 };
 export type EvalChunk = { id: number; path: string; title: string; index: number; heading: string; heading_path: string; snippet: string; x: number; y: number };
 export type EvalMeta = {
@@ -25,7 +36,7 @@ export type EvalMeta = {
 };
 export type EvalRun = {
   meta: EvalMeta; questions: EvalQuestion[]; chunks: EvalChunk[];
-  summary: { all: EvalSummary; by_kind: Record<string, EvalSummary>; abstain: { questions: number; top1_scores: number[] }; latency_ms: { mean: number; p95: number } };
+  summary: { all: EvalSummary; by_kind: Record<string, EvalSummary>; abstain: { questions: number; top1_scores: number[] }; latency_ms: { mean: number; p95: number }; answer?: AnswerSummary | null };
 };
 export type EvalEntry = { run_id: number; label: string; setup: Snapshot; summary: EvalSummary; latency_ms: { mean: number; p95: number }; created_at: string; questions_sha256: string };
 export type EvalJob = { id: number; status: 'queued' | 'running' | 'done' | 'failed'; progress_done: number | null; progress_total: number | null; error: string | null; result: { eval_run_id?: number } | null };
@@ -87,10 +98,10 @@ function useEvalJob(onDone: (runId: number | undefined) => void) {
     return () => clearInterval(timer);
   }, [active, job?.id]);
 
-  async function start(label: string) {
+  async function start(label: string, answers: boolean) {
     setError('');
     try {
-      const { job_id } = await api<{ job_id: number }>('/evals', { method: 'POST', body: { label } });
+      const { job_id } = await api<{ job_id: number }>('/evals', { method: 'POST', body: { label, answers } });
       setJob({ id: job_id, status: 'queued', progress_done: null, progress_total: null, error: null, result: null });
     } catch (e) { setError(message(e)); }
   }
@@ -211,6 +222,8 @@ function EvalDetail({ q, run, setFocusChunk }: { q: EvalQuestion | null; run: Ev
           </li>;
         })}</ul> : <p className="eval-note">No evidence: this question should be declined. The decline rule is not set yet — the top-1 score was <b>{q.top1_score?.toFixed(3)}</b>.</p>}
 
+        {q.answer_eval && <AnswerBlock a={q.answer_eval} />}
+
         <h4 className="eval-subhead">Retrieved · top {SHOWN_HITS} · run #{run.meta.run_id}</h4>
         <ol className="eval-hits">{hits.map((h, i) => { const c = chunkById.get(h.chunk_id); return <li key={h.chunk_id} className={h.correct ? 'is-correct' : ''} onMouseEnter={() => setFocusChunk(h.chunk_id)} onMouseLeave={() => setFocusChunk(null)}>
           <span className="eval-hit-rank">{i + 1}</span>
@@ -222,6 +235,41 @@ function EvalDetail({ q, run, setFocusChunk }: { q: EvalQuestion | null; run: Ev
       </motion.div>
     </AnimatePresence>
   </Card>;
+}
+
+// ---------- 답변 평가 ----------
+
+const verdictTone: Record<AnswerVerdict, string> = {
+  '근거 맞음': 'lime', '보류 맞음': 'lime', '근거 틀림': 'peach', '잘못된 보류': 'peach', '보류 안 함': 'peach', '인용 없음': 'neutral', '오류': 'neutral',
+};
+const usd = (v: number | null | undefined) => (v == null ? '—' : v < 0.0001 ? '$0.0001 미만' : `$${v.toFixed(4)}`);
+
+// 답변 평가 요약. 규칙으로 채점한다: 인용 [n]에 정답 조각이 있는지, 답 없는 질문에 "문서에 없다"고 했는지.
+function AnswerSummaryCard({ a }: { a: AnswerSummary }) {
+  const items: [string, string, string][] = [
+    ['근거 맞게 인용', `${a.correct} / ${a.graded}`, `보낸 근거에 정답이 있던 질문 ${a.gold_in_sent}개`],
+    ['다른 근거 인용', `${a.wrong}`, a.no_cite ? `인용 없이 답함 ${a.no_cite}개` : '인용 없는 답 없음'],
+    ['답 없는 질문', `${a.proper_abstain} / ${a.abstain}`, `"문서에 없다"고 답함${a.missed_abstain ? ` · 규칙이 못 찾음 ${a.missed_abstain}개` : ''}`],
+    ['잘못된 보류', `${a.wrong_abstain}`, '답이 있는데 없다고 함'],
+    ['비용', usd(a.cost_usd), `${a.model ?? ''} · 입력 ${a.input_tokens.toLocaleString()} · 출력 ${a.output_tokens.toLocaleString()} 토큰`],
+  ];
+  return <Card className="eval-answer-summary" delay={0.18}>
+    <div className="eval-answer-summary-head"><h2>답변 평가</h2><small>규칙 채점 · 질문마다 평균 {(a.mean_ms / 1000).toFixed(1)}초{a.errors ? ` · 오류 ${a.errors}개` : ''}</small></div>
+    <div className="eval-answer-grid">{items.map(([k, v, n]) => <div key={k}><small>{k}</small><b>{v}</b><span>{n}</span></div>)}</div>
+  </Card>;
+}
+
+function AnswerBlock({ a }: { a: AnswerEval }) {
+  return <div className="eval-llm-answer">
+    <div className="eval-llm-head"><h4 className="eval-subhead">LLM 답변</h4><span className={`pill ${verdictTone[a.verdict]}`}>{a.verdict}</span></div>
+    {a.error ? <p className="result-error">{a.error}</p> : <p className="eval-llm-text">{a.text || '(빈 답)'}</p>}
+    {!a.error && <small className="eval-llm-meta">
+      보낸 근거 {a.sent?.join('·') || '없음'} · 인용 {a.cited?.length ? a.cited.join('·') : '없음'}
+      {a.cited_correct?.length ? ` · 정답 인용 ${a.cited_correct.join('·')}` : ''}
+      {a.gold_in_sent === false && (a.verdict === '근거 틀림' || a.verdict === '인용 없음' || a.verdict === '잘못된 보류') ? ' · 보낸 근거에 정답 조각 없음' : ''}
+      {a.says_missing ? ` · "${a.says_missing}…"` : ''} · {usd(a.cost_usd)}
+    </small>}
+  </div>;
 }
 
 // ---------- Page ----------
@@ -237,6 +285,7 @@ export function Evaluations({ openPipeline, openCompare }: { openPipeline: () =>
   const [filter, setFilter] = useState<EvalFilter>('all');
   const [focusChunk, setFocusChunk] = useState<number | null>(null);
   const [label, setLabel] = useState('');
+  const [withAnswers, setWithAnswers] = useState(false);
   const evalJob = useEvalJob(async newId => {
     await reload();
     if (newId != null) { setRunId(newId); setLabel(''); }
@@ -256,7 +305,8 @@ export function Evaluations({ openPipeline, openCompare }: { openPipeline: () =>
   const runner = <Card className="eval-runner">
     <div className="eval-runner-row">
       <div className="eval-runner-setup"><small>Current setup</small><SetupChips setup={setup} onChange={openPipeline} /></div>
-      <form className="eval-runner-form" onSubmit={e => { e.preventDefault(); if (!evalJob.active) void evalJob.start(label.trim()); }}>
+      <form className="eval-runner-form" onSubmit={e => { e.preventDefault(); if (!evalJob.active) void evalJob.start(label.trim(), withAnswers); }}>
+        <label className="eval-answer-toggle"><input type="checkbox" checked={withAnswers} onChange={e => setWithAnswers(e.target.checked)} disabled={evalJob.active} />답변까지 평가</label>
         <input className="eval-label-input" aria-label="Note for this run" placeholder="Note for this run (optional)" maxLength={60} value={label} onChange={e => setLabel(e.target.value)} disabled={evalJob.active} />
         <button className="primary-button" disabled={evalJob.active || !setup}>{evalJob.active ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}{evalJob.active ? 'Evaluating…' : 'Evaluate current setup'}</button>
       </form>
@@ -265,6 +315,7 @@ export function Evaluations({ openPipeline, openCompare }: { openPipeline: () =>
       <span className="progress-track"><motion.span animate={{ width: `${evalJob.job.progress_total ? ((evalJob.job.progress_done ?? 0) / evalJob.job.progress_total) * 100 : 0}%` }} transition={{ duration: 0.5, ease }} /></span>
       <span>{evalJob.job.status === 'queued' ? 'Waiting in queue' : `${evalJob.job.progress_done ?? 0} / ${evalJob.job.progress_total ?? '?'} questions`}</span>
     </motion.div>}</AnimatePresence>
+    {withAnswers && <p className="eval-runner-note"><CircleAlert size={12} />질문마다 상위 근거를 {setup?.query.generator_label?.split(' · ')[1] ?? 'gpt-6-luna'}에 보내 답을 쓰게 해요. 13문제에 약 $0.002예요.</p>}
     {setup?.index.external && <p className="eval-runner-note"><CircleAlert size={12} />This setup uses an external model: every question is sent to {setup.index.label.embedder.split(' · ')[0]} once.</p>}
     {evalJob.error && <p className="source-error eval-runner-error">{evalJob.error}</p>}
   </Card>;
@@ -303,6 +354,7 @@ export function Evaluations({ openPipeline, openCompare }: { openPipeline: () =>
         <MetricCard icon={Clock3} color="neutral" label="Latency" value={`${Math.round(s.latency_ms.mean)} ms`} note={`p95 ${Math.round(s.latency_ms.p95)} ms · embed + DB`} delay={0.15} />
         <ScoreStrip run={run} selected={selectedId} select={setSelectedId} />
       </div>
+      {s.answer && <AnswerSummaryCard a={s.answer} />}
 
       <div className="eval-workspace">
         <Card className="eval-list" delay={0.2}>

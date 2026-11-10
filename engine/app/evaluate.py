@@ -8,6 +8,9 @@
   청킹 방식이 달라도 같은 기준을 쓸 수 있다. 비교 전에 마크다운 기호(*, `)와 공백 차이는 지운다.
   quote가 없는 근거는 예전 방식(마지막 제목이 같은지)으로 보고, 결과에 match_by로 남긴다.
 - 답 없는 질문(abstain)은 성공률 계산에서 빼고, 무엇이 몇 점으로 올라왔는지만 기록한다. 보류 기준은 사용자가 정한다.
+- 답변 평가(answers=True): 검색 결과로 실제 답을 쓰게 하고, 규칙으로만 채점한다 (LLM 채점 없음).
+  · 답이 있는 질문: 답에 붙은 [n] 근거 가운데 정답 조각이 있는지.
+  · 답 없는 질문: "문서에 없다"고 말했는지 (MISSING 문구). 보류 기준을 정하는 게 아니라, 모델이 규칙대로 말했는지만 본다.
 - 그림 좌표: 그 색인의 조각 벡터로 PCA 축을 정하고 질문은 같은 축에 투영한다. 색인(모델)이 다르면 벡터 공간도 달라 그림끼리 직접 겹쳐 볼 수 없다.
 """
 from __future__ import annotations
@@ -25,11 +28,57 @@ from psycopg.types.json import Jsonb
 import components as comp
 from ingest import ROOT, IngestError, OnStep, connect, load_env
 from indexes import get_index
-from search import load_setup, query_defaults, retrieve
+from search import answer, load_setup, query_defaults, retrieve
 
 QUESTIONS = ROOT / "eval" / "questions.jsonl"
 TOP_K = 10               # 기록은 10개까지, 성공률은 1·3·5에서 본다
 RECALL_AT = (1, 3, 5)
+
+# 답변 평가용. 답에 붙은 근거 번호 [n]과 "문서에 없다"는 말을 찾는다.
+CITE = re.compile(r"\[(\d+)\]")
+# 규칙으로 찾는 거라 다른 말투("알 수 없어요" 등)는 놓칠 수 있다. 놓친 답은 결과의 답 원문으로 확인한다.
+MISSING = re.compile(r"(?:문서|자료|출처|근거)(?:에|에는|에서는?)[^.\n]{0,60}?"
+                     r"(?:없(?:습니다|어요|다|음)|나와\s*있지\s*않|포함되어\s*있지\s*않|언급되어\s*있지\s*않|찾을\s*수\s*없)"
+                     r"|not (?:in|mentioned in|covered by) the (?:documents|sources)", re.I)
+DEFAULT_GENERATOR = {"id": "openai-llm", "params": {}}   # 설정에 답변 생성이 꺼져 있으면 가장 싼 기본값으로
+
+
+# 답 하나를 채점한다. sent: LLM에 보낸 근거 번호, ranked: 검색 순서대로 정답 여부.
+def grade_answer(text: str, sent: list[int], ranked: list[dict], abstain: bool) -> dict:
+    cited = sorted({int(n) for n in CITE.findall(text)})
+    valid = [n for n in cited if n in sent]
+    correct = [n for n in valid if ranked[n - 1]["correct"]]
+    missing = MISSING.search(text)
+    if abstain:
+        verdict = "보류 맞음" if missing else "보류 안 함"
+    elif missing and not valid:
+        verdict = "잘못된 보류"
+    elif correct:
+        verdict = "근거 맞음"
+    elif valid:
+        verdict = "근거 틀림"
+    else:
+        verdict = "인용 없음"
+    return {"verdict": verdict, "cited": cited, "cited_correct": correct, "invalid_cites": [n for n in cited if n not in sent],
+            "says_missing": missing.group(0) if missing else None,
+            "gold_in_sent": any(ranked[n - 1]["correct"] for n in sent)}
+
+
+# 답변 평가 묶음 지표. 질문 수와 판정별 개수, 비용.
+def summarize_answers(results: list[dict]) -> dict | None:
+    done = [r["answer_eval"] for r in results if r.get("answer_eval")]
+    if not done:
+        return None
+    graded = [a for r, a in ((r, r.get("answer_eval")) for r in results) if a and not r["abstain"]]
+    count = lambda v: sum(a.get("verdict") == v for a in done)
+    costs = [a["cost_usd"] for a in done if a.get("cost_usd") is not None]
+    return {"answered": len(done), "graded": len(graded), "abstain": len(done) - len(graded),
+            "correct": count("근거 맞음"), "wrong": count("근거 틀림"), "no_cite": count("인용 없음"),
+            "wrong_abstain": count("잘못된 보류"), "proper_abstain": count("보류 맞음"), "missed_abstain": count("보류 안 함"),
+            "errors": count("오류"), "gold_in_sent": sum(bool(a.get("gold_in_sent")) for a in graded),
+            "cost_usd": round(sum(costs), 8) if costs else None,
+            "input_tokens": sum(a.get("input_tokens", 0) for a in done), "output_tokens": sum(a.get("output_tokens", 0) for a in done),
+            "mean_ms": round(statistics.fmean([a.get("ms", 0) for a in done])), "model": next((a["model"] for a in done if a.get("model")), None)}
 
 
 def norm(text: str) -> str:
@@ -116,7 +165,8 @@ def summarize(results: list[dict]) -> dict:
 # index_id를 주면 검색 설정은 그대로 두고 색인만 그것으로 바꿔 평가한다 (비교 화면의 A·B).
 # reranker를 주면 검색 설정의 리랭크만 그것으로 바꾼다. "off"면 끈다 (None이면 설정 그대로).
 def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | None = None,
-             index_id: int | None = None, reranker: dict | str | None = None, keyword: dict | str | None = None) -> dict:
+             index_id: int | None = None, reranker: dict | str | None = None, keyword: dict | str | None = None,
+             answers: bool = False) -> dict:
     env = load_env()
     questions, questions_sha = load_questions()
     with connect(env) as conn:
@@ -129,6 +179,11 @@ def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | N
             setup["query"] = query_defaults({**setup["query"], "keyword": None if keyword == "off" else keyword})
         index = setup["index"]
         chunks, chunk_vecs = load_chunks(conn, index["id"])
+    generator = (setup["query"].get("generator") or comp.normalize("generator", DEFAULT_GENERATOR)) if answers else None
+    if generator:
+        ok, reason = comp.GENERATORS[generator["id"]].availability(env)
+        if not ok:
+            raise IngestError(f"답변 평가를 할 수 없습니다: {reason}")
     if not chunks:
         raise IngestError(f"색인 #{index['id']}에 조각이 없습니다. 먼저 색인을 만드세요")
     by_id = {c["id"]: c for c in chunks}
@@ -160,6 +215,17 @@ def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | N
                                        "rerank": round(lat["rerank"] * 1000, 1),
                                        "keyword": round(lat.get("keyword", 0) * 1000, 1),
                                        "total": round(sum(lat.values()) * 1000, 1)}})
+        if generator:
+            # 검색과 같은 hits로 답을 쓰게 한다. 근거 번호는 검색 순위와 같다.
+            try:
+                a = answer(env, generator, q["question"], out["hits"])
+                results[-1]["answer_eval"] = {
+                    "text": a.get("text", ""), "sent": a["sources"], "skipped": a["skipped"], "model": a.get("model"),
+                    **{k: a.get(k, 0) for k in ("input_tokens", "cached_tokens", "output_tokens", "ms")},
+                    "cost_usd": a.get("cost_usd"),
+                } | grade_answer(a.get("text", ""), a["sources"], ranked, bool(q.get("abstain")))
+            except comp.ComponentError as e:
+                results[-1]["answer_eval"] = {"verdict": "오류", "error": str(e)}
     if on_step:
         on_step("평가", len(questions), len(questions))
 
@@ -180,6 +246,8 @@ def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | N
                     "top1_scores": [r["top1_score"] for r in results if r["abstain"]]},
         "latency_ms": {"mean": round(statistics.fmean(totals), 1), "p95": _p95(totals)},
     }
+    if generator:
+        summary["answer"] = summarize_answers(results)
     snapshot = {
         "name": setup["name"], "query": setup["query"],
         "index": {"id": index["id"], "key": index["key"], "chunker": index["chunker"], "embedder": index["embedder"],
@@ -189,6 +257,7 @@ def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | N
                   "external": comp.is_external("embedder", index["embedder"])},
         "reranker_label": comp.describe("reranker", setup["query"]["reranker"]) if setup["query"]["reranker"] else None,
         "keyword_label": comp.describe("keyword", setup["query"]["keyword"]) if setup["query"]["keyword"] else None,
+        "generator_label": comp.describe("generator", generator) if generator else None,
     }
     meta = {"top_k": TOP_K, "recall_at": list(RECALL_AT), "code_commit": code_commit(),
             "questions_file": "eval/questions.jsonl", "questions_sha256": questions_sha,
@@ -219,7 +288,7 @@ def list_runs(limit: int = 50) -> list[dict]:
     with connect(load_env()) as conn:
         rows = conn.execute("""SELECT id, label, setup, summary, created_at, detail->'meta'->>'questions_sha256'
                                FROM eval_runs ORDER BY id DESC LIMIT %s""", (limit,)).fetchall()
-    return [{"run_id": r[0], "label": r[1], "setup": r[2], "summary": r[3]["all"], "latency_ms": r[3]["latency_ms"],
+    return [{"run_id": r[0], "label": r[1], "setup": r[2], "summary": r[3]["all"], "latency_ms": r[3]["latency_ms"], "answer": r[3].get("answer"),
              "created_at": r[4].isoformat(), "questions_sha256": r[5]} for r in rows]
 
 

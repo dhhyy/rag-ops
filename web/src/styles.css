@@ -568,3 +568,26 @@ button.cmp-row:hover{background:#faf8fd}
 .dialog-inner{max-height:calc(100dvh - 32px);overflow-y:auto;overscroll-behavior:contain}
 .usage-trace{display:inline-flex;align-items:center;gap:4px;color:#6f5a8c;text-decoration:underline;text-underline-offset:3px;overflow-wrap:anywhere}
 .usage-trace:hover{color:#3b3445}
+
+/* 답변 평가 */
+.eval-answer-toggle{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:#6b6078;white-space:nowrap;cursor:pointer}
+.eval-answer-toggle input{accent-color:#36343b}
+.eval-answer-summary{padding:18px 20px;margin:0 0 17px}
+.eval-answer-summary-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.eval-answer-summary-head h2{font-size:12px;font-weight:500}
+.eval-answer-summary-head small{font-size:10px;color:#9a90a4}
+.eval-answer-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+.eval-answer-grid>div{background:#f7f5fa;border-radius:12px;padding:11px 12px;min-width:0;display:flex;flex-direction:column;gap:4px}
+.eval-answer-grid small{font-size:10px;color:#8e849a}
+.eval-answer-grid b{font-size:18px;font-weight:500;letter-spacing:-.4px;font-variant-numeric:tabular-nums}
+.eval-answer-grid span{font-size:10px;color:#9a90a4;line-height:1.5;overflow-wrap:anywhere}
+.eval-llm-answer{margin:14px 0 4px;padding:12px 14px;border-radius:12px;background:#f7f5fa}
+.eval-llm-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.eval-llm-head .eval-subhead{margin:0}
+.eval-llm-text{font-size:11px;line-height:1.7;color:#4a454f;margin:8px 0 6px;white-space:pre-wrap;overflow-wrap:anywhere}
+.eval-llm-meta{font-size:10px;color:#9a90a4;line-height:1.6;overflow-wrap:anywhere}
+@media (max-width:1100px){.eval-answer-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:640px){.eval-answer-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.eval-answer-toggle{order:-1}}
+@media (max-width:1000px){.eval-runner-form{flex-wrap:wrap;min-width:0}.eval-label-input{flex:1 1 160px;min-width:0}}
+@media (max-width:640px){.eval-runner-form .primary-button{flex:1 1 100%}}
+@media (max-width:640px){.setup-chip{white-space:normal;overflow-wrap:anywhere;line-height:1.45}}
