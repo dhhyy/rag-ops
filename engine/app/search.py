@@ -18,6 +18,7 @@ import json
 import time
 
 import components as comp
+import keyword_search
 from telemetry import tracer
 from ingest import IngestError, connect, load_env
 from indexes import get_index
@@ -34,6 +35,9 @@ ORDER BY c.embedding <=> %(q)s::vector
 LIMIT %(k)s
 """
 
+# 키워드 검색에서만 나온 조각을 같은 모양으로 읽는다 (벡터 점수도 함께 계산해 둔다).
+SQL_IDS = SQL.split("WHERE")[0] + "WHERE c.id = ANY(%(ids)s)\n"
+
 
 # 현재 설정(active_setup) 또는 이름 붙여 저장한 설정을 읽는다. 색인 정보까지 붙여 돌려준다.
 def load_setup(conn, name: str | None = None) -> dict:
@@ -49,8 +53,8 @@ def load_setup(conn, name: str | None = None) -> dict:
 
 # 검색 설정 기본값: top-k 5, 리랭크 끔. 리랭크 설정은 normalize로 기본값(후보 수)을 채운다.
 def query_defaults(query: dict | None) -> dict:
-    q = {"top_k": 5, "reranker": None, "generator": None, **(query or {})}
-    for stage in ("reranker", "generator"):
+    q = {"top_k": 5, "reranker": None, "generator": None, "keyword": None, **(query or {})}
+    for stage in ("reranker", "generator", "keyword"):
         if q[stage]:
             q[stage] = comp.normalize(stage, q[stage])
     return q
@@ -76,9 +80,10 @@ def search(env: dict[str, str], index: dict, question: str, k: int) -> tuple[lis
 # Playground는 이것을 그대로 화면에 흘려보내고, 평가·CLI는 retrieve()로 마지막 결과만 쓴다.
 # 리랭크를 작은 묶음으로 나눠 보내므로, 받는 쪽이 중간에 멈추면 다음 묶음은 보내지 않는다.
 def retrieve_steps(env: dict[str, str], index: dict, query: dict, question: str, k: int):
-    reranker = query.get("reranker")
+    reranker, kw_set = query.get("reranker"), query.get("keyword")
     rr = comp.make_reranker(reranker, env) if reranker else None
-    n = max(k, rr.candidates) if rr else k
+    kw = comp.make_keyword(kw_set, env) if kw_set else None
+    n = max(k, rr.candidates if rr else 0, kw.candidates if kw else 0)
     t0 = time.perf_counter()
     try:
         with tracer.start_as_current_span("rag.embed_query") as span:
@@ -99,7 +104,17 @@ def retrieve_steps(env: dict[str, str], index: dict, query: dict, question: str,
         span.set_attribute("rag.candidates", len(rows))
     t_db = time.perf_counter() - t1
     hits = [{"row": r, "score": float(r[1]), "vector_score": float(r[1]), "vector_rank": i} for i, r in enumerate(rows, 1)]
-    yield "candidates", (hits, t_db)
+    t_kw = 0.0
+    if kw:
+        t3 = time.perf_counter()
+        with tracer.start_as_current_span("rag.keyword_search") as span:
+            hits = fuse(env, index, vec, hits, keyword_search.search(env, index["id"], question, kw.candidates), kw.mode)
+            span.set_attribute("rag.mode", kw.mode)
+            span.set_attribute("rag.candidates", len(hits))
+        t_kw = time.perf_counter() - t3
+        hits = hits[:n]   # 리랭크가 켜져 있으면 합친 순위 앞쪽 후보 수만큼만 리랭커에 보낸다
+        rows = [h["row"] for h in hits]
+    yield "candidates", (hits, t_db + t_kw)
     t_rerank = 0.0
     if rr and rows:
         texts = [r[-1] for r in rows]
@@ -117,8 +132,31 @@ def retrieve_steps(env: dict[str, str], index: dict, query: dict, question: str,
                 h["score"] = sc
             yield "reranked", (min(start + comp.RERANK_BATCH, len(texts)), len(texts))
         hits.sort(key=lambda h: -h["score"])
-    yield "done", {"hits": hits, "vec": vec, "candidates": len(rows) if rr else None,
-                   "latency": {"embed": t_embed, "db": t_db, "rerank": t_rerank}}
+    latency = {"embed": t_embed, "db": t_db, "rerank": t_rerank} | ({"keyword": t_kw} if kw else {})
+    yield "done", {"hits": hits, "vec": vec, "candidates": len(rows) if rr else None, "latency": latency}
+
+
+# 벡터 순위와 키워드 순위를 하나로 합친다.
+#   hybrid: RRF 점수 = 1/(60+벡터 순위) + 1/(60+키워드 순위). 한쪽에만 있으면 그쪽 항만 더한다.
+#   keyword: 키워드 순위만 쓴다 (벡터 점수는 참고로만 남긴다).
+# 키워드에서만 나온 조각은 DB에서 같은 모양으로 읽어 오고 vector_rank는 None으로 둔다.
+def fuse(env: dict[str, str], index: dict, vec: list[float], hits: list[dict], kw_hits: list[tuple[int, float]], mode: str) -> list[dict]:
+    by_id = {h["row"][0]: h for h in hits}
+    missing = [cid for cid, _ in kw_hits if cid not in by_id]
+    if missing:
+        with connect(env) as conn:
+            for r in conn.execute(SQL_IDS, {"q": json.dumps(vec), "ids": missing, "index": index["id"]}).fetchall():
+                by_id[r[0]] = {"row": r, "score": 0.0, "vector_score": float(r[1]), "vector_rank": None}
+    for h in by_id.values():
+        h["keyword_rank"], h["keyword_score"] = None, None
+    for rank, (cid, sc) in enumerate(kw_hits, 1):
+        if cid in by_id:
+            by_id[cid]["keyword_rank"], by_id[cid]["keyword_score"] = rank, sc
+    pool = list(by_id.values()) if mode == "hybrid" else [h for h in by_id.values() if h["keyword_rank"]]
+    for h in pool:
+        h["score"] = sum(1 / (comp.RRF_K + r) for r in (h["vector_rank"] if mode == "hybrid" else None, h["keyword_rank"]) if r)
+    pool.sort(key=lambda h: -h["score"])
+    return pool
 
 
 # 검색 설정까지 적용한 검색. hits는 후보 전체(리랭크했으면 리랭크 순)이고 부르는 쪽이 앞에서 k개를 쓴다.
@@ -163,7 +201,8 @@ def answer(env: dict[str, str], setting: dict, question: str, hits: list[dict]) 
 def hit_dict(h: dict) -> dict:
     (cid, _, idx, path, content, repo, spath, commit, env_label, dtype, verif, doc_id, title, checked, _) = h["row"]
     return {"chunk_id": cid, "score": round(h["score"], 4), "vector_score": round(h["vector_score"], 4),
-            "vector_rank": h["vector_rank"], "chunk_index": idx, "heading_path": path, "content": content,
+            "vector_rank": h["vector_rank"], "keyword_rank": h.get("keyword_rank"),
+            "keyword_score": round(h["keyword_score"], 3) if h.get("keyword_score") is not None else None, "chunk_index": idx, "heading_path": path, "content": content,
             "document_id": doc_id, "title": title, "source_repo": repo, "source_path": spath, "source_commit": commit,
             "env": env_label, "doc_type": dtype, "verification": verif, "checked_at": checked.isoformat() if checked else None}
 

@@ -5,7 +5,7 @@ import {
   ArrowLeftRight, Receipt, ArrowRight, ArrowUpRight, Bell, BookOpen, Box, Check, CheckCheck,
   ChevronDown, ChevronRight, CircleAlert, Clock3, Database, FileText, Folder, LoaderCircle,
   GitBranch, Home, Layers3, Maximize2, MessageSquare, Pause, Play,
-  Plus, Search, Settings2, ShieldCheck, SkipBack, SkipForward, SlidersHorizontal,
+  Plus, Search, Settings2, ShieldCheck, SkipBack, SkipForward, SlidersHorizontal, TextSearch,
   Sparkles, Trash2, Zap, ChartNoAxesCombined,
   type LucideIcon,
 } from 'lucide-react';
@@ -314,6 +314,7 @@ const groups: Group[] = [
   { id: 'retrieval', title: 'Retrieval', icon: Search, color: 'blue', nodes: [
     { name: 'Query', detail: 'Embed the question', icon: MessageSquare, color: 'blue', settings: 'query', live: true },
     { name: 'Vector search', detail: 'pgvector · cosine', icon: Search, color: 'blue', settings: 'query', live: true },
+    { name: '키워드 검색', detail: 'BM25 · Kiwi 형태소', icon: TextSearch, color: 'blue', settings: 'keyword', live: true },
     { name: 'Rerank', detail: 'Reorder candidates', icon: Zap, color: 'blue', settings: 'reranker', live: true },
   ] },
   { id: 'generation', title: 'Generation', icon: Sparkles, color: 'purple', nodes: [
@@ -807,6 +808,7 @@ function Pipeline({ enabled, flip, openKnowledge }: { enabled: boolean[]; flip: 
       ? { text: `≤ ${limitOf(cur)?.toLocaleString() ?? '?'} · ${cur.label.embedder}` }
       : { text: `${cur.label.embedder} · ${cur.dims}d`, external: cur.external };
     if (n.settings === 'reranker') return { text: s.setup.query.reranker_label ?? 'Off' };
+    if (n.settings === 'keyword') return { text: s.setup.query.keyword_label ?? '꺼짐' };
     if (n.settings === 'generator') return { text: s.setup.query.generator_label ?? 'Off', external: !!catalog?.generator.find(g => g.id === s.setup?.query.generator?.id)?.external };
     if (n.settings === 'query') return n.name === 'Query' ? { text: cur.label.embedder, external: cur.external } : { text: `top-k ${s.setup.query.top_k}` };
     if (n.settings) return { text: 'Not set' };

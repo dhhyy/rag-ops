@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   ArrowUpRight, Box, Check, ChevronDown, CircleAlert, Layers3, LoaderCircle, Minus, Plus, RefreshCw, RotateCcw, Save,
-  Search, Sparkles, Star, X, Zap, type LucideIcon,
+  Search, Sparkles, Star, TextSearch, X, Zap, type LucideIcon,
 } from 'lucide-react';
 import { api, Card, ColorIcon, IconButton, Modal, spring } from './ui';
 
@@ -15,13 +15,13 @@ export type Spec = {
   id: string; stage: string; label: string; description: string; provider: 'local' | 'external'; vendor: string;
   params: Param[]; status: 'ready' | 'planned'; external: boolean; available: boolean; reason: string; max_tokens?: number;
 };
-export type Catalog = { chunker: Spec[]; embedder: Spec[]; reranker: Spec[]; generator: Spec[] };
+export type Catalog = { chunker: Spec[]; embedder: Spec[]; reranker: Spec[]; generator: Spec[]; keyword: Spec[] };
 export type StageSetting = { id: string; params: Record<string, string> };
 export type IndexInfo = {
   id: number; key: string; chunker: StageSetting; embedder: StageSetting; dims: number; is_base: boolean; created_at: string;
   chunks: number; documents: number; pending: number; label: { chunker: string; embedder: string }; external: boolean;
 };
-export type Query = { top_k: number; reranker: StageSetting | null; reranker_label?: string | null; generator: StageSetting | null; generator_label?: string | null };
+export type Query = { top_k: number; reranker: StageSetting | null; reranker_label?: string | null; generator: StageSetting | null; generator_label?: string | null; keyword: StageSetting | null; keyword_label?: string | null };
 export type Setup = { index: IndexInfo; query: Query; saved_as: string | null; updated_at: string };
 export type SavedSetup = { id: number; name: string; index_id: number; query: Partial<Query>; created_at: string };
 type DocRef = { id: number; title: string; path: string };
@@ -32,7 +32,7 @@ export type Estimate = {
   ready: boolean; can_build: boolean;
 };
 export type BuildResponse = { index_id: number; jobs: { job_id: number; path: string }[]; applied: boolean };
-export type PanelStage = 'chunker' | 'embedder' | 'query' | 'reranker' | 'generator';
+export type PanelStage = 'chunker' | 'embedder' | 'query' | 'reranker' | 'generator' | 'keyword';
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 // Index identity is the settings themselves, so two settings are "the same" when their sorted params match.
@@ -168,6 +168,7 @@ const stageInfo: Record<PanelStage, { title: string; icon: LucideIcon; color: st
   query: { title: 'Search', icon: Search, color: 'peach' },
   reranker: { title: 'Rerank', icon: Zap, color: 'neutral' },
   generator: { title: 'Answer', icon: Sparkles, color: 'neutral' },
+  keyword: { title: '키워드 검색', icon: TextSearch, color: 'blue' },
 };
 
 type PanelProps = {
@@ -208,7 +209,7 @@ function SettingsTab({ stage, note, s, catalog, busy, onBuild, openKnowledge }: 
   if (!catalog || !s.setup) return <div className="panel-body"><p className="dialog-note">Loading options…</p></div>;
   if (stage === 'chunker' || stage === 'embedder') return <IndexSettings key={s.setup.index.key} stage={stage} note={note} s={s} setup={s.setup} catalog={catalog} busy={busy} onBuild={onBuild} openKnowledge={openKnowledge} />;
   if (stage === 'query') return <QuerySettings s={s} setup={s.setup} />;
-  if (stage === 'reranker' || stage === 'generator') return <OnOffSettings key={stage + JSON.stringify(s.setup.query[stage])} stage={stage} s={s} setup={s.setup} catalog={catalog} />;
+  if (stage === 'reranker' || stage === 'generator' || stage === 'keyword') return <OnOffSettings key={stage + JSON.stringify(s.setup.query[stage])} stage={stage} s={s} setup={s.setup} catalog={catalog} />;
   return <>
     <div className="panel-body">
       <p className="panel-note">Writes the answer from the retrieved chunks and cites them.</p>
@@ -351,7 +352,7 @@ function Impact({ e, busy, apply, build, openKnowledge }: { e: Estimate; busy: b
 }
 
 // Rerank and Answer are search settings, not part of the index, so they apply right away. "Off" is drawn as one more card.
-type OnOffStage = 'reranker' | 'generator';
+type OnOffStage = 'reranker' | 'generator' | 'keyword';
 const offSpec = (stage: OnOffStage, description: string): Spec => ({
   id: 'off', stage, label: 'Off', description, provider: 'local', vendor: '—',
   params: [], status: 'ready', external: false, available: true, reason: '',
@@ -376,6 +377,14 @@ const ON_OFF: Record<OnOffStage, {
     offText: 'Playground shows the chunks only.',
     title: d => `Answer with ${d.params.model}`,
     cost: d => `Applies right away. Each question sends the top ${d.params.sources} chunks (about 1,000 tokens for 3) and gets up to ${d.params.max_output} tokens back.`,
+  },
+  keyword: {
+    note: '벡터 검색은 뜻이 비슷한 글을 찾고, 키워드 검색(BM25)은 질문의 낱말이 그대로 들어 있는 글을 찾아요. 명령어·설정 이름·오류 문구처럼 정확한 낱말을 물을 때 도움이 돼요.',
+    off: offSpec('keyword', '벡터 검색 순위만 써요.'),
+    inUse: (setup, cur) => `${setup.query.keyword_label} · 키워드 후보 ${cur.params.candidates}개`,
+    offText: '벡터 검색 순위만 써요.',
+    title: d => d.params.mode === 'keyword' ? '키워드 검색만 쓰기' : '벡터 + 키워드 순위 합치기',
+    cost: d => `바로 적용돼요. 색인을 다시 만들 필요가 없어요. 내 컴퓨터에서 계산하고 외부로 보내지 않아요. 키워드 후보 ${d.params.candidates}개를 가져와요.`,
   },
 };
 function OnOffSettings({ stage, s, setup, catalog }: { stage: OnOffStage; s: SetupApi; setup: Setup; catalog: Catalog }) {

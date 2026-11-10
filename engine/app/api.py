@@ -306,6 +306,7 @@ def search_stream(req: SearchRequest) -> StreamingResponse:
     # 사용 기록에 남길 설정 요약 (사람이 읽는 이름 포함)
     setup_rec = {"index_id": index["id"], "embedder": comp.describe("embedder", index["embedder"]),
                  "reranker": comp.describe("reranker", query["reranker"]) if query["reranker"] else None,
+                 "keyword": comp.describe("keyword", query["keyword"]) if query["keyword"] else None,
                  "generator": comp.describe("generator", query["generator"]) if query["generator"] and req.answer == "setting" else None,
                  "top_k": k}
 
@@ -318,7 +319,7 @@ def search_stream(req: SearchRequest) -> StreamingResponse:
         try:
             yield line({"type": "start", "price_checked": comp.PRICE_CHECKED, "top_k": k, "index_id": index["id"],
                         "embedder": setup_rec["embedder"], "external": comp.is_external("embedder", index["embedder"]),
-                        "reranker": setup_rec["reranker"],
+                        "reranker": setup_rec["reranker"], "keyword": setup_rec["keyword"],
                         "candidates": int(query["reranker"]["params"]["candidates"]) if query["reranker"] else None})
             final: list[dict] = []
             try:
@@ -485,6 +486,7 @@ def get_setup() -> dict:
     q = query_defaults(query)
     q["reranker_label"] = comp.describe("reranker", q["reranker"]) if q["reranker"] else None
     q["generator_label"] = comp.describe("generator", q["generator"]) if q["generator"] else None
+    q["keyword_label"] = comp.describe("keyword", q["keyword"]) if q["keyword"] else None
     return {"index": index, "query": q, "saved_as": saved[0] if saved else None, "updated_at": updated}
 
 
@@ -494,6 +496,7 @@ class SetupUpdate(BaseModel):
     # 리랭크: {"id", "params"}면 켜고, "off"면 끈다. 주지 않으면 그대로 둔다.
     reranker: dict | Literal["off"] | None = None
     generator: dict | Literal["off"] | None = None   # 답변 생성: 리랭크와 같은 방식
+    keyword: dict | Literal["off"] | None = None     # 키워드 검색(BM25): 리랭크와 같은 방식
 
 
 # 현재 설정을 바꾼다. 색인은 조각이 하나라도 있어야 고를 수 있다. 검색 설정은 바로 적용된다.
@@ -515,7 +518,24 @@ def update_setup(req: SetupUpdate) -> dict:
         if req.generator is not None:
             conn.execute("""UPDATE active_setup SET query = query || jsonb_build_object('generator', %s::jsonb), updated_at=now()
                             WHERE id=1""", (Jsonb(check_generator(req.generator)),))
+        if req.keyword is not None:
+            conn.execute("""UPDATE active_setup SET query = query || jsonb_build_object('keyword', %s::jsonb), updated_at=now()
+                            WHERE id=1""", (Jsonb(check_stage("keyword", comp.KEYWORDS, req.keyword)),))
     return get_setup()
+
+
+# 켜고 끄는 검색 단계 설정을 검사한다. "off"는 None(끔). 쓸 수 없는 상태면 켤 수 없다.
+def check_stage(stage: str, registry: dict, value: dict | str) -> dict | None:
+    if value == "off":
+        return None
+    try:
+        setting = comp.normalize(stage, value)
+    except comp.ComponentError as e:
+        raise HTTPException(400, str(e))
+    ok, reason = registry[setting["id"]].availability(load_env())
+    if not ok:
+        raise HTTPException(409, reason)
+    return setting
 
 
 # 답변 생성 설정을 검사한다. "off"는 None(끔). 키가 없으면 켤 수 없다.
@@ -607,6 +627,7 @@ def update_document(doc_id: int, req: DocumentUpdate) -> dict:
 class EvalSide(BaseModel):
     index_id: int | None = None                       # 비우면 현재 설정의 색인
     reranker: dict | Literal["off"] | None = None     # 비우면 현재 설정의 리랭크, "off"면 끔
+    keyword: dict | Literal["off"] | None = None      # 비우면 현재 설정의 키워드 검색, "off"면 끔
 
 
 class EvalRequest(BaseModel):
@@ -623,6 +644,7 @@ def create_eval(req: EvalRequest) -> dict:
     if len(sides) > 2:
         raise HTTPException(400, "한 번에 설정 두 개까지 평가할 수 있습니다")
     rerankers = [check_reranker(s.reranker) if s.reranker is not None else None for s in sides]
+    keywords = [check_stage("keyword", comp.KEYWORDS, s.keyword) if s.keyword is not None else None for s in sides]
     with connect(load_env()) as conn:
         busy = conn.execute("""SELECT id FROM ingest_jobs WHERE params->>'kind'='eval' AND status IN ('queued','running')""").fetchone()
         if busy:
@@ -632,14 +654,17 @@ def create_eval(req: EvalRequest) -> dict:
                 raise HTTPException(409, f"색인 #{side.index_id}이 아직 만들어지지 않았습니다. 먼저 만드세요")
         batch = uuid.uuid4().hex
         job_ids = []
-        for side, rr in zip(sides, rerankers):
+        for side, rr, kwd in zip(sides, rerankers, keywords):
             params = {"kind": "eval", "label": req.label[:60], "batch": batch}
             if side.index_id is not None:
                 params["index_id"] = side.index_id
             if side.reranker is not None:
                 params["reranker"] = rr or "off"
+            if side.keyword is not None:
+                params["keyword"] = kwd or "off"
             name = (f"eval: {req.label or 'current setup'}" + (f" · index {side.index_id}" if side.index_id is not None else "")
-                    + (f" · rerank {'off' if rr is None else rr['params']['candidates']}" if side.reranker is not None else ""))
+                    + (f" · rerank {'off' if rr is None else rr['params']['candidates']}" if side.reranker is not None else "")
+                    + (f" · keyword {'off' if kwd is None else kwd['params']['mode']}" if side.keyword is not None else ""))
             job_ids.append(conn.execute("INSERT INTO ingest_jobs (path, params) VALUES (%s, %s) RETURNING id",
                                         (name, Jsonb(params))).fetchone()[0])
     enqueue(job_ids)

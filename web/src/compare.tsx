@@ -8,7 +8,7 @@ import { defaults, settingKey, useCatalog, useSetup, type Catalog, type Estimate
 import type { EvalEntry, EvalJob, EvalQuestion, EvalRun } from './evaluations';
 
 type Side = 'A' | 'B';
-type Pick = { chunker: StageSetting; embedder: StageSetting; reranker?: StageSetting | null };
+type Pick = { chunker: StageSetting; embedder: StageSetting; reranker?: StageSetting | null; keyword?: StageSetting | null };
 type Option = { key: string; setting: StageSetting; label: string; external: boolean; available: boolean; reason: string };
 
 const STORE = 'compare-ab';
@@ -23,7 +23,8 @@ const CLOSE = 2;
 
 // ---------- 화면에 보이는 이름 ----------
 
-function optionLabel(stage: 'chunker' | 'embedder' | 'reranker', s: StageSetting, catalog: Catalog | null): string {
+function optionLabel(stage: 'chunker' | 'embedder' | 'reranker' | 'keyword', s: StageSetting, catalog: Catalog | null): string {
+  if (stage === 'keyword' && s.id === 'bm25-kiwi') return s.params.mode === 'keyword' ? '키워드만 (BM25)' : '벡터 + 키워드 (RRF)';
   if (stage === 'reranker' && s.id === 'tei-bge-reranker') return `bge-reranker · 후보 ${s.params.candidates}개`;
   if (stage === 'chunker' && s.id === 'heading') return s.params.prefix === 'none' ? '제목 단위 · 절만' : '제목 단위 · 경로 붙임';
   if (stage === 'embedder' && s.id === 'tei-bge-m3') return 'bge-m3';
@@ -37,7 +38,7 @@ function optionLabel(stage: 'chunker' | 'embedder' | 'reranker', s: StageSetting
 }
 
 // 고를 수 있는 값: 구현마다 첫 번째 파라미터의 선택지를 펼치고(나머지는 기본값), 이미 만든 색인의 값도 넣는다.
-function optionsFor(stage: 'chunker' | 'embedder' | 'reranker', catalog: Catalog | null, indexes: IndexInfo[]): Option[] {
+function optionsFor(stage: 'chunker' | 'embedder' | 'reranker' | 'keyword', catalog: Catalog | null, indexes: IndexInfo[]): Option[] {
   const out = new Map<string, Option>();
   const add = (setting: StageSetting) => {
     const key = settingKey(setting);
@@ -53,7 +54,7 @@ function optionsFor(stage: 'chunker' | 'embedder' | 'reranker', catalog: Catalog
     if (!first) add({ id: spec.id, params: base });
     else for (const [value] of first.choices) add({ id: spec.id, params: { ...base, [first.name]: value } });
   }
-  if (stage !== 'reranker') for (const i of indexes) add(stage === 'chunker' ? i.chunker : i.embedder);
+  if (stage === 'chunker' || stage === 'embedder') for (const i of indexes) add(stage === 'chunker' ? i.chunker : i.embedder);
   return [...out.values()];
 }
 
@@ -122,6 +123,7 @@ function SetupCard({ side, pick, setPick, catalog, indexes, lastRun, reload, loc
   const embedders = useMemo(() => optionsFor('embedder', catalog, indexes), [catalog, indexes]);
   const rerankers = useMemo(() => optionsFor('reranker', catalog, indexes), [catalog, indexes]);
   const reranker = rerankers.find(o => o.key === rerankKey(pick.reranker));
+  const keywords = useMemo(() => optionsFor('keyword', catalog, indexes), [catalog, indexes]);
   const embedder = embedders.find(o => o.key === settingKey(pick.embedder));
   const external = embedder?.external ?? false;
   const index = indexes.find(i => sameIndex(i, pick));
@@ -173,9 +175,15 @@ function SetupCard({ side, pick, setPick, catalog, indexes, lastRun, reload, loc
 
   return <Card className="cmp-setup">
     <div className="cmp-setup-head"><span className={`cmp-tag is-${side}`}>{side}</span>
-      <b>{embedder?.label ?? '설정'}{pick.reranker ? ' + 리랭크' : ''}</b><span className={`cmp-where ${external ? 'is-external' : ''}`}>{external ? '외부 전송' : '내 컴퓨터'}</span></div>
+      <b>{embedder?.label ?? '설정'}{pick.keyword ? ' + 키워드' : ''}{pick.reranker ? ' + 리랭크' : ''}</b><span className={`cmp-where ${external ? 'is-external' : ''}`}>{external ? '외부 전송' : '내 컴퓨터'}</span></div>
     <label className="cmp-field"><span>나누기</span>{select('chunker', chunkers)}</label>
     <label className="cmp-field"><span>임베딩</span>{select('embedder', embedders)}</label>
+    <label className="cmp-field"><span>키워드</span>
+      <select className="cmp-select" disabled={locked || build.active} value={rerankKey(pick.keyword)}
+        onChange={e => setPick({ ...pick, keyword: keywords.find(x => x.key === e.target.value)?.setting ?? null })}>
+        <option value="off">끔 (벡터만)</option>
+        {keywords.map(o => <option key={o.key} value={o.key} disabled={!o.available}>{o.label}{o.available ? '' : ` · ${o.reason || '쓸 수 없음'}`}</option>)}
+      </select></label>
     <label className="cmp-field"><span>리랭크</span>
       <select className="cmp-select" disabled={locked || build.active} value={rerankKey(pick.reranker)}
         onChange={e => setPick({ ...pick, reranker: rerankers.find(x => x.key === e.target.value)?.setting ?? null })}>
@@ -309,7 +317,8 @@ export function Compare() {
   // 그 색인과 같은 리랭크 설정으로 돈 가장 최근 평가. 리랭크 기록이 없는 예전 평가는 "끔"으로 본다.
   const lastRunOf = (s: Side) => {
     const i = idx(s);
-    return i ? evals?.find(e => e.setup.index.id === i.id && rerankKey(e.setup.query.reranker) === rerankKey(picks[s]?.reranker)) : undefined;
+    return i ? evals?.find(e => e.setup.index.id === i.id && rerankKey(e.setup.query.reranker) === rerankKey(picks[s]?.reranker)
+      && rerankKey(e.setup.query.keyword) === rerankKey(picks[s]?.keyword)) : undefined;
   };
   const ra = lastRunOf('A'), rb = lastRunOf('B');
   useEffect(() => {
@@ -317,13 +326,14 @@ export function Compare() {
   }, [ra?.run_id, rb?.run_id]);
 
   const ready = (i?: IndexInfo) => !!i && i.chunks > 0 && i.pending === 0;
-  const same = ia && ib && ia.id === ib.id && rerankKey(picks.A?.reranker) === rerankKey(picks.B?.reranker);
+  const same = ia && ib && ia.id === ib.id && rerankKey(picks.A?.reranker) === rerankKey(picks.B?.reranker)
+    && rerankKey(picks.A?.keyword) === rerankKey(picks.B?.keyword);
   const canRun = ready(ia) && ready(ib) && !same && !evalJobs.active;
 
   async function runBoth() {
     setError('');
     try {
-      const r = await api<{ job_ids: number[] }>('/evals', { method: 'POST', body: { label: '비교', sides: (['A', 'B'] as const).map(s => ({ index_id: idx(s)!.id, reranker: picks[s]?.reranker ?? 'off' })) } });
+      const r = await api<{ job_ids: number[] }>('/evals', { method: 'POST', body: { label: '비교', sides: (['A', 'B'] as const).map(s => ({ index_id: idx(s)!.id, reranker: picks[s]?.reranker ?? 'off', keyword: picks[s]?.keyword ?? 'off' })) } });
       evalJobs.follow(r.job_ids);
     } catch (e) { setError(message(e)); }
   }

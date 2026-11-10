@@ -116,7 +116,7 @@ def summarize(results: list[dict]) -> dict:
 # index_id를 주면 검색 설정은 그대로 두고 색인만 그것으로 바꿔 평가한다 (비교 화면의 A·B).
 # reranker를 주면 검색 설정의 리랭크만 그것으로 바꾼다. "off"면 끈다 (None이면 설정 그대로).
 def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | None = None,
-             index_id: int | None = None, reranker: dict | str | None = None) -> dict:
+             index_id: int | None = None, reranker: dict | str | None = None, keyword: dict | str | None = None) -> dict:
     env = load_env()
     questions, questions_sha = load_questions()
     with connect(env) as conn:
@@ -125,6 +125,8 @@ def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | N
             setup["index"] = get_index(conn, index_id)
         if reranker is not None:
             setup["query"] = query_defaults({**setup["query"], "reranker": None if reranker == "off" else reranker})
+        if keyword is not None:
+            setup["query"] = query_defaults({**setup["query"], "keyword": None if keyword == "off" else keyword})
         index = setup["index"]
         chunks, chunk_vecs = load_chunks(conn, index["id"])
     if not chunks:
@@ -143,11 +145,12 @@ def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | N
         missing = [e for e in evidence if not any(matches(c, e) for c in chunks)]
         ranked = [{"chunk_id": h["row"][0], "score": round(h["score"], 4),
                    "vector_score": round(h["vector_score"], 4), "vector_rank": h["vector_rank"],
+                   "keyword_rank": h.get("keyword_rank"),
                    "correct": any(matches(by_id[h["row"][0]], e) for e in evidence)} for h in out["hits"]]
         retrieved = ranked[:TOP_K]
         rank = next((n for n, h in enumerate(retrieved, 1) if h["correct"]), None)
         # 리랭크 전(벡터 검색) 순위. 리랭크가 꺼져 있으면 rank와 같다. 후보 N개 안에 없으면 None.
-        rank_vector = min((h["vector_rank"] for h in ranked if h["correct"]), default=None)
+        rank_vector = min((h["vector_rank"] for h in ranked if h["correct"] and h["vector_rank"]), default=None)
         results.append({**{k: q.get(k) for k in ("id", "kind", "question", "answer", "env", "abstain", "use")},
                         "evidence": [{**e, "match_by": "quote" if e.get("quote") else "heading"} for e in evidence],
                         "gold_chunk_ids": gold_ids, "missing_evidence": len(missing) > 0,
@@ -155,6 +158,7 @@ def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | N
                         "retrieved": retrieved,
                         "latency_ms": {"embed": round(lat["embed"] * 1000, 1), "db": round(lat["db"] * 1000, 1),
                                        "rerank": round(lat["rerank"] * 1000, 1),
+                                       "keyword": round(lat.get("keyword", 0) * 1000, 1),
                                        "total": round(sum(lat.values()) * 1000, 1)}})
     if on_step:
         on_step("평가", len(questions), len(questions))
@@ -184,6 +188,7 @@ def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | N
                             "embedder": comp.describe("embedder", index["embedder"])},
                   "external": comp.is_external("embedder", index["embedder"])},
         "reranker_label": comp.describe("reranker", setup["query"]["reranker"]) if setup["query"]["reranker"] else None,
+        "keyword_label": comp.describe("keyword", setup["query"]["keyword"]) if setup["query"]["keyword"] else None,
     }
     meta = {"top_k": TOP_K, "recall_at": list(RECALL_AT), "code_commit": code_commit(),
             "questions_file": "eval/questions.jsonl", "questions_sha256": questions_sha,

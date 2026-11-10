@@ -294,6 +294,36 @@ class TeiReranker:
         return scores
 
 
+# ---------- 키워드 검색 ----------
+
+RRF_K = 60   # 순위 합치기(RRF)의 상수. 1/(60+순위)라서 1등과 2등의 차이가 작고, 두 쪽 모두에서 위에 있는 조각이 올라온다.
+
+
+class Bm25Keyword:
+    spec = Spec(
+        id="bm25-kiwi", stage="keyword", label="BM25 · Kiwi",
+        description="질문의 낱말이 조각에 몇 번, 얼마나 드물게 나오는지로 점수를 매겨요. 한국어는 Kiwi 형태소 분석으로 조사를 떼고 셉니다.",
+        provider="local", vendor="kiwipiepy",
+        params=(Param("mode", "합치는 방법", "hybrid", (("hybrid", "벡터 + 키워드 (RRF)"), ("keyword", "키워드만")),
+                      help="벡터 + 키워드: 두 검색의 순위를 RRF로 합쳐요. 키워드만: 벡터 순위를 쓰지 않아요 (비교용).",
+                      always_shown=True),
+                Param("candidates", "키워드 후보 수", "20", (("10", "10"), ("20", "20"), ("50", "50")),
+                      help="키워드 검색에서 가져올 조각 수. 벡터 검색도 이만큼 가져와 순위를 합쳐요.")),
+    )
+
+    def __init__(self, params: dict[str, str], env: dict[str, str]):
+        self.mode = params["mode"]
+        self.candidates = int(params["candidates"])
+
+    @staticmethod
+    def availability(env: dict[str, str]) -> tuple[bool, str]:
+        try:
+            import kiwipiepy  # noqa: F401
+            return True, ""
+        except ImportError:
+            return False, "kiwipiepy가 설치되지 않았어요 (engine 이미지를 다시 빌드)"
+
+
 # ---------- 목록 ----------
 
 # ---------- 답변 생성 ----------
@@ -354,6 +384,7 @@ CHUNKERS = {c.spec.id: c for c in (HeadingChunker,)}
 EMBEDDERS = {e.spec.id: e for e in (TeiEmbedder, OpenAIEmbedder)}
 RERANKERS = {r.spec.id: r for r in (TeiReranker,)}
 GENERATORS = {g.spec.id: g for g in (OpenAIGenerator,)}
+KEYWORDS = {k.spec.id: k for k in (Bm25Keyword,)}
 
 # 아직 구현하지 않은 단계. 화면에 "준비 중"으로 보여 줘서 앞으로 무엇이 들어올 자리인지 알 수 있게 한다.
 PLANNED = (
@@ -363,7 +394,7 @@ PLANNED = (
 
 
 def _registry(stage: str) -> dict:
-    return {"chunker": CHUNKERS, "embedder": EMBEDDERS, "reranker": RERANKERS, "generator": GENERATORS}.get(stage, {})
+    return {"chunker": CHUNKERS, "embedder": EMBEDDERS, "reranker": RERANKERS, "generator": GENERATORS, "keyword": KEYWORDS}.get(stage, {})
 
 
 # 단계 설정을 검사하고 기본값을 채운다. 모르는 구현·파라미터·선택지에 없는 값이면 ComponentError.
@@ -408,6 +439,10 @@ def make_generator(setting: dict, env: dict[str, str]) -> OpenAIGenerator:
     return GENERATORS[setting["id"]](setting["params"], env)
 
 
+def make_keyword(setting: dict, env: dict[str, str]) -> Bm25Keyword:
+    return KEYWORDS[setting["id"]](setting["params"], env)
+
+
 def embedder_dims(setting: dict) -> int:
     return EMBEDDERS[setting["id"]].dims_for(setting["params"])
 
@@ -432,11 +467,11 @@ def describe(stage: str, setting: dict) -> str:
 
 # 화면용 목록: 단계마다 구현 설명, 파라미터, 지금 쓸 수 있는지와 이유. 비밀값은 넣지 않는다 (키는 있음/없음만).
 def catalog(env: dict[str, str]) -> dict[str, list[dict]]:
-    out: dict[str, list[dict]] = {"chunker": [], "embedder": [], "reranker": [], "generator": []}
-    for stage, registry in (("chunker", CHUNKERS), ("embedder", EMBEDDERS), ("reranker", RERANKERS), ("generator", GENERATORS)):
+    out: dict[str, list[dict]] = {"chunker": [], "embedder": [], "reranker": [], "generator": [], "keyword": []}
+    for stage, registry in (("chunker", CHUNKERS), ("embedder", EMBEDDERS), ("reranker", RERANKERS), ("generator", GENERATORS), ("keyword", KEYWORDS)):
         for impl in registry.values():
             item = asdict(impl.spec) | {"external": impl.spec.external, "available": True, "reason": ""}
-            if stage in ("reranker", "generator"):
+            if stage in ("reranker", "generator", "keyword"):
                 item["available"], item["reason"] = impl.availability(env)
             if stage == "embedder":
                 item["available"], item["reason"] = impl.availability(env)

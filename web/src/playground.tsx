@@ -8,11 +8,11 @@ import { Card, ease, RAG_API, readError } from './ui';
 import { useSetup, type Setup } from './setup';
 
 type Hit = {
-  chunk_id: number; score: number; vector_score: number; vector_rank: number; chunk_index: number; heading_path: string; content: string;
+  chunk_id: number; score: number; vector_score: number; vector_rank: number | null; keyword_rank?: number | null; keyword_score?: number | null; chunk_index: number; heading_path: string; content: string;
   document_id: number; title: string | null; source_repo: string; source_path: string; source_commit: string;
   env: string | null; doc_type: string | null; verification: string | null; checked_at: string | null;
 };
-type Start = { price_checked: string; top_k: number; index_id: number; embedder: string; external: boolean; reranker: string | null; candidates: number | null };
+type Start = { price_checked: string; top_k: number; index_id: number; embedder: string; external: boolean; reranker: string | null; keyword?: string | null; candidates: number | null };
 type Answer = {
   state: 'writing' | 'ok' | 'error'; generator?: string; text?: string; message?: string;
   sources?: number[]; skipped?: number[]; input_tokens?: number; output_tokens?: number; cached_tokens?: number; cost_usd?: number | null; ms?: number; status?: string;
@@ -20,7 +20,7 @@ type Answer = {
 type Run = {
   question: string; phase: 'running' | 'done' | 'error' | 'stopped'; start?: Start;
   embedMs?: number; embedTokens?: number; embedCost?: number | null; dbMs?: number; candidates?: number; rerankFrom?: number; rerank?: { done: number; total: number; ms: number };
-  vectorHits?: Hit[]; hits?: Hit[]; latency?: { embed: number; db: number; rerank: number }; error?: string; startedAt: number; answer?: Answer;
+  vectorHits?: Hit[]; hits?: Hit[]; latency?: { embed: number; db: number; rerank: number; keyword?: number }; error?: string; startedAt: number; answer?: Answer;
 };
 
 const RECENT = 'playground-recent';
@@ -105,11 +105,12 @@ function useSearch() {
 
 function SetupLine({ setup, openPipeline }: { setup: Setup | null; openPipeline: () => void }) {
   if (!setup) return <div className="pg-chips"><span className="muted">설정을 불러오는 중…</span></div>;
-  const i = setup.index, r = setup.query.reranker;
+  const i = setup.index, r = setup.query.reranker, kw = setup.query.keyword;
   return <div className="pg-chips">
     <span className="pg-chip">{i.chunker.id === 'heading' ? `제목 단위 · ${i.chunker.params.prefix === 'none' ? '절만' : '경로 붙임'}` : i.label.chunker}</span>
     <span className="pg-chip">{i.label.embedder.split(' · ').slice(-1)[0]} · {i.external ? '외부' : '내 컴퓨터'}</span>
     <span className="pg-chip">상위 {setup.query.top_k}개</span>
+    <span className={`pg-chip ${kw ? 'is-on' : 'is-off'}`}>{kw ? (kw.params.mode === 'keyword' ? '키워드 검색만' : '벡터 + 키워드') : '키워드 꺼짐'}</span>
     <span className={`pg-chip ${r ? 'is-on' : 'is-off'}`}>{r ? `리랭크 · 후보 ${r.params.candidates}개` : '리랭크 꺼짐'}</span>
     <button className="pg-link" onClick={openPipeline}>Pipeline에서 바꾸기 <ArrowUpRight size={12} /></button>
   </div>;
@@ -123,11 +124,13 @@ function Badges({ h }: { h: Hit }) {
   </span>;
 }
 
-function Move({ h, rank, reranked }: { h: Hit; rank: number; reranked: boolean }) {
-  if (!reranked) return null;
+// 벡터 검색 순위와 비교한 이동. 키워드 검색에서만 나온 조각은 벡터 순위가 없다.
+function Move({ h, rank, reordered }: { h: Hit; rank: number; reordered: boolean }) {
+  if (!reordered) return null;
+  if (h.vector_rank == null) return <span className="pg-move">키워드로<br />찾음</span>;
   const d = h.vector_rank - rank;
   if (d === 0) return <span className="pg-move is-same">그대로</span>;
-  return <span className={`pg-move ${d > 0 ? '' : 'is-down'}`}>{d > 0 ? `↑${d}` : `↓${-d}`}<br />원래 {h.vector_rank}등</span>;
+  return <span className={`pg-move ${d > 0 ? '' : 'is-down'}`}>{d > 0 ? `↑${d}` : `↓${-d}`}<br />벡터 {h.vector_rank}등</span>;
 }
 
 export type DocTarget = { documentId: number; indexId?: number; chunkIndex: number };
@@ -138,7 +141,8 @@ function Detail({ h, rank, reranked, indexId, openKnowledge }: { h: Hit; rank: n
     <div><small>{rank}번 근거 후보</small><h2>{lastHeading(h)}</h2><p className="pg-crumb">{h.heading_path.split(' > ').map(clean).join(' › ')}</p></div>
     <div className="pg-scores">
       {reranked && <div><small>리랭크 점수</small><b>{h.score.toFixed(3)}</b><small>{rank}등</small></div>}
-      <div><small>벡터 유사도</small><b>{h.vector_score.toFixed(3)}</b><small>{reranked ? `원래 ${h.vector_rank}등` : `${rank}등`}</small></div>
+      <div><small>벡터 유사도</small><b>{h.vector_score.toFixed(3)}</b><small>{h.vector_rank == null ? '벡터 후보 밖' : `벡터 ${h.vector_rank}등`}</small></div>
+      {h.keyword_score != null && <div><small>키워드 점수 (BM25)</small><b>{h.keyword_score.toFixed(2)}</b><small>키워드 {h.keyword_rank}등</small></div>}
     </div>
     {doubtful(h.verification) && <p className="pg-callout">검증 상태가 “{h.verification ?? '없음'}”이에요. 문서에 적힌 내용이고, 지금 실제로 그렇게 동작하는지는 확인되지 않았어요.</p>}
     <dl className="pg-dl">
@@ -168,7 +172,7 @@ function Progress({ run, now, stop }: { run: Run; now: number; stop: () => void 
   type Step = { key: string; title: string; note: string; state: 'done' | 'run' | 'wait'; bar?: number };
   const steps: Step[] = [
     { key: 'embed', title: '질문 임베딩', note: run.embedMs != null ? `${s?.embedder.split(' · ').slice(-1)[0] ?? ''} · ${secs(run.embedMs)}` : s?.external ? '외부 모델로 보내는 중' : '벡터로 바꾸는 중', state: run.embedMs != null ? 'done' : 'run' },
-    { key: 'db', title: '후보 찾기', note: run.dbMs != null ? `벡터 검색 · ${run.candidates}개 · ${secs(run.dbMs)}` : '벡터 검색', state: run.dbMs != null ? 'done' : run.embedMs != null ? 'run' : 'wait' },
+    { key: 'db', title: '후보 찾기', note: run.dbMs != null ? `${s?.keyword ? '벡터 + 키워드' : '벡터 검색'} · ${run.candidates}개 · ${secs(run.dbMs)}` : s?.keyword ? '벡터 + 키워드 검색' : '벡터 검색', state: run.dbMs != null ? 'done' : run.embedMs != null ? 'run' : 'wait' },
   ];
   if (rerankOn) steps.push({ key: 'rerank', title: `리랭크 ${done} / ${total}`, note: run.dbMs == null ? `후보 ${total}개 · 약 ${short(total * SEC_PER_CHUNK)}` : `${short(rerankSince)} 지남 · 약 ${short(left)} 남음`, state: run.dbMs != null ? 'run' : 'wait', bar: total ? done / total : 0 });
   steps.push({ key: 'sort', title: '정리', note: `상위 ${s?.top_k ?? ''}개`, state: 'wait' });
@@ -187,6 +191,7 @@ function Results({ run, openKnowledge }: { run: Run; openKnowledge: OpenDoc }) {
   const final = run.phase === 'done' && !!run.hits;
   const hits = (final ? run.hits : run.vectorHits) ?? [];
   const reranked = final && !!run.start?.reranker;
+  const hybrid = final && !!run.start?.keyword;
   const [sel, setSel] = useState(0);
   const [openInline, setOpenInline] = useState<number | null>(null);
   useEffect(() => { setSel(0); setOpenInline(null); }, [run.startedAt, final]);
@@ -200,7 +205,7 @@ function Results({ run, openKnowledge }: { run: Run; openKnowledge: OpenDoc }) {
     <Card className={`pg-list ${final ? '' : 'is-pending'}`}>
       <div className="pg-list-head"><h2>근거 후보{final ? ` ${hits.length}개` : ''}</h2>
         <small>{final
-          ? `${reranked ? `후보 ${run.candidates}개 중 리랭크 점수 상위 ${hits.length}개` : `벡터 유사도 상위 ${hits.length}개`}${lat ? ` · ${secs(lat.embed + lat.db)}${reranked ? ` + 리랭크 ${secs(lat.rerank)}` : ''}` : ''}`
+          ? `${reranked ? `후보 ${run.candidates}개 중 리랭크 점수 상위 ${hits.length}개` : hybrid ? `벡터·키워드 순위를 합친 상위 ${hits.length}개` : `벡터 유사도 상위 ${hits.length}개`}${lat ? ` · ${secs(lat.embed + lat.db + (lat.keyword ?? 0))}${reranked ? ` + 리랭크 ${secs(lat.rerank)}` : ''}` : ''}`
           : run.phase === 'running' ? '리랭크가 끝나면 순서가 정해져요. 지금은 벡터 검색 순서예요.' : '멈춘 검색이에요. 벡터 검색 순서까지만 나왔어요.'}</small></div>
       {hits.map((h, i) => {
         const dup = sameAs(hits, i);
@@ -209,7 +214,7 @@ function Results({ run, openKnowledge }: { run: Run; openKnowledge: OpenDoc }) {
           <motion.button className={`pg-hit ${final && sel === i ? 'is-selected' : ''}`} disabled={!final} aria-expanded={final ? isOpen : undefined}
             onClick={() => { setSel(i); setOpenInline(isOpen ? null : i); }}
             initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04, duration: 0.3, ease }}>
-            <span className="pg-rank-col"><span className="pg-rank">{i + 1}</span><Move h={h} rank={i + 1} reranked={reranked} /></span>
+            <span className="pg-rank-col"><span className="pg-rank">{i + 1}</span><Move h={h} rank={i + 1} reordered={reranked || hybrid} /></span>
             <span className="pg-hit-main">
               <span className="pg-hit-title">{lastHeading(h)}</span>
               <span className="pg-hit-doc">{docTitle(h)}</span>

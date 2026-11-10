@@ -6,7 +6,7 @@ import { api, Card, ColorIcon, ease, Heading, MetricCard, pct, shortTime, useSiz
 import { SetupChips, useSetup, type StageSetting } from './setup';
 
 export type Snapshot = {
-  name: string | null; query: { top_k: number; reranker?: StageSetting | null }; reranker_label?: string | null;
+  name: string | null; query: { top_k: number; reranker?: StageSetting | null; keyword?: StageSetting | null }; reranker_label?: string | null; keyword_label?: string | null;
   index: { id: number; key: string; chunker: StageSetting; embedder: StageSetting; dims: number; is_base: boolean; label: { chunker: string; embedder: string }; external: boolean };
 };
 export type EvalSummary = { questions: number; 'recall@1': number | null; 'recall@3': number | null; 'recall@5': number | null; mrr: number | null };
@@ -32,7 +32,7 @@ export type EvalJob = { id: number; status: 'queued' | 'running' | 'done' | 'fai
 
 const SHOWN_HITS = 5;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
-const runName = (e: EvalEntry) => `#${e.run_id}${e.label ? ` ${e.label}` : ''} · ${e.setup.index.label.chunker} × ${e.setup.index.label.embedder}${e.setup.reranker_label ? ` + rerank ${e.setup.reranker_label}` : ''} · R@1 ${pct(e.summary['recall@1'])}`;
+const runName = (e: EvalEntry) => `#${e.run_id}${e.label ? ` ${e.label}` : ''} · ${e.setup.index.label.chunker} × ${e.setup.index.label.embedder}${e.setup.keyword_label ? ` + 키워드 ${e.setup.keyword_label.split(' · ')[1] ?? ''}` : ''}${e.setup.reranker_label ? ` + rerank ${e.setup.reranker_label}` : ''} · R@1 ${pct(e.summary['recall@1'])}`;
 
 // Where a question landed: first place, top 5, lower, not found, or a question with no answer.
 function evalOutcome(q: EvalQuestion): { label: string; tone: 'lime' | 'blue' | 'peach' | 'neutral'; color: string } {
