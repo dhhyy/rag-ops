@@ -1,0 +1,21 @@
+# Tempo 한 대로 추적을 받아 로컬 디스크에 저장한다 (단일 바이너리 모드).
+# 엔진·worker가 OTLP HTTP(4318)로 보내고, Grafana가 3200으로 조회한다.
+stream_over_http_enabled: true
+server:
+  http_listen_port: 3200
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: "0.0.0.0:4318"
+compactor:
+  compaction:
+    block_retention: 72h   # 추적은 3일만 보관한다. 오래 볼 숫자는 usage_log에 있다
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks

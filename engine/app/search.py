@@ -18,6 +18,7 @@ import json
 import time
 
 import components as comp
+from telemetry import tracer
 from ingest import IngestError, connect, load_env
 from indexes import get_index
 
@@ -60,8 +61,7 @@ def query_defaults(query: dict | None) -> dict:
 def search(env: dict[str, str], index: dict, question: str, k: int) -> tuple[list[tuple], float, float, list[float]]:
     t0 = time.perf_counter()
     try:
-        embedder = comp.make_embedder(index["embedder"], env)
-        vec = embedder.embed_query(question)
+        vec = comp.make_embedder(index["embedder"], env).embed_query(question)
     except comp.ComponentError as e:
         raise IngestError(str(e)) from None
     t1 = time.perf_counter()
@@ -81,8 +81,11 @@ def retrieve_steps(env: dict[str, str], index: dict, query: dict, question: str,
     n = max(k, rr.candidates) if rr else k
     t0 = time.perf_counter()
     try:
-        embedder = comp.make_embedder(index["embedder"], env)
-        vec = embedder.embed_query(question)
+        with tracer.start_as_current_span("rag.embed_query") as span:
+            embedder = comp.make_embedder(index["embedder"], env)
+            vec = embedder.embed_query(question)
+            span.set_attribute("rag.embedder", comp.describe("embedder", index["embedder"]))
+            span.set_attribute("rag.tokens", getattr(embedder, "usage_tokens", 0))
     except comp.ComponentError as e:
         raise IngestError(str(e)) from None
     t_embed = time.perf_counter() - t0
@@ -90,8 +93,10 @@ def retrieve_steps(env: dict[str, str], index: dict, query: dict, question: str,
     tokens = getattr(embedder, "usage_tokens", 0)
     yield "embedded", (t_embed, tokens, comp.cost_usd(getattr(embedder, "model", ""), tokens) if tokens else None)
     t1 = time.perf_counter()
-    with connect(env) as conn:
+    with tracer.start_as_current_span("rag.vector_search") as span, connect(env) as conn:
         rows = conn.execute(SQL, {"q": json.dumps(vec), "k": n, "index": index["id"]}).fetchall()
+        span.set_attribute("rag.index_id", index["id"])
+        span.set_attribute("rag.candidates", len(rows))
     t_db = time.perf_counter() - t1
     hits = [{"row": r, "score": float(r[1]), "vector_score": float(r[1]), "vector_rank": i} for i, r in enumerate(rows, 1)]
     yield "candidates", (hits, t_db)
@@ -101,7 +106,10 @@ def retrieve_steps(env: dict[str, str], index: dict, query: dict, question: str,
         for start in range(0, len(texts), comp.RERANK_BATCH):
             t2 = time.perf_counter()
             try:
-                scores = rr.score(question, texts[start:start + comp.RERANK_BATCH])
+                with tracer.start_as_current_span("rag.rerank_batch") as span:
+                    span.set_attribute("rag.batch_start", start)
+                    span.set_attribute("rag.batch_size", len(texts[start:start + comp.RERANK_BATCH]))
+                    scores = rr.score(question, texts[start:start + comp.RERANK_BATCH])
             except comp.ComponentError as e:
                 raise IngestError(str(e)) from None
             t_rerank += time.perf_counter() - t2
@@ -141,7 +149,13 @@ def answer(env: dict[str, str], setting: dict, question: str, hits: list[dict]) 
     if not sources:
         return {"text": "", "sources": [], "skipped": skipped, "ms": 0}
     t0 = time.perf_counter()
-    out = gen.generate(question, sources)
+    with tracer.start_as_current_span("rag.answer") as span:
+        out = gen.generate(question, sources)
+        for key in ("model", "input_tokens", "cached_tokens", "output_tokens"):
+            span.set_attribute(f"rag.{key}", out.get(key) or 0)
+        if out.get("cost_usd") is not None:
+            span.set_attribute("rag.cost_usd", out["cost_usd"])
+        span.set_attribute("rag.sources", len(sources))
     return out | {"sources": [n for n, _, _ in sources], "skipped": skipped, "ms": round((time.perf_counter() - t0) * 1000)}
 
 

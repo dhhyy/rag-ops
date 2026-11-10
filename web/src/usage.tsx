@@ -13,8 +13,9 @@ type Row = {
   hits: { chunk_id: number; document_id: number; title: string | null; heading: string }[];
   answer: string | null; sources: number[] | null; embed_tokens: number; input_tokens: number; cached_tokens: number; output_tokens: number;
   cost_usd: number | null; latency_ms: { embed?: number; db?: number; rerank?: number; answer?: number; total?: number }; error: string | null;
+  trace_id: string | null;
 };
-type Usage = { service: string; summary: { today: Summary; month: Summary; all: Summary }; daily: Day[]; recent: Row[] };
+type Usage = { service: string; summary: { today: Summary; month: Summary; all: Summary }; daily: Day[]; recent: Row[]; grafana_url: string };
 
 const statusTone: Record<Row['status'], { label: string; color: string }> = {
   ok: { label: '완료', color: 'lime' }, error: { label: '오류', color: 'peach' }, stopped: { label: '멈춤', color: 'neutral' },
@@ -27,6 +28,8 @@ const usd = (v: number | null | undefined) => {
 };
 const ms = (v: number | null | undefined) => (v == null ? '—' : v < 1000 ? `${v}ms` : `${(v / 1000).toFixed(v < 10000 ? 1 : 0)}초`);
 const when = (iso: string) => new Date(iso).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+// Grafana Explore에서 Tempo로 trace id 하나를 여는 주소. 보관 기간(72시간)이 지나면 빈 결과가 나온다.
+const traceUrl = (base: string, id: string) => `${base.replace(/\/$/, '')}/explore?schemaVersion=1&orgId=1&panes=${encodeURIComponent(JSON.stringify({ a: { datasource: 'tempo', queries: [{ refId: 'A', datasource: { type: 'tempo', uid: 'tempo' }, queryType: 'traceql', query: id }], range: { from: 'now-7d', to: 'now' } } }))}`;
 const clean = (s: string | null | undefined) => (s ?? '').replace(/^"(.*)"$/, '$1');
 
 export function UsagePage({ openPlayground }: { openPlayground: () => void }) {
@@ -81,7 +84,7 @@ export function UsagePage({ openPlayground }: { openPlayground: () => void }) {
     </Card>
     <div className="table-footer"><span>{data?.recent.length ?? 0}개</span><span>usage_log 표에 저장 · 금액은 엔진 단가표 기준</span></div>
 
-    {open && <UsageModal row={open} close={() => setOpen(null)} />}
+    {open && <UsageModal row={open} grafana={data?.grafana_url} close={() => setOpen(null)} />}
   </>;
 }
 
@@ -100,7 +103,7 @@ function DailyChart({ days }: { days: Day[] }) {
   </Card>;
 }
 
-function UsageModal({ row: r, close }: { row: Row; close: () => void }) {
+function UsageModal({ row: r, grafana, close }: { row: Row; grafana?: string; close: () => void }) {
   const l = r.latency_ms;
   return <Modal title={`질문 #${r.id}`} close={close}>
     <div className="usage-modal">
@@ -114,6 +117,9 @@ function UsageModal({ row: r, close }: { row: Row; close: () => void }) {
         ['비용', usd(r.cost_usd)],
         ['토큰', `임베딩 ${r.embed_tokens.toLocaleString()} · 입력 ${r.input_tokens.toLocaleString()}${r.cached_tokens ? ` (캐시 ${r.cached_tokens.toLocaleString()})` : ''} · 출력 ${r.output_tokens.toLocaleString()}`],
         ['걸린 시간', [`전체 ${ms(l.total)}`, l.embed != null && `임베딩 ${ms(l.embed)}`, l.db != null && `DB ${ms(l.db)}`, l.rerank ? `리랭크 ${ms(l.rerank)}` : null, l.answer != null && `답변 ${ms(l.answer)}`].filter(Boolean).join(' · ')],
+        ['추적', r.trace_id && grafana
+          ? <a className="usage-trace" href={traceUrl(grafana, r.trace_id)} target="_blank" rel="noreferrer">Grafana에서 단계별 시간 보기 <ArrowUpRight size={12} /></a>
+          : '기록 없음 (추적이 꺼져 있었어요)'],
       ]} />
       {r.hits.length > 0 && <div className="usage-hits"><small>근거 후보</small><ol>{r.hits.map(h => <li key={h.chunk_id}>{clean(h.title) || clean(h.heading.split(' > ')[0])}<span> › {clean(h.heading.split(' > ').pop())}</span></li>)}</ol></div>}
     </div>

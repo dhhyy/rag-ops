@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS usage_log (
     output_tokens  int         NOT NULL DEFAULT 0,
     cost_usd       numeric(12, 8),                    -- 임베딩 + 답변. 단가를 모르면 NULL
     latency_ms     jsonb       NOT NULL DEFAULT '{}', -- {embed, db, rerank, answer, total}
-    error          text
+    error          text,
+    trace_id       text                               -- 추적(Tempo)의 trace id. 추적이 꺼져 있으면 NULL
 );
+ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS trace_id text;
 CREATE INDEX IF NOT EXISTS usage_log_service_time ON usage_log (service, created_at DESC);

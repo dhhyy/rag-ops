@@ -19,16 +19,17 @@ def record(env: dict[str, str], row: dict) -> None:
         with connect(env) as conn:
             conn.execute(
                 """INSERT INTO usage_log (service, status, question, setup, hits, answer, sources, embed_tokens,
-                       input_tokens, cached_tokens, output_tokens, cost_usd, latency_ms, error)
+                       input_tokens, cached_tokens, output_tokens, cost_usd, latency_ms, error, trace_id)
                    VALUES (%(service)s, %(status)s, %(question)s, %(setup)s, %(hits)s, %(answer)s, %(sources)s,
                        %(embed_tokens)s, %(input_tokens)s, %(cached_tokens)s, %(output_tokens)s, %(cost_usd)s,
-                       %(latency_ms)s, %(error)s)""",
+                       %(latency_ms)s, %(error)s, %(trace_id)s)""",
                 {"service": row.get("service", "playground"), "status": row["status"], "question": row["question"],
                  "setup": Jsonb(row["setup"]), "hits": Jsonb(row.get("hits", [])), "answer": row.get("answer"),
                  "sources": row.get("sources"), "embed_tokens": row.get("embed_tokens", 0),
                  "input_tokens": row.get("input_tokens", 0), "cached_tokens": row.get("cached_tokens", 0),
                  "output_tokens": row.get("output_tokens", 0), "cost_usd": row.get("cost_usd"),
-                 "latency_ms": Jsonb(row.get("latency_ms", {})), "error": row.get("error")})
+                 "latency_ms": Jsonb(row.get("latency_ms", {})), "error": row.get("error"),
+                 "trace_id": row.get("trace_id")})
     except Exception:  # 기록 실패가 질문 처리를 깨면 안 된다
         log.exception("usage_log 기록 실패")
 
@@ -64,7 +65,7 @@ def overview(env: dict[str, str], service: str = "playground", days: int = 14, l
                GROUP BY d ORDER BY d""", {"days": days, "service": service}).fetchall()
         cur = conn.execute(
             """SELECT id, created_at, status, question, setup, hits, answer, sources, embed_tokens, input_tokens,
-                      cached_tokens, output_tokens, cost_usd, latency_ms, error
+                      cached_tokens, output_tokens, cost_usd, latency_ms, error, trace_id
                FROM usage_log WHERE service = %(service)s ORDER BY id DESC LIMIT %(limit)s""",
             {"service": service, "limit": limit})
         cols = [c.name for c in cur.description]

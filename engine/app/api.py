@@ -35,10 +35,15 @@ from ingest import STAGES, IngestError, connect, ingest_file, load_env
 from jobs import JOB_COLUMNS, fetch_job
 from search import answer, hit_dict, load_setup, query_defaults, retrieve_steps
 from tasks import celery, ingest_task
+import telemetry
 import usage
 
 # 작업은 worker가 실행하므로 엔진을 다시 켜도 진행 중인 작업은 영향을 받지 않는다. (끊긴 작업 정리는 worker가 켜질 때 한다)
 app = FastAPI(title="rag-ops engine")
+# 추적: 요청마다 구간을 남긴다. 화면이 자주 부르는 상태 조회(health, queue, 진행 스트림, 사용 기록)는 빼서 잡음을 줄인다
+if telemetry.setup("rag-ops-engine"):
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    FastAPIInstrumentor.instrument_app(app, excluded_urls="health,queue,jobs/[0-9]+/events,usage")
 
 
 # 가져오기 요청 본문. 메타데이터 값은 documents 테이블 주석에 적힌 선택지로 제한한다.
@@ -306,7 +311,8 @@ def search_stream(req: SearchRequest) -> StreamingResponse:
 
     def stream():
         t_start = time.perf_counter()
-        rec: dict = {"status": "stopped", "question": question, "setup": setup_rec, "latency_ms": {}}
+        rec: dict = {"status": "stopped", "question": question, "setup": setup_rec, "latency_ms": {},
+                     "trace_id": telemetry.current_trace_id()}
         cost = 0.0
         priced = False
         try:
@@ -643,7 +649,8 @@ def create_eval(req: EvalRequest) -> dict:
 # 사용 기록: 오늘·이번 달·전체 요약, 최근 14일 일별, 최근 질문 50개.
 @app.get("/usage")
 def get_usage(service: str = "playground", days: int = Query(14, ge=1, le=90)) -> dict:
-    return usage.overview(load_env(), service, days)
+    env = load_env()
+    return usage.overview(env, service, days) | {"grafana_url": env.get("GRAFANA_PUBLIC_URL", "http://localhost:3000")}
 
 
 @app.get("/evals")

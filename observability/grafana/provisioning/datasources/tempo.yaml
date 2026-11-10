@@ -1,0 +1,10 @@
+# Grafana가 처음 뜰 때 Tempo 데이터 소스를 만들어 둔다. uid를 고정해서 웹 화면이 "추적 보기" 링크를 만들 수 있게 한다.
+apiVersion: 1
+datasources:
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    isDefault: true
+    editable: false

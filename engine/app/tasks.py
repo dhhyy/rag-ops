@@ -9,9 +9,10 @@
 from __future__ import annotations
 
 from celery import Celery
-from celery.signals import worker_ready
+from celery.signals import worker_process_init, worker_ready
 
 import jobs
+import telemetry
 from ingest import connect, load_env
 
 celery = Celery("rag-ops", broker=load_env().get("REDIS_URL", "redis://127.0.0.1:6379/0"))
@@ -20,6 +21,15 @@ celery.conf.update(
     worker_prefetch_multiplier=1,     # 미리 여러 개를 가져가 쥐고 있지 않게 한다
     broker_connection_retry_on_startup=True,
 )
+
+
+
+# 추적: worker 자식 프로세스가 뜰 때 켠다 (fork 전에 켜면 내보내는 스레드가 자식에 없다)
+@worker_process_init.connect
+def init_tracing(**_) -> None:
+    if telemetry.setup("rag-ops-worker"):
+        from opentelemetry.instrumentation.celery import CeleryInstrumentor
+        CeleryInstrumentor().instrument()
 
 
 # 대기열에서 꺼낸 작업 번호 하나를 실행한다.
