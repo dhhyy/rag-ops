@@ -240,7 +240,7 @@ function useNarrow() {
   return narrow;
 }
 
-function Drawer({ open, title, contentKey, dir, onClose, onPrev, onNext, children }: {
+export function Drawer({ open, title, contentKey, dir, onClose, onPrev, onNext, children }: {
   open: boolean; title: string; contentKey: string; dir: number; onClose: () => void; onPrev?: () => void; onNext?: () => void; children: React.ReactNode;
 }) {
   const narrow = useNarrow();

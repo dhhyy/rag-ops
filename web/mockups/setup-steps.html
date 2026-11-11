@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>설정 바꾸기 시안</title>
+<style>
+:root{--ink:#302f35;--muted:#7c7887;--faint:#a39dad;--soft:#f6f4f9;--line:#ebe7f0;--accent:#9b81d3;--accent-ink:#6f53ad;--dark:#303034;--ok:#5f8f3c;--ok-bg:#eef5e6;--warn:#b0623a;--warn-bg:#fbefe7;
+  font-family:'DM Sans',-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Segoe UI',sans-serif;color:var(--ink);font-size:13px;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(125deg,#edeaf5 0%,#efedf3 55%,#efedf1 100%);min-height:100vh;overflow-x:hidden}
+h1,h2,h3,p{margin:0}button{font:inherit;color:inherit;border:0;cursor:pointer;background:none}
+small{font-size:11px;color:var(--muted);line-height:1.5}
+.note{position:sticky;top:0;z-index:5;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 16px;background:#302f35;color:#fff;font-size:11px}
+.note b{font-weight:500}.note .sp{flex:1}.note .k{display:inline-flex;align-items:center;gap:5px;opacity:.85}.note .k i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.note button{background:#ffffff1f;color:#fff;padding:5px 11px;border-radius:12px;font-size:11px}
+.show [data-z]{outline:2px dashed;outline-offset:3px}.show [data-z=fixed]{outline-color:#e58a52}.show [data-z=fluid]{outline-color:#5f8be8}.show [data-z=hybrid]{outline-color:#8a5fd1}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 15px;border-radius:16px;font-size:12px;background:#fff}
+.btn.dark{background:var(--dark);color:#fff}.btn.ghost{background:transparent;color:var(--muted)}.btn:disabled{opacity:.4;cursor:default}
+.badge{display:inline-block;padding:2px 7px;border-radius:8px;font-size:10px;background:#eef3d0;color:#6c7420}.badge.ext{background:#fde7da;color:#b0623a}
+.now{display:inline-block;padding:2px 7px;border-radius:8px;font-size:10px;background:#efe9fb;color:var(--accent-ink)}
+
+/* 뒤 화면: Pipelines (Hybrid) */
+.page{padding:28px 32px 60px;transition:transform .45s cubic-bezier(.2,.8,.2,1),filter .45s}
+.open .page{transform:scale(.965) translateX(-18px);filter:saturate(.9)}
+.page h1{font-size:22px;font-weight:400;margin-bottom:4px}
+.bar{margin-top:22px;background:#fff;border-radius:22px;padding:14px 18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.bar .t small{display:block}.bar .t b{font-weight:500;font-size:14px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;flex:1}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:6px 11px;border-radius:12px;background:var(--soft);font-size:11px}.chip.off{background:transparent;border:1px dashed #d8d1e3;color:var(--faint)}
+.cards{margin-top:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.card{background:#fff;border-radius:18px;padding:14px;display:flex;flex-direction:column;gap:4px;text-align:left}
+.card b{font-weight:500}.card:hover{box-shadow:0 0 0 1.5px #d8cdf0}
+
+/* 서랍 (Fixed 폭) */
+.scrim{position:fixed;inset:0;background:#2a223b33;opacity:0;pointer-events:none;transition:opacity .3s;z-index:8}
+.open .scrim{opacity:1;pointer-events:auto}
+.drawer{position:fixed;top:12px;right:12px;bottom:12px;width:clamp(520px,42vw,640px);background:#fff;border-radius:28px;box-shadow:0 30px 80px #2a223b33;z-index:9;display:flex;flex-direction:column;overflow:hidden;
+  transform:translateX(108%) scale(.94) rotate(1.2deg);transition:transform .55s cubic-bezier(.2,1.1,.3,1)}
+.open .drawer{transform:none}
+.dhead{display:flex;align-items:center;gap:12px;padding:18px 22px 14px;border-bottom:1px solid var(--line)}
+.dhead h2{font-size:15px;font-weight:500;flex:1}
+.ib{width:32px;height:32px;border-radius:11px;background:var(--soft);display:grid;place-items:center;color:var(--muted)}
+.steps{display:flex;gap:5px;align-items:center;padding:14px 22px 0}
+.steps i{height:5px;width:5px;border-radius:3px;background:#e2dcea;transition:all .3s}.steps i.done{background:#c7b6ea}.steps i.on{width:20px;background:var(--accent)}
+.steps span{margin-left:auto;font-size:11px;color:var(--faint)}
+.dbody{flex:1;overflow:auto;padding:16px 22px 22px}
+.q{font-size:20px;font-weight:500;letter-spacing:-.4px;line-height:1.35}
+.qsub{margin-top:6px;font-size:12.5px;color:var(--muted);line-height:1.6}
+.opts{margin-top:18px;display:flex;flex-direction:column;gap:9px}
+.opt{display:flex;gap:12px;align-items:flex-start;width:100%;text-align:left;padding:14px 15px;border-radius:18px;border:1.5px solid var(--line);background:#fff;transition:all .2s}
+.opt:hover{border-color:#d8cdf0}.opt.sel{border-color:var(--accent);background:#fbf9fe}
+.opt .r{flex-shrink:0;width:20px;height:20px;border-radius:50%;border:1.5px solid #d8d1e3;margin-top:1px;display:grid;place-items:center;transition:all .2s}
+.opt.sel .r{border-color:var(--accent);background:var(--accent)}.opt.sel .r::after{content:'';width:7px;height:7px;border-radius:50%;background:#fff}
+.opt .ob{flex:1;display:flex;flex-direction:column;gap:4px;min-width:0}
+.opt .oh{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.opt .oh b{font-weight:500;font-size:14px}
+.opt .meta{font-size:11px;color:var(--faint)}
+.opt.dim{opacity:.5;cursor:default}
+.more{margin-top:12px}.more summary{cursor:pointer;font-size:12px;color:var(--accent-ink);list-style:none}.more summary::before{content:'＋ '}.more[open] summary::before{content:'－ '}
+.seg-row{margin-top:10px;display:flex;flex-direction:column;gap:6px}.seg-row>small{color:var(--muted)}
+.seg{display:inline-flex;background:var(--soft);border-radius:12px;padding:3px;gap:2px;flex-wrap:wrap}
+.seg button{padding:6px 12px;border-radius:9px;font-size:12px;color:var(--muted)}.seg button.on{background:#fff;color:var(--ink);box-shadow:0 1px 3px #0000000f}
+.stepper{display:inline-flex;align-items:center;gap:16px;margin-top:20px;background:var(--soft);border-radius:18px;padding:8px}
+.stepper button{width:40px;height:40px;border-radius:13px;background:#fff;font-size:18px}.stepper b{font-size:28px;font-weight:500;min-width:40px;text-align:center}
+.hint{margin-top:14px;padding:11px 13px;border-radius:14px;background:var(--soft);font-size:12px;line-height:1.6;color:#5b5666}
+/* 아래 영향 줄 + 버튼 (Fixed) */
+.dfoot{border-top:1px solid var(--line);padding:12px 22px 16px;display:flex;flex-direction:column;gap:10px;background:#fff}
+.impact{display:flex;gap:8px;align-items:flex-start;font-size:12px;padding:9px 12px;border-radius:12px;background:var(--soft);color:#5b5666;line-height:1.5}
+.impact.ok{background:var(--ok-bg);color:var(--ok)}.impact.warn{background:var(--warn-bg);color:var(--warn)}
+.navrow{display:grid;grid-template-columns:auto 1fr;gap:10px}.navrow .dark{padding:13px}
+/* 확인 단계 */
+.diff{margin-top:18px;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:18px;overflow:hidden}
+.drow{display:grid;grid-template-columns:96px 1fr auto;gap:10px;align-items:center;padding:12px 14px;border-bottom:1px solid var(--line);font-size:12.5px}
+.drow:last-child{border-bottom:0}.drow .k{color:var(--muted)}.drow .v s{color:var(--faint)}.drow .v b{font-weight:500}
+.drow.same .v{color:var(--faint)}.drow .ed{font-size:11px;color:var(--accent-ink);padding:3px 9px;border-radius:9px;background:#f3eefb}
+.explain{max-width:880px;margin:26px 32px 0;font-size:12px;color:var(--muted);line-height:1.8}
+@media(max-width:760px){
+  .page{padding:20px 16px}.open .page{transform:scale(.97)}
+  .drawer{top:auto;left:0;right:0;bottom:0;width:auto;height:92vh;border-radius:26px 26px 0 0;transform:translateY(100%)}
+  .drawer::before{content:'';width:36px;height:4px;border-radius:2px;background:#ddd6e6;margin:8px auto 0}
+  .drow{grid-template-columns:72px 1fr auto}
+}
+</style>
+</head>
+<body>
+<div class="note"><b>설정 바꾸기 (시안)</b><span>[설정 바꾸기] 또는 카드를 눌러 열기 · 한 번에 질문 하나</span><span class="sp"></span>
+  <span class="k"><i style="background:#e58a52"></i>Fixed</span><span class="k"><i style="background:#5f8be8"></i>Fluid</span><span class="k"><i style="background:#8a5fd1"></i>Hybrid</span>
+  <button onclick="document.body.classList.toggle('show')">화면 나누기 보기</button></div>
+
+<main class="page" data-z="hybrid">
+  <h1>RAG pipeline</h1><small>Pipelines 화면 (뒤 화면은 지금 그대로, 설정만 서랍에서)</small>
+  <section class="bar" data-z="fixed">
+    <div class="t"><small>현재 설정</small><b id="saved-as">Baseline</b></div>
+    <div class="chips" id="chips"></div>
+    <button class="btn dark" onclick="openAt(0)">설정 바꾸기</button>
+  </section>
+  <section class="cards" data-z="fluid" id="cards"></section>
+  <div class="explain">
+    <b>지금과 달라지는 것</b><br>
+    · 설정을 바꾸는 입구가 하나예요: 현재 설정 띠의 [설정 바꾸기]. 단계 카드를 누르면 같은 서랍이 그 단계에서 열려요. Home의 빠른 스위치는 없어져요.<br>
+    · 한 화면에 질문 하나. 지금 쓰는 값에 "지금" 표시가 있고 미리 골라져 있어서, 안 바꿀 단계는 [그대로 두기]로 넘어가요.<br>
+    · 잘 안 바꾸는 값(후보 수, 차원, 답 길이)은 [자세히]에 접어 둬요.<br>
+    · 고르는 순간 아래 줄에 영향이 보여요: "바로 바뀜" / "색인 새로 만들기 · 시간 · 비용" / "외부로 나감".<br>
+    · 마지막 확인 화면에서 바뀌는 것만 "이전 → 이후"로 보고 한 번에 [적용]. 지금은 단계마다 [Apply]를 따로 눌러야 해요.<br>
+    · 단계 카드의 오른쪽 패널은 "지난 실행" 보기만 남겨요.
+  </div>
+</main>
+
+<div class="scrim" onclick="closeD()"></div>
+<aside class="drawer" role="dialog" aria-label="설정 바꾸기" data-z="fixed">
+  <div class="dhead"><h2>설정 바꾸기</h2><button class="ib" aria-label="닫기" onclick="closeD()">✕</button></div>
+  <div class="steps" id="steps"></div>
+  <div class="dbody" id="body" data-z="fluid"></div>
+  <div class="dfoot" id="foot" data-z="fixed"></div>
+</aside>
+
+<script>
+// 지금 설정 (Baseline). 색인 있음: ① 제목+경로 × bge-m3, ③ 제목만 × bge-m3, ⑥ 제목+경로 × OpenAI small
+const NOW = { prefix:'path', embedder:'bge', topk:5, keyword:'off', rerank:'off', answer:'off', sources:'3' };
+let d = { ...NOW }, at = 0;
+const BUILT = { 'path|bge':'①', 'none|bge':'③', 'path|small':'⑥' };
+const EMB = { bge:['bge-m3','Local'], small:['OpenAI small','External'], large:['OpenAI large','External'] };
+const STEPS = [
+  { key:'prefix', title:'문서를 어떻게 자를까요?', sub:'조각 하나가 검색의 단위예요. 지금은 ##·### 제목마다 잘라요.',
+    opts:[['path','제목마다 자르고, 위 제목들을 앞에 붙이기','“TLS › 인증서 갱신 › 와일드카드”처럼 어느 절인지 같이 들어가요. 짧은 절도 뜻이 살아요.'],
+          ['none','제목마다 자르고, 본문만','조각에 그 절의 글만 들어가요.']],
+    later:'다른 자르는 방식(고정 길이, 의미 단위)은 직접 만들 차례예요.' },
+  { key:'embedder', title:'어떤 모델로 뜻을 비교할까요?', sub:'조각과 질문을 숫자(벡터)로 바꿔 비슷한 것끼리 찾아요. 모델이 바뀌면 조각을 전부 다시 바꿔야 해요.',
+    opts:[['bge','bge-m3','이 컴퓨터에서 돌아요. 한국어 지원. 비용 없음.','Local','조각당 최대 2,048 토큰'],
+          ['small','OpenAI small','조각 원문이 OpenAI로 나가요. 빠르고 쌈.','External','text-embedding-3-small · 조각당 최대 8,192 토큰'],
+          ['large','OpenAI large','더 정확할 수 있지만 비용이 약 6배.','External','text-embedding-3-large · 조각당 최대 8,192 토큰']],
+    more:['차원 수 (OpenAI만)',['기본','1024','512','256']] },
+  { key:'topk', title:'질문 하나에 조각을 몇 개 찾아올까요?', sub:'많으면 근거가 많아지지만 엉뚱한 조각도 섞여요.', stepper:true },
+  { key:'keyword', title:'낱말이 똑같은 글도 같이 찾을까요?', sub:'벡터 검색은 뜻이 비슷한 글, 키워드 검색은 질문의 낱말이 그대로 있는 글을 찾아요. 명령어·설정 이름을 물을 때 도움이 돼요.',
+    opts:[['off','안 쓰기','뜻으로만 찾아요.'],['hybrid','뜻 + 낱말 순위 합치기','두 순위를 섞어요(RRF). 질문 10개 시험에서 1등 적중 70% → 80%.'],['keyword','낱말로만 찾기','비교 실험용.']],
+    more:['키워드 후보 수',['10','20','50']] },
+  { key:'rerank', title:'찾은 조각을 다시 줄 세울까요?', sub:'리랭커가 질문과 조각을 같이 읽고 순서를 다시 매겨요. 정확해질 수 있지만 느려요.',
+    opts:[['off','안 하기','검색 순서 그대로.'],['on','bge-reranker로 다시 줄 세우기','이 Mac(CPU)에서는 질문 하나에 약 3분 걸려요.','Local']],
+    more:['다시 볼 후보 수',['10','20','50']] },
+  { key:'answer', title:'찾은 조각으로 답을 써 줄까요?', sub:'LLM이 위쪽 조각 몇 개를 읽고 짧게 답하고, [1] [2]로 근거를 달아요.',
+    opts:[['off','안 쓰기','조각만 보여 줘요.'],['on','OpenAI LLM으로 답 쓰기','질문당 약 $0.0001. 외부 전송 허용 문서만 보내요.','External','gpt-6-luna']],
+    sources:true, more:['답 길이',['짧게','보통','길게']] },
+  { key:'review', title:'이렇게 바꿀까요?', sub:'바뀌는 것만 굵게 보여요.' },
+];
+const LABEL = {
+  prefix:v=>v==='path'?'제목 + 위 제목 붙임':'제목, 본문만', embedder:v=>EMB[v][0], topk:v=>`${v}개`,
+  keyword:v=>({off:'안 씀',hybrid:'뜻 + 낱말',keyword:'낱말만'})[v], rerank:v=>v==='on'?'켬':'안 함', answer:v=>v==='on'?`켬 · 근거 ${d.sources}개`:'안 씀',
+};
+const NAMES = { prefix:'자르기', embedder:'뜻 비교 모델', topk:'찾을 개수', keyword:'낱말 검색', rerank:'다시 줄 세우기', answer:'답 쓰기' };
+
+function indexImpact(){
+  const k = `${d.prefix}|${d.embedder==='bge'?'bge':d.embedder}`;
+  const changed = d.prefix!==NOW.prefix || d.embedder!==NOW.embedder;
+  if(!changed) return ['ok','✓ 지금 쓰는 색인 ① 그대로예요.'];
+  if(BUILT[k]) return ['ok',`✓ 이미 만든 색인 ${BUILT[k]}이 있어요. 적용하면 바로 바뀌어요.`];
+  return [EMB[d.embedder][1]==='External'?'warn':'',`색인을 새로 만들어야 해요 · 문서 9개 · 조각 약 76개 · 약 1분${EMB[d.embedder][1]==='External'?' · OpenAI 약 $0.001 · 조각 원문이 밖으로 나가요':''}`];
+}
+function impactFor(key){
+  if(key==='prefix'||key==='embedder') return indexImpact();
+  if(key==='rerank') return d.rerank==='on'?['warn','바로 바뀌어요. 다만 질문 하나에 약 3분 기다려야 해요.']:['ok','바로 바뀌어요.'];
+  if(key==='answer') return d.answer==='on'?['warn',`바로 바뀌어요. 질문과 위쪽 조각 ${d.sources}개가 OpenAI로 나가요.`]:['ok','바로 바뀌어요.'];
+  return ['ok','바로 바뀌어요. 색인을 다시 만들 필요 없어요.'];
+}
+
+function render(){
+  const s = STEPS[at];
+  document.getElementById('steps').innerHTML = STEPS.map((_,i)=>`<i class="${i<at?'done':i===at?'on':''}"></i>`).join('')+`<span>${at+1} / ${STEPS.length}</span>`;
+  const body = document.getElementById('body'), foot = document.getElementById('foot');
+  if(s.key==='review'){ renderReview(body,foot); return; }
+  let h = `<p class="q">${s.title}</p><p class="qsub">${s.sub}</p>`;
+  if(s.stepper){
+    h += `<div class="stepper"><button onclick="d.topk=Math.max(1,d.topk-1);render()">−</button><b>${d.topk}</b><button onclick="d.topk=Math.min(20,d.topk+1);render()">＋</button></div>`;
+    h += `<p class="hint">평가 점수는 늘 위 10개로 매겨서, 이 값은 점수를 바꾸지 않아요. Playground에 보이는 조각 수와 답에 쓸 후보가 바뀌어요.${d.topk===NOW.topk?' <span class="now">지금</span>':''}</p>`;
+  } else {
+    h += `<div class="opts">${s.opts.map(([v,t,desc,where,meta])=>`<button class="opt ${d[s.key]===v?'sel':''}" onclick="d['${s.key}']='${v}';render()"><span class="r"></span><span class="ob">
+      <span class="oh"><b>${t}</b>${where?`<span class="badge ${where==='External'?'ext':''}">${where}</span>`:''}${NOW[s.key]===v?'<span class="now">지금</span>':''}</span>
+      <small>${desc}</small>${meta?`<span class="meta">${meta}</span>`:''}</span></button>`).join('')}</div>`;
+    if(s.sources && d.answer==='on') h += `<div class="seg-row"><small>근거 몇 개를 보낼까요?</small><div class="seg">${['3','5'].map(n=>`<button class="${d.sources===n?'on':''}" onclick="d.sources='${n}';render()">${n}개</button>`).join('')}</div></div>`;
+    if(s.more && !(s.key!=='embedder' && d[s.key]==='off')) h += `<details class="more"><summary>자세히</summary><div class="seg-row"><small>${s.more[0]}</small><div class="seg">${s.more[1].map((x,i)=>`<button class="${i===(s.key==='keyword'?1:s.key==='rerank'?2:s.key==='answer'?1:0)?'on':''}">${x}</button>`).join('')}</div></div></details>`;
+    if(s.later) h += `<p class="hint">${s.later}</p>`;
+  }
+  body.innerHTML = h;
+  const [tone,text] = impactFor(s.key);
+  const same = d[s.key]===NOW[s.key];
+  foot.innerHTML = `<div class="impact ${tone}">${text}</div><div class="navrow">${at>0?'<button class="btn ghost" onclick="at--;render()">← 이전</button>':'<span></span>'}<button class="btn dark" onclick="at++;render()">${same?'그대로 두기 →':'다음 →'}</button></div>`;
+  body.scrollTop = 0;
+}
+function renderReview(body,foot){
+  const keys = Object.keys(NAMES);
+  const changed = keys.filter(k=>String(d[k])!==String(NOW[k]) || (k==='answer'&&d.answer==='on'&&d.sources!==NOW.sources));
+  body.innerHTML = `<p class="q">${changed.length?'이렇게 바꿀까요?':'바뀐 게 없어요'}</p><p class="qsub">${changed.length?`${changed.length}가지가 바뀌어요. 줄을 눌러 그 단계로 돌아갈 수 있어요.`:'고친 단계가 없어서 지금 설정 그대로예요.'}</p>
+  <div class="diff">${keys.map((k,i)=>{const ch=changed.includes(k);const nowL=(k==='answer'?(NOW.answer==='on'?`켬 · 근거 ${NOW.sources}개`:'안 씀'):LABEL[k](NOW[k]));
+    return `<div class="drow ${ch?'':'same'}"><span class="k">${NAMES[k]}</span><span class="v">${ch?`<s>${nowL}</s> → <b>${LABEL[k](d[k])}</b>`:nowL}</span><button class="ed" onclick="at=${i};render()">고치기</button></div>`;}).join('')}</div>`;
+  const idx = indexImpact(); const indexChanged = d.prefix!==NOW.prefix||d.embedder!==NOW.embedder;
+  const lines = [];
+  if(indexChanged) lines.push(`<div class="impact ${idx[0]}">${idx[1]}</div>`);
+  if(changed.some(k=>!['prefix','embedder'].includes(k))) lines.push(`<div class="impact ok">검색·답변 설정은 적용하는 즉시 바뀌어요.</div>`);
+  if(!changed.length) lines.push(`<div class="impact">닫아도 아무것도 바뀌지 않아요.</div>`);
+  const build = indexChanged && !BUILT[`${d.prefix}|${d.embedder}`];
+  foot.innerHTML = lines.join('')+`<div class="navrow"><button class="btn ghost" onclick="at--;render()">← 이전</button>${changed.length?`<button class="btn dark" onclick="done(${build})">${build?'색인 만들고 적용':'적용'}</button>`:`<button class="btn dark" onclick="closeD()">닫기</button>`}</div>
+  ${changed.length?'<button class="btn ghost" style="align-self:center;font-size:11px" onclick="done(false,true)">이름 붙여 저장하고 적용</button>':''}`;
+}
+function done(build,save){
+  Object.assign(NOW,d); d={...NOW};
+  document.getElementById('saved-as').textContent = save?'내 설정 1':'Unsaved changes';
+  closeD(); paint();
+  if(build) alert('색인 만들기 작업이 대기열에 들어갔어요. 진행은 아래 Indexing 카드에서 보이고, 끝나면 자동으로 적용돼요. (시안)');
+}
+function openAt(i){ d={...NOW}; at=i; render(); document.body.classList.add('open'); }
+function closeD(){ document.body.classList.remove('open'); }
+function paint(){
+  document.getElementById('chips').innerHTML = [
+    `<span class="chip">✂ ${LABEL.prefix(NOW.prefix)}</span>`,`<span class="chip">◇ ${EMB[NOW.embedder][0]} <span class="badge ${EMB[NOW.embedder][1]==='External'?'ext':''}">${EMB[NOW.embedder][1]}</span></span>`,
+    `<span class="chip">⌕ 찾을 개수 ${NOW.topk}</span>`,`<span class="chip ${NOW.keyword==='off'?'off':''}">낱말 검색 ${LABEL.keyword(NOW.keyword)}</span>`,
+    `<span class="chip ${NOW.rerank==='off'?'off':''}">다시 줄 세우기 ${LABEL.rerank(NOW.rerank)}</span>`,`<span class="chip ${NOW.answer==='off'?'off':''}">답 쓰기 ${LABEL.answer(NOW.answer)}</span>`].join('');
+  const cards = [['Source','설정 없음',null],['Dedupe','설정 없음',null],['Chunking',LABEL.prefix(NOW.prefix),0],['Tokens','모델 토크나이저',1],['Embedding',EMB[NOW.embedder][0],1],['Storage','설정 없음',null],
+    ['Vector search',`찾을 개수 ${NOW.topk}`,2],['키워드 검색',LABEL.keyword(NOW.keyword),3],['Rerank',LABEL.rerank(NOW.rerank),4],['Answer',LABEL.answer(NOW.answer),5]];
+  document.getElementById('cards').innerHTML = cards.map(([n,v,i])=>`<button class="card" ${i===null?'':`onclick="openAt(${i})"`}><b>${n}</b><small>${v}</small>${i===null?'<small style="color:#c4bccf">지난 실행만</small>':'<small style="color:var(--accent-ink)">눌러서 바꾸기</small>'}</button>`).join('');
+}
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeD(); });
+paint();
+</script>
+</body>
+</html>

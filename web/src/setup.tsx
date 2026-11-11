@@ -1,9 +1,9 @@
-// Current setup (index + search settings) and the stage panel that changes it.
+// Current setup (index + search settings): data hooks, the setup bar, and the last-run panel of a stage.
 // The engine describes every option (GET /components), so this file draws choices from that list instead of hard-coding them.
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
-  ArrowUpRight, Box, Check, ChevronDown, CircleAlert, Layers3, LoaderCircle, Minus, Plus, RefreshCw, RotateCcw, Save,
+  ArrowUpRight, Box, Check, ChevronDown, CircleAlert, Layers3, RefreshCw, RotateCcw, Save, SlidersHorizontal,
   Search, Sparkles, Star, TextSearch, X, Zap, type LucideIcon,
 } from 'lucide-react';
 import { api, Card, ColorIcon, IconButton, Modal, spring } from './ui';
@@ -102,7 +102,7 @@ export function SetupChips({ setup, onChange }: { setup: Setup | null; onChange?
 
 // ---------- Setup bar (top of the Pipeline page) ----------
 
-export function SetupBar({ s, onBuild }: { s: SetupApi; onBuild: (r: BuildResponse) => void }) {
+export function SetupBar({ s, onBuild, onChange }: { s: SetupApi; onBuild: (r: BuildResponse) => void; onChange: () => void }) {
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -124,6 +124,7 @@ export function SetupBar({ s, onBuild }: { s: SetupApi; onBuild: (r: BuildRespon
       <div className="setup-bar-title"><small>Current setup</small><strong>{setup?.saved_as ?? 'Unsaved changes'}</strong></div>
       <SetupChips setup={setup} />
       <div className="setup-bar-actions">
+        <button className="primary-button setup-open" onClick={onChange} disabled={!setup}><SlidersHorizontal size={14} />설정 바꾸기</button>
         {s.saved.length > 0 && <label className="eval-run-select setup-select"><span>Saved</span>
           <select aria-label="Load a saved setup" value={savedId ?? ''} disabled={busy} onChange={e => e.target.value && run(() => s.load(Number(e.target.value)))}>
             {!savedId && <option value="">Choose…</option>}
@@ -160,7 +161,7 @@ function SaveSetupModal({ suggestion, existing, close, save }: { suggestion: str
   </Modal>;
 }
 
-// ---------- Stage panel ----------
+// ---------- Stage panel (what a stage did in the last run) ----------
 
 const stageInfo: Record<PanelStage, { title: string; icon: LucideIcon; color: string }> = {
   chunker: { title: 'Chunking', icon: Layers3, color: 'blue' },
@@ -171,15 +172,10 @@ const stageInfo: Record<PanelStage, { title: string; icon: LucideIcon; color: st
   keyword: { title: '키워드 검색', icon: TextSearch, color: 'blue' },
 };
 
-type PanelProps = {
-  title: string; icon: LucideIcon; color: string; settings: PanelStage | null; note?: string;
-  lastRun: React.ReactNode | null; s: SetupApi; catalog: Catalog | null; busy: boolean;
-  close: () => void; onBuild: (r: BuildResponse) => void; openKnowledge: () => void;
-};
-
-// Slides in from the right. Two tabs: what the stage is set to (and what changing it costs), and what it did in the last run.
-export function StagePanel({ title, icon, color, settings, note, lastRun, s, catalog, busy, close, onBuild, openKnowledge }: PanelProps) {
-  const [tab, setTab] = useState<'settings' | 'run'>(settings ? 'settings' : 'run');
+// Slides in from the right and shows the last run of one indexing stage. Settings are changed in the setup flow (setupflow.tsx).
+export function StagePanel({ title, icon, color, lastRun, close, onChange }: {
+  title: string; icon: LucideIcon; color: string; lastRun: React.ReactNode | null; close: () => void; onChange?: () => void;
+}) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
     window.addEventListener('keydown', onKey);
@@ -188,270 +184,15 @@ export function StagePanel({ title, icon, color, settings, note, lastRun, s, cat
 
   return <>
     <motion.div className="panel-backdrop" onClick={close} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} />
-    <motion.aside className="stage-panel" role="dialog" aria-label={`${title} settings`} initial={{ x: '104%' }} animate={{ x: 0 }} exit={{ x: '104%' }} transition={spring}>
+    <motion.aside className="stage-panel" role="dialog" aria-label={`${title} last run`} initial={{ x: '104%' }} animate={{ x: 0 }} exit={{ x: '104%' }} transition={spring}>
       <header className="panel-head">
         <ColorIcon icon={icon} color={color} small />
         <h2>{title}</h2>
+        {onChange && <button className="subtle-button panel-change" onClick={onChange}><SlidersHorizontal size={14} />설정 바꾸기</button>}
         <IconButton icon={X} label="Close panel" onClick={close} />
       </header>
-      {settings && lastRun && <div className="panel-tabs" role="tablist">
-        {(['settings', 'run'] as const).map(t => <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'is-active' : ''} onClick={() => setTab(t)}>
-          {tab === t && <motion.span className="panel-tab-bg" layoutId="panel-tab" transition={spring} />}<span>{t === 'settings' ? 'Settings' : 'Last run'}</span>
-        </button>)}
-      </div>}
-      {tab === 'settings' && settings ? <SettingsTab stage={settings} note={note} s={s} catalog={catalog} busy={busy} onBuild={onBuild} openKnowledge={openKnowledge} />
-        : <div className="panel-body">{lastRun ?? <p className="dialog-note">Nothing has run yet.</p>}</div>}
+      <div className="panel-body">{lastRun ?? <p className="dialog-note">Nothing has run yet.</p>}</div>
     </motion.aside>
-  </>;
-}
-
-function SettingsTab({ stage, note, s, catalog, busy, onBuild, openKnowledge }: { stage: PanelStage; note?: string; s: SetupApi; catalog: Catalog | null; busy: boolean; onBuild: (r: BuildResponse) => void; openKnowledge: () => void }) {
-  if (!catalog || !s.setup) return <div className="panel-body"><p className="dialog-note">Loading options…</p></div>;
-  if (stage === 'chunker' || stage === 'embedder') return <IndexSettings key={s.setup.index.key} stage={stage} note={note} s={s} setup={s.setup} catalog={catalog} busy={busy} onBuild={onBuild} openKnowledge={openKnowledge} />;
-  if (stage === 'query') return <QuerySettings s={s} setup={s.setup} />;
-  if (stage === 'reranker' || stage === 'generator' || stage === 'keyword') return <OnOffSettings key={stage + JSON.stringify(s.setup.query[stage])} stage={stage} s={s} setup={s.setup} catalog={catalog} />;
-  return <>
-    <div className="panel-body">
-      <p className="panel-note">Writes the answer from the retrieved chunks and cites them.</p>
-      <OptionList specs={catalog[stage]} selected={null} pick={() => undefined} />
-    </div>
-    <footer className="panel-impact"><div className="impact-line is-muted"><CircleAlert size={15} /><span><b>Not connected yet</b><small>These options arrive in a later step. Nothing changes here today.</small></span></div></footer>
-  </>;
-}
-
-function OptionList({ specs, selected, pick }: { specs: Spec[]; selected: string | null; pick: (spec: Spec) => void }) {
-  return <div className="choice-list" role="radiogroup">{specs.map((spec, i) => {
-    const on = spec.id === selected;
-    const planned = spec.status === 'planned';
-    return <motion.button key={spec.id} role="radio" aria-checked={on} disabled={planned}
-      className={`choice-card ${on ? 'is-selected' : ''} ${!spec.available ? 'is-dim' : ''}`} onClick={() => pick(spec)}
-      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ ...spring, delay: i * 0.04 }}>
-      <span className="choice-head"><b>{spec.label}</b><WhereBadge external={spec.external} />{on && <span className="choice-check"><Check size={12} /></span>}</span>
-      <small>{spec.description}</small>
-      <span className="choice-meta">{spec.vendor}{spec.max_tokens ? ` · up to ${spec.max_tokens.toLocaleString()} tokens` : ''}</span>
-      {!spec.available && <em className="choice-reason"><CircleAlert size={12} />{spec.reason}</em>}
-    </motion.button>;
-  })}</div>;
-}
-
-function ParamInputs({ spec, values, set }: { spec: Spec; values: Record<string, string>; set: (name: string, value: string) => void }) {
-  if (!spec.params.length) return null;
-  return <div className="param-list">{spec.params.map(p => <div className="param" key={p.name}>
-    <span className="param-label">{p.label}</span>
-    <div className="segmented" role="radiogroup" aria-label={p.label}>{p.choices.map(([value, label]) => {
-      const on = (values[p.name] ?? p.default) === value;
-      return <button key={value} role="radio" aria-checked={on} className={on ? 'is-on' : ''} onClick={() => set(p.name, value)}>
-        {on && <motion.span className="segmented-bg" layoutId={`seg-${spec.id}-${p.name}`} transition={spring} />}<span>{label}</span>
-      </button>;
-    })}</div>
-    {p.help && <small className="param-help">{p.help}</small>}
-  </div>)}</div>;
-}
-
-// Chunking and embedding together decide the index. Changing either one shows right away whether that index exists and what building it takes.
-function IndexSettings({ stage, note, s, setup, catalog, busy, onBuild, openKnowledge }: {
-  stage: 'chunker' | 'embedder'; note?: string; s: SetupApi; setup: Setup; catalog: Catalog; busy: boolean;
-  onBuild: (r: BuildResponse) => void; openKnowledge: () => void;
-}) {
-  const current = setup.index;
-  const [draft, setDraft] = useState({ chunker: current.chunker, embedder: current.embedder });
-  const [estimate, setEstimate] = useState<Estimate | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [working, setWorking] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
-  const draftKey = `${settingKey(draft.chunker)}|${settingKey(draft.embedder)}`;
-  const changed = draftKey !== current.key;
-  const spec = catalog[stage].find(x => x.id === draft[stage].id) ?? null;
-  const asked = useRef(0);
-
-  // Ask the engine about the drafted combination a moment after the last change.
-  useEffect(() => {
-    setProblem(null);
-    if (!changed) { setEstimate(null); return; }
-    const ticket = ++asked.current;
-    setChecking(true);
-    const timer = setTimeout(() => {
-      api<Estimate>('/indexes/estimate', { method: 'POST', body: { ...draft, apply: true } })
-        .then(e => { if (asked.current === ticket) setEstimate(e); })
-        .catch(e => { if (asked.current === ticket) setProblem(message(e)); })
-        .finally(() => { if (asked.current === ticket) setChecking(false); });
-    }, 250);
-    return () => clearTimeout(timer);
-  }, [draftKey]);
-
-  function pick(next: Spec) {
-    if (next.status !== 'ready') return;
-    setDraft(d => (d[stage].id === next.id ? d : { ...d, [stage]: { id: next.id, params: defaults(next) } }));
-  }
-  function setParam(name: string, value: string) {
-    setDraft(d => ({ ...d, [stage]: { ...d[stage], params: { ...d[stage].params, [name]: value } } }));
-  }
-  async function apply() {
-    if (!estimate?.index_id) return;
-    setWorking(true);
-    setProblem(await s.update({ index_id: estimate.index_id }));
-    setWorking(false);
-  }
-  async function build() {
-    setWorking(true);
-    const r = await s.buildIndex(draft.chunker, draft.embedder);
-    setWorking(false);
-    if (typeof r === 'string') setProblem(r); else onBuild(r);
-  }
-
-  return <>
-    <div className="panel-body">
-      {note && <p className="panel-note">{note}</p>}
-      <OptionList specs={catalog[stage]} selected={draft[stage].id} pick={pick} />
-      {spec && <ParamInputs spec={spec} values={draft[stage].params} set={setParam} />}
-    </div>
-    <footer className="panel-impact" aria-live="polite">
-      <AnimatePresence mode="wait" initial={false}>
-        <motion.div key={!changed ? 'current' : checking || !estimate ? 'checking' : estimate.key} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.18 }}>
-          {!changed ? <div className="impact-line is-ok"><Check size={15} /><span><b>In use</b><small>{current.chunks.toLocaleString()} chunks from {current.documents} documents{current.is_base ? ' · base index, updates on every ingest' : ''}</small></span></div>
-            : checking || !estimate ? <div className="impact-line is-muted"><LoaderCircle size={15} className="spin" /><span><b>Checking this combination…</b></span></div>
-            : <Impact e={estimate} busy={busy || working} apply={apply} build={build} openKnowledge={openKnowledge} />}
-        </motion.div>
-      </AnimatePresence>
-      {problem && <p className="result-error">{problem}</p>}
-      {changed && <button className="text-button impact-reset" onClick={() => setDraft({ chunker: current.chunker, embedder: current.embedder })}><RotateCcw size={12} />Keep current setting</button>}
-    </footer>
-  </>;
-}
-
-// What happens if this combination is chosen: use it now, build it first, or why it cannot be built yet.
-function Impact({ e, busy, apply, build, openKnowledge }: { e: Estimate; busy: boolean; apply: () => void; build: () => void; openKnowledge: () => void }) {
-  if (e.ready) return <>
-    <div className="impact-line is-ok"><Check size={15} /><span><b>Index ready</b><small>{e.chunks_built.toLocaleString()} chunks · {e.dims} dimensions · switching is instant</small></span></div>
-    <button className="primary-button impact-action" disabled={busy} onClick={apply}><Check size={15} />Apply</button>
-  </>;
-  const partly = e.index_id !== null;
-  const problems: React.ReactNode[] = [];
-  if (!e.available) problems.push(<li key="avail">{e.reason}</li>);
-  if (e.blocked.length) problems.push(<li key="blocked">
-    {e.blocked.length} document{e.blocked.length === 1 ? ' is' : 's are'} not allowed to be sent outside: {e.blocked.slice(0, 2).map(d => d.path.split('/').pop()).join(', ')}{e.blocked.length > 2 ? '…' : ''}
-    <button className="text-button impact-link" onClick={openKnowledge}>Allow in Knowledge <ArrowUpRight size={12} /></button>
-  </li>);
-  if (e.missing_content.length) problems.push(<li key="missing">{e.missing_content.length} document{e.missing_content.length === 1 ? ' has' : 's have'} no stored text. Ingest them again.</li>);
-  if (e.over_limit) problems.push(<li key="over">{e.over_limit} chunk{e.over_limit === 1 ? ' is' : 's are'} over this model's token limit.</li>);
-  const facts = [
-    `${e.documents_pending} of ${e.documents_total} documents`,
-    `about ${e.chunks_pending.toLocaleString()} chunks`,
-    e.tokens != null ? `about ${e.tokens.toLocaleString()} tokens` : null,
-    `${e.dims} dimensions`,
-  ].filter(Boolean).join(' · ');
-  return <>
-    <div className="impact-line"><Layers3 size={15} /><span><b>{partly ? 'Index is missing documents' : 'Not built yet'}</b><small>{facts}</small></span></div>
-    {e.external && <div className="impact-line is-warn"><ArrowUpRight size={15} /><span><b>Sends chunk text to {e.label.embedder.split(' · ')[0]}</b><small>Only documents marked “External allowed” can be sent.</small></span></div>}
-    {problems.length > 0 && <ul className="impact-problems">{problems}</ul>}
-    <button className="primary-button impact-action" disabled={busy || !e.can_build} onClick={build}>
-      {busy ? <LoaderCircle size={15} className="spin" /> : <Plus size={15} />}{partly ? 'Finish and apply' : 'Build and apply'}
-    </button>
-    {busy && <small className="impact-hint">Another job is running. Wait for it to finish.</small>}
-  </>;
-}
-
-// Rerank and Answer are search settings, not part of the index, so they apply right away. "Off" is drawn as one more card.
-type OnOffStage = 'reranker' | 'generator' | 'keyword';
-const offSpec = (stage: OnOffStage, description: string): Spec => ({
-  id: 'off', stage, label: 'Off', description, provider: 'local', vendor: '—',
-  params: [], status: 'ready', external: false, available: true, reason: '',
-});
-const ON_OFF: Record<OnOffStage, {
-  note: string; off: Spec;
-  inUse: (setup: Setup, cur: StageSetting) => string; offText: string;
-  title: (d: StageSetting) => string; cost: (d: StageSetting) => string;
-}> = {
-  reranker: {
-    note: 'Vector search finds candidates, then the reranker reads the question and each candidate together and puts them in a new order.',
-    off: offSpec('reranker', 'Keep the vector search order as it is.'),
-    inUse: (setup, cur) => `${setup.query.reranker_label} · reorders ${cur.params.candidates} candidates`,
-    offText: 'Results keep the vector search order.',
-    title: d => `Rerank ${d.params.candidates} candidates`,
-    cost: d => `Applies right away, no index to build. On this Mac (Docker, CPU) one chunk takes about 3 seconds, so each question waits about ${Math.round(Number(d.params.candidates) * 3.4 / 60 * 10) / 10} minutes.`,
-  },
-  generator: {
-    note: 'Writes a short answer from the top chunks and cites them as [1], [2]. Chunks from documents not allowed outside are left out.',
-    off: offSpec('generator', 'Search only. Playground shows the chunks without an answer.'),
-    inUse: (setup, cur) => `${setup.query.generator_label} · sends the top ${cur.params.sources} chunks`,
-    offText: 'Playground shows the chunks only.',
-    title: d => `Answer with ${d.params.model}`,
-    cost: d => `Applies right away. Each question sends the top ${d.params.sources} chunks (about 1,000 tokens for 3) and gets up to ${d.params.max_output} tokens back.`,
-  },
-  keyword: {
-    note: '벡터 검색은 뜻이 비슷한 글을 찾고, 키워드 검색(BM25)은 질문의 낱말이 그대로 들어 있는 글을 찾아요. 명령어·설정 이름·오류 문구처럼 정확한 낱말을 물을 때 도움이 돼요.',
-    off: offSpec('keyword', '벡터 검색 순위만 써요.'),
-    inUse: (setup, cur) => `${setup.query.keyword_label} · 키워드 후보 ${cur.params.candidates}개`,
-    offText: '벡터 검색 순위만 써요.',
-    title: d => d.params.mode === 'keyword' ? '키워드 검색만 쓰기' : '벡터 + 키워드 순위 합치기',
-    cost: d => `바로 적용돼요. 색인을 다시 만들 필요가 없어요. 내 컴퓨터에서 계산하고 외부로 보내지 않아요. 키워드 후보 ${d.params.candidates}개를 가져와요.`,
-  },
-};
-function OnOffSettings({ stage, s, setup, catalog }: { stage: OnOffStage; s: SetupApi; setup: Setup; catalog: Catalog }) {
-  const text = ON_OFF[stage];
-  const current = setup.query[stage];
-  const [draft, setDraft] = useState<StageSetting | null>(current);
-  const [working, setWorking] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
-  const spec = draft ? catalog[stage].find(x => x.id === draft.id) ?? null : null;
-  const changed = JSON.stringify(draft) !== JSON.stringify(current);
-
-  function pick(next: Spec) {
-    if (next.status !== 'ready' || !next.available) return;
-    setDraft(next.id === 'off' ? null : d => (d?.id === next.id ? d : { id: next.id, params: defaults(next) }));
-  }
-  async function apply() {
-    setWorking(true);
-    setProblem(await s.update({ [stage]: draft ?? 'off' }));
-    setWorking(false);
-  }
-  return <>
-    <div className="panel-body">
-      <p className="panel-note">{text.note}</p>
-      <OptionList specs={[text.off, ...catalog[stage]]} selected={draft?.id ?? 'off'} pick={pick} />
-      {spec && draft && <ParamInputs spec={spec} values={draft.params} set={(name, value) => setDraft({ ...draft, params: { ...draft.params, [name]: value } })} />}
-    </div>
-    <footer className="panel-impact" aria-live="polite">
-      {!changed ? <div className="impact-line is-ok"><Check size={15} /><span><b>In use</b><small>{current ? text.inUse(setup, current) : text.offText}</small></span></div>
-        : <>
-          <div className="impact-line"><Zap size={15} /><span><b>{draft ? text.title(draft) : 'Turn it off'}</b>
-            <small>{draft ? text.cost(draft) : 'Applies right away.'}</small></span></div>
-          <button className="primary-button impact-action" disabled={working} onClick={apply}>{working ? <LoaderCircle size={15} className="spin" /> : <Check size={15} />}Apply</button>
-          <button className="text-button impact-reset" onClick={() => setDraft(current)}><RotateCcw size={12} />Keep current setting</button>
-        </>}
-      {problem && <p className="result-error">{problem}</p>}
-    </footer>
-  </>;
-}
-
-// Search settings apply right away. Evaluations score the top 10 regardless, so top-k changes what Playground shows, not the scores.
-function QuerySettings({ s, setup }: { s: SetupApi; setup: Setup }) {
-  const [problem, setProblem] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const k = setup.query.top_k;
-  async function set(next: number) {
-    if (next < 1 || next > 20) return;
-    setSaving(true);
-    setProblem(await s.update({ top_k: next }));
-    setSaving(false);
-  }
-  return <>
-    <div className="panel-body">
-      <p className="panel-note">The question is embedded with the index's own model ({setup.index.label.embedder}). Change the model on the Embedding card.</p>
-      <div className="param-list"><div className="param">
-        <span className="param-label">Chunks to retrieve (top-k)</span>
-        <div className="stepper">
-          <button aria-label="Fewer chunks" disabled={saving || k <= 1} onClick={() => set(k - 1)}><Minus size={14} /></button>
-          <AnimatePresence mode="popLayout" initial={false}><motion.b key={k} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}>{k}</motion.b></AnimatePresence>
-          <button aria-label="More chunks" disabled={saving || k >= 20} onClick={() => set(k + 1)}><Plus size={14} /></button>
-        </div>
-        <small className="param-help">How many chunks the search hands on. More gives the answer step more evidence and more noise.</small>
-      </div></div>
-    </div>
-    <footer className="panel-impact">
-      <div className="impact-line is-ok"><Check size={15} /><span><b>Applies right away</b><small>Evaluations always score the top 10 (recall@1, 3, 5), so this value does not change the scores.</small></span></div>
-      {problem && <p className="result-error">{problem}</p>}
-    </footer>
   </>;
 }
 

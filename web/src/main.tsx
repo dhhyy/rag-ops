@@ -17,6 +17,7 @@ import { Playground, type DocTarget } from './playground';
 import { UsagePage } from './usage';
 import { Home as HomePage } from './home';
 import { SetupBar, StagePanel, useCatalog, useSetup, type BuildResponse, type IndexInfo, type PanelStage } from './setup';
+import { SetupFlow, stepOf } from './setupflow';
 
 type Page = 'home' | 'knowledge' | 'pipeline' | 'playground' | 'compare' | 'evaluations' | 'runs' | 'usage' | 'settings';
 type Collection = { id: number; name: string; documents: number; color: string };
@@ -46,6 +47,7 @@ function App() {
   const [docTarget, setDocTarget] = useState<DocTarget | null>(null);   // Playground에서 연 조각
   const [askFromHome, setAskFromHome] = useState<string | null>(null);   // Home에서 넣은 질문 → Playground가 바로 보냄
   const [callIngest, setCallIngest] = useState(false);   // [문서 넣기]로 왔으면 Pipeline의 경로 입력칸을 바로 연다
+  const [callSetup, setCallSetup] = useState(false);   // 다른 화면의 [설정 바꾸기]로 왔으면 Pipeline에서 설정 서랍을 바로 연다
   const [settings, setSettings] = useState<PreviewSettings>({ name: 'Local workspace', endpoint: 'http://localhost:11434' });
   const [dialog, setDialog] = useState<DialogState>(null);
   const [toast, setToast] = useState('');
@@ -65,6 +67,7 @@ function App() {
     window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler);
   }, []);
   const openIngest = () => { navigate('pipeline'); setCallIngest(true); };
+  const openSetup = () => { navigate('pipeline'); setCallSetup(true); };
   function flip(index: number) { setEnabled(e => e.map((v, i) => i === index ? !v : v)); }
 
   return <MotionConfig reducedMotion="user" transition={spring}><div className="desktop-stage"><div className="app-shell">
@@ -80,13 +83,13 @@ function App() {
         <div className="top-actions"><IconButton icon={Plus} label="Create knowledge base" onClick={() => setDialog({ type: 'create' })} /><IconButton icon={Search} label="Search workspace" onClick={() => setDialog({ type: 'search' })} /><IconButton icon={Maximize2} label="Toggle full screen" onClick={() => { if (document.fullscreenElement) void document.exitFullscreen(); else void document.documentElement.requestFullscreen().catch(() => notify('Use your browser’s full-screen control')); }} /></div>
       </header>
       <main className="content" id="main-content"><AnimatePresence mode="wait"><motion.div key={page} className={`page page-${page}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, y: reduced ? 0 : -8, filter: reduced ? 'none' : 'blur(5px)' }} transition={{ duration: 0.2 }}>
-        {page === 'home' && <HomePage openPipeline={() => navigate('pipeline')} openEvaluations={() => navigate('evaluations')} openUsage={() => navigate('usage')}
+        {page === 'home' && <HomePage openPipeline={() => navigate('pipeline')} openSetup={openSetup} openEvaluations={() => navigate('evaluations')} openUsage={() => navigate('usage')}
           openKnowledge={() => navigate('knowledge')} openPlayground={q => { setAskFromHome(q ?? null); navigate('playground'); }} />}
         {page === 'knowledge' && <Knowledge view={knowledgeView} target={docTarget} clearTarget={() => setDocTarget(null)} openPipeline={openIngest} />}
-        {page === 'pipeline' && <Pipeline enabled={enabled} flip={flip} callIngest={callIngest} consumeIngest={() => setCallIngest(false)} openKnowledge={() => { navigate('knowledge'); setKnowledgeView('blocked'); }} />}
-        {page === 'playground' && <Playground initialQuestion={askFromHome} consume={() => setAskFromHome(null)} openPipeline={() => navigate('pipeline')} openKnowledge={t => { navigate('knowledge'); setDocTarget(t); }} />}
+        {page === 'pipeline' && <Pipeline enabled={enabled} flip={flip} callIngest={callIngest} consumeIngest={() => setCallIngest(false)} callSetup={callSetup} consumeSetup={() => setCallSetup(false)} openKnowledge={() => { navigate('knowledge'); setKnowledgeView('blocked'); }} />}
+        {page === 'playground' && <Playground initialQuestion={askFromHome} consume={() => setAskFromHome(null)} openPipeline={openSetup} openKnowledge={t => { navigate('knowledge'); setDocTarget(t); }} />}
         {page === 'compare' && <Compare />}
-        {page === 'evaluations' && <Evaluations openPipeline={() => navigate('pipeline')} openCompare={() => navigate('compare')} />}
+        {page === 'evaluations' && <Evaluations openPipeline={openSetup} openCompare={() => navigate('compare')} />}
         {page === 'runs' && <Runs openPipeline={openIngest} />}
         {page === 'usage' && <UsagePage openPlayground={() => navigate('playground')} />}
         {page === 'settings' && <Settings settings={settings} save={setSettings} notify={notify} />}
@@ -688,8 +691,8 @@ function QueueStrip({ jobs, selected, select }: { jobs: Job[]; selected: number 
   </div>;
 }
 
-function Pipeline({ enabled, flip, callIngest, consumeIngest, openKnowledge }: {
-  enabled: boolean[]; flip: (i: number) => void; callIngest: boolean; consumeIngest: () => void; openKnowledge: () => void;
+function Pipeline({ enabled, flip, callIngest, consumeIngest, callSetup, consumeSetup, openKnowledge }: {
+  enabled: boolean[]; flip: (i: number) => void; callIngest: boolean; consumeIngest: () => void; callSetup: boolean; consumeSetup: () => void; openKnowledge: () => void;
 }) {
   const { jobs, job, select, moments, offline, start, adopt } = useIngestQueue();
   const s = useSetup();
@@ -702,6 +705,11 @@ function Pipeline({ enabled, flip, callIngest, consumeIngest, openKnowledge }: {
   const [submitting, setSubmitting] = useState(false);
   const [chunksOf, setChunksOf] = useState<{ doc: number; index?: number } | null>(null);
   const [panel, setPanel] = useState<{ group: GroupId; node: number } | null>(null);
+  // 설정 서랍: 열려 있으면 시작할 단계 번호, 닫혀 있으면 null. 다른 화면의 [설정 바꾸기]로 왔으면 첫 단계부터 연다.
+  const [flow, setFlow] = useState<number | null>(null);
+  const lastFlow = useRef(0);
+  if (flow !== null) lastFlow.current = flow;
+  useEffect(() => { if (callSetup) { consumeSetup(); setFlow(0); } }, []);   // eslint-disable-line react-hooks/exhaustive-deps
   // 다른 화면의 [문서 넣기]로 왔으면 경로 입력칸에 커서를 두고 잠깐 빛나게 한다 (화면 전환이 끝난 뒤).
   const sourceInput = useRef<HTMLInputElement>(null);
   const [called, setCalled] = useState(false);
@@ -746,6 +754,7 @@ function Pipeline({ enabled, flip, callIngest, consumeIngest, openKnowledge }: {
   // A build or refresh started from the setup bar or a stage panel: follow its jobs in the same queue.
   function followBuild(r: BuildResponse) {
     setPanel(null);
+    setFlow(null);
     setError(null);
     if (!r.jobs.length) { setNote(r.applied ? 'Applied. The index already had every document.' : 'Nothing to refresh. The index is up to date.'); return; }
     const index = s.indexes.find(i => i.id === r.index_id);
@@ -803,7 +812,7 @@ function Pipeline({ enabled, flip, callIngest, consumeIngest, openKnowledge }: {
       <span className="tag">{offline ? 'Engine offline' : 'Local engine'}</span>
     </Heading>
 
-    <SetupBar s={s} onBuild={followBuild} />
+    <SetupBar s={s} onBuild={followBuild} onChange={() => setFlow(0)} />
 
     <Card className={`source-card ${called ? 'is-called' : ''}`}>
       <form className="source-form" onSubmit={submit}>
@@ -831,16 +840,17 @@ function Pipeline({ enabled, flip, callIngest, consumeIngest, openKnowledge }: {
             {jobs.length > 1 && <QueueStrip jobs={jobs} selected={job?.id ?? null} select={select} />}
             <div className="flow-nodes">{indexing.map((n, i) => <React.Fragment key={n.name}>
               <StageCard node={n} state={states[i]} sub={stageSub(job, i, states[i])} progress={i === embedIndex ? embedPct : null} chip={chipFor(n)}
-                onOpen={n.settings || (job && ['done', 'skipped', 'failed'].includes(states[i])) ? () => setPanel({ group: 'indexing', node: i }) : undefined} />
+                onOpen={job && ['done', 'skipped', 'failed'].includes(states[i]) ? () => setPanel({ group: 'indexing', node: i })
+                  : n.settings ? () => setFlow(stepOf(n.settings!)) : undefined} />
               {i < indexing.length - 1 && <StageConnector from={states[i]} to={states[i + 1]} />}
             </React.Fragment>)}</div>
             <div className="canvas-footer">
               <span><GitBranch size={14} />{job?.result ? `${job.result.source_repo}/${job.result.source_path}` : job?.path.split('/').slice(-2).join('/') ?? 'No document yet'}{jobInfo && job ? ` · index #${jobInfo.id}${jobInfo.is_base ? ' ★' : ''}` : ''}</span>
-              <span>Chunking, Tokens and Embedding open their settings</span>
+              <span>지난 실행이 있으면 카드를 눌러 그 단계 결과를 봐요 · 설정은 [설정 바꾸기]</span>
             </div>
           </> : <>
             <div className="flow-nodes">{g.nodes.map((n, i) => <React.Fragment key={n.name}>
-              <StageCard node={n} state={n.live ? 'idle' : 'planned'} sub={n.detail} chip={chipFor(n)} onOpen={n.settings ? () => setPanel({ group: g.id, node: i }) : undefined} />
+              <StageCard node={n} state={n.live ? 'idle' : 'planned'} sub={n.detail} chip={chipFor(n)} onOpen={n.settings ? () => setFlow(stepOf(n.settings!)) : undefined} />
               {i < g.nodes.length - 1 && <StageConnector from={n.live ? 'done' : 'planned'} to={g.nodes[i + 1].live ? 'idle' : 'planned'} />}
             </React.Fragment>)}</div>
             <div className="canvas-footer"><span><GitBranch size={14} />{g.id === 'retrieval' ? 'Search runs in Evaluations today' : 'Planned'}</span><span>{g.id === 'retrieval' ? 'Changes apply right away' : 'Not connected to the engine yet'}</span></div>
@@ -897,10 +907,11 @@ function Pipeline({ enabled, flip, callIngest, consumeIngest, openKnowledge }: {
     <div className="quick-grid">{['Retrieval', 'Reranking', 'Streaming', 'Citations'].map((name, i) => <Card className="option-card" key={name} delay={0.15 + i * 0.06}><span>{name}</span><Toggle checked={enabled[i]} onChange={() => flip(i)} label={name} /></Card>)}</div>
 
     {chunksOf !== null && <ChunkModal documentId={chunksOf.doc} indexId={chunksOf.index} close={() => setChunksOf(null)} />}
-    <AnimatePresence>{target && panel && <StagePanel key={`${panel.group}-${panel.node}`} title={target.name} icon={target.icon} color={target.color} settings={target.settings ?? null}
-      note={target.name === 'Tokens' ? "There is nothing to pick for the token check: it follows the embedding model. Each chunk must fit that model's limit, counted with its own tokenizer." : undefined}
+    <AnimatePresence>{target && panel && <StagePanel key={`${panel.group}-${panel.node}`} title={target.name} icon={target.icon} color={target.color}
       lastRun={panel.group === 'indexing' && job && job.status !== 'queued' ? <StageRun index={panel.node} job={job} info={jobInfo} maxTokens={limitOf(jobInfo)} /> : null}
-      s={s} catalog={catalog} busy={queueActive} close={() => setPanel(null)} onBuild={followBuild} openKnowledge={openKnowledge} />}</AnimatePresence>
+      close={() => setPanel(null)} onChange={target.settings ? () => { setPanel(null); setFlow(stepOf(target.settings!)); } : undefined} />}</AnimatePresence>
+    <SetupFlow open={flow !== null} start={flow ?? lastFlow.current} s={s} catalog={catalog} busy={queueActive}
+      onClose={() => setFlow(null)} onBuild={followBuild} openKnowledge={openKnowledge} />
   </>;
 }
 

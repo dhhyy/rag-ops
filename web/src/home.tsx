@@ -1,11 +1,11 @@
-// Home: 지금 시스템 상태를 한눈에 보고, 자주 바꾸는 검색 설정을 바로 켜고 끄는 화면.
-// 화면 나누기: 상태 줄·빠른 설정 = Fixed, 아래 카드 묶음 = Fluid(큰 화면에서 남는 높이를 나눠 가짐), 질문 카드 = Hybrid.
+// Home: 지금 시스템 상태를 한눈에 보고, 바로 질문하거나 평가로 가는 화면. 설정은 Pipelines의 [설정 바꾸기]에서 바꾼다.
+// 화면 나누기: 상태 줄 = Fixed, 아래 카드 묶음 = Fluid(큰 화면에서 남는 높이를 나눠 가짐), 질문 카드 = Hybrid.
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowUp, ArrowUpRight, ChartNoAxesCombined, CircleAlert, Database, LoaderCircle, Receipt, Settings2,
 } from 'lucide-react';
-import { api, Card, ColorIcon, pct, Toggle } from './ui';
-import { defaults, useCatalog, useSetup, type IndexInfo, type Spec, type StageSetting } from './setup';
+import { api, Card, ColorIcon, pct } from './ui';
+import { useSetup, type IndexInfo } from './setup';
 import type { AnswerSummary, EvalEntry, EvalJob } from './evaluations';
 
 type Summary = { questions: number; cost_usd: number; avg_ms: number | null; errors: number };
@@ -15,7 +15,6 @@ type Usage = { summary: { month: Summary }; daily: Day[]; recent: Recent[] };
 type EvalWithAnswer = EvalEntry & { answer?: AnswerSummary | null };
 
 const RECENT_KEY = 'playground-recent';   // Playground가 브라우저에 남기는 최근 질문 (playground.tsx와 같은 키)
-const SEC_PER_CHUNK = 3.4;                 // Mac CPU에서 리랭크 조각 1개에 걸린 평균 시간 (2026-11-10 측정)
 
 const usd = (v: number | null | undefined) => (v == null ? '—' : v === 0 ? '$0' : v < 0.0001 ? '$0.0001 미만' : `$${v.toFixed(4)}`);
 const sec = (ms: number | null | undefined) => (ms == null ? '—' : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}초`);
@@ -31,18 +30,12 @@ function embedderName(i: IndexInfo) {
 }
 const indexName = (i: IndexInfo) => `${chunkerName(i)} × ${embedderName(i)}`;
 
-// 켜면 쓸 기본 구현: 준비된 것 중 첫 번째. 없으면 이유를 보여 준다.
-function firstReady(specs: Spec[] | undefined): Spec | null { return specs?.find(s => s.status === 'ready' && s.available) ?? null; }
-function offReason(specs: Spec[] | undefined) { return specs?.find(s => s.status === 'ready')?.reason || '쓸 수 있는 구현이 없어요'; }
-
-export function Home({ openPipeline, openPlayground, openEvaluations, openUsage, openKnowledge }: {
-  openPipeline: () => void; openPlayground: (question?: string) => void; openEvaluations: () => void; openUsage: () => void; openKnowledge: () => void;
+export function Home({ openPipeline, openSetup, openPlayground, openEvaluations, openUsage, openKnowledge }: {
+  openPipeline: () => void; openSetup: () => void; openPlayground: (question?: string) => void; openEvaluations: () => void; openUsage: () => void; openKnowledge: () => void;
 }) {
   const s = useSetup();
-  const { catalog } = useCatalog();
   const [usage, setUsage] = useState<Usage | null>(null);
   const [evals, setEvals] = useState<EvalWithAnswer[] | null>(null);
-  const [error, setError] = useState('');
 
   const loadUsage = () => api<Usage>('/usage').then(setUsage).catch(() => setUsage(null));
   const loadEvals = () => api<EvalWithAnswer[]>('/evals').then(setEvals).catch(() => setEvals([]));
@@ -55,62 +48,19 @@ export function Home({ openPipeline, openPlayground, openEvaluations, openUsage,
   const last = evals?.[0] ?? null;
   const month = usage?.summary.month;
 
-  // 빠른 설정: 바꾸면 현재 설정에 바로 저장된다 (PUT /setup). 실패하면 이유를 위에 보여 준다.
-  const [saving, setSaving] = useState<string | null>(null);
-  async function change(key: string, body: Parameters<typeof s.update>[0]) {
-    setSaving(key); setError('');
-    const problem = await s.update(body);
-    if (problem) setError(problem);
-    setSaving(null);
-  }
-  function flip(stage: 'keyword' | 'reranker' | 'generator') {
-    const current = q?.[stage];
-    if (current) return change(stage, { [stage]: 'off' });
-    const spec = firstReady(catalog?.[stage]);
-    if (!spec) return setError(offReason(catalog?.[stage]));
-    return change(stage, { [stage]: { id: spec.id, params: defaults(spec) } });
-  }
-  function setSources(n: '3' | '5') {
-    const g = q?.generator;
-    if (!g || g.params.sources === n) return;
-    void change('sources', { generator: { ...g, params: { ...g.params, sources: n } } });
-  }
-  const rerankMinutes = (r: StageSetting | null | undefined) => {
-    const n = Number(r?.params.candidates ?? catalog?.reranker.find(x => x.status === 'ready')?.params.find(p => p.name === 'candidates')?.default ?? 50);
-    return Math.max(1, Math.round(n * SEC_PER_CHUNK / 60));
-  };
-
   return <div className="home">
-    {(error || s.error) && <p className="home-error"><CircleAlert size={14} />{error || `설정을 불러오지 못했어요 (${s.error})`}</p>}
+    {s.error && <p className="home-error"><CircleAlert size={14} />설정을 불러오지 못했어요 ({s.error})</p>}
 
     {/* 1. 상태 줄 (Fixed) */}
     <section className="home-status">
-      <StatusTile icon={Settings2} color="lilac" onClick={openPipeline} title={setup ? indexName(setup.index) : '불러오는 중…'}
-        badge={setup?.index.external ? 'External' : undefined} note="현재 설정 · Pipeline에서 변경" />
+      <StatusTile icon={Settings2} color="lilac" onClick={openSetup} title={setup ? indexName(setup.index) : '불러오는 중…'}
+        badge={setup?.index.external ? 'External' : undefined} note="현재 설정 · 눌러서 바꾸기" />
       <StatusTile icon={Database} color="lime" onClick={openKnowledge} title={setup ? `문서 ${docs}개 · 조각 ${setup.index.chunks}개` : '—'}
         note={`색인 ${s.indexes.length}개 · ${stale ? `뒤처진 문서 ${stale}개` : '뒤처진 문서 없음'}`} />
       <StatusTile icon={ChartNoAxesCombined} color="blue" onClick={openEvaluations} title={last ? `1등으로 찾음 ${pct(last.summary['recall@1'])}` : evals ? '평가 기록 없음' : '—'}
         note={last ? `최근 평가 · ${day(last.created_at)} · 질문 ${last.summary.questions}개` : '아래에서 평가를 돌려 보세요'} />
       <StatusTile icon={Receipt} color="peach" onClick={openUsage} title={month ? `이번 달 질문 ${month.questions}개 · ${usd(month.cost_usd)}` : '—'}
         note={month ? `평균 ${sec(month.avg_ms)} · ${month.errors ? `오류 ${month.errors}개` : '오류 없음'}` : '사용 기록을 불러오지 못했어요'} />
-    </section>
-
-    {/* 2. 빠른 설정 (Fixed) */}
-    <section className="home-quick" aria-label="빠른 설정">
-      <QuickCard title="키워드 검색" on={!!q?.keyword} busy={saving === 'keyword'} disabled={!q || !catalog} toggle={() => flip('keyword')}
-        note="정확한 단어·숫자(포트, 서버 이름)에 강해져요. 비용 없음." />
-      <QuickCard title="리랭크" on={!!q?.reranker} busy={saving === 'reranker'} disabled={!q || !catalog} toggle={() => flip('reranker')}
-        note={`켜면 질문 하나에 약 ${rerankMinutes(q?.reranker)}분 (Mac CPU)`} warn />
-      <QuickCard title="답변 생성" on={!!q?.generator} busy={saving === 'generator'} disabled={!q || !catalog} toggle={() => flip('generator')}
-        note={q?.generator ? `${q.generator.params.model ?? q.generator_label} · 질문당 약 $0.0001` : '끄면 근거 조각만 보여 줘요'} />
-      <div className="home-qs">
-        <div className="home-qs-head"><h3>보낼 근거</h3>
-          <span className="home-seg" role="radiogroup" aria-label="보낼 근거 수">
-            {(['3', '5'] as const).map(n => <button key={n} role="radio" aria-checked={q?.generator?.params.sources === n}
-              className={q?.generator?.params.sources === n ? 'is-on' : ''} disabled={!q?.generator || saving === 'sources'} onClick={() => setSources(n)}>{n}개</button>)}
-          </span></div>
-        <small>{q?.generator ? 'LLM에 보내는 상위 조각 수' : '답변 생성을 켜면 고를 수 있어요'}</small>
-      </div>
     </section>
 
     {/* 3·4. 카드 묶음 (Fluid) */}
@@ -132,13 +82,6 @@ function StatusTile({ icon, color, title, note, badge, onClick }: { icon: typeof
     <ColorIcon icon={icon} color={color} />
     <span className="home-tile-text"><b><span>{title}</span>{badge && <em>{badge}</em>}</b><small>{note}</small></span>
   </button>;
-}
-
-function QuickCard({ title, on, note, toggle, busy, disabled, warn }: { title: string; on: boolean; note: string; toggle: () => void; busy: boolean; disabled: boolean; warn?: boolean }) {
-  return <div className={`home-qs ${on ? 'is-on' : ''}`}>
-    <div className="home-qs-head"><h3>{title}</h3>{busy ? <LoaderCircle size={16} className="spin" /> : <Toggle checked={on} label={`${title} ${on ? '끄기' : '켜기'}`} onChange={toggle} disabled={disabled} />}</div>
-    <small className={warn && !on ? 'home-warn' : warn && on ? 'home-warn' : ''}>{note}</small>
-  </div>;
 }
 
 function CardHead({ title, link, onClick }: { title: string; link: string; onClick: () => void }) {
