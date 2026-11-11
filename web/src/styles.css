@@ -766,3 +766,4 @@ textarea.qs-input:focus,.qs-quote-input:focus{box-shadow:0 0 0 2px #c7b6ea}
 .qs-actions{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
 .qs-actions small{font-size:11px;color:var(--muted)}
 @media(max-width:760px){.qs-row2{grid-template-columns:minmax(0,1fr)}}
+.qs-count{font-style:normal;color:#a39dad}

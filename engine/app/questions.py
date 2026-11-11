@@ -21,7 +21,14 @@ from indexes import get_index
 from ingest import connect, load_env
 from search import load_setup
 
-TARGET = 60                                   # 목표 질문 수 (제안값, 사용자가 정하면 바꾼다)
+# 시험지 목표 (2026-11-11 사용자 결정). 화면에서 지금 값과 나란히 보여 준다.
+TARGET = {
+    "questions": 60,
+    "kinds": {"직접": 25, "표현 바꿈": 20, "답 없음": 15},
+    "uses": {"개선용": 45, "최종 평가용": 15},   # 최종 평가용은 사람이 쓴 질문 위주로
+    "per_document": 3,                            # 문서마다 최소 질문 수
+    "coverage": 0.6,                              # 근거가 닿은 조각 비율 (현재 색인 기준)
+}
 KINDS = ("직접", "표현 바꿈", "답 없음")
 USES = ("개선용", "최종 평가용")
 REQUIRED = ("id", "kind", "question", "evidence", "abstain", "use")

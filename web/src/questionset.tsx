@@ -13,7 +13,8 @@ type Question = {
 };
 type DocCover = { path: string; title: string; chunks: number; covered: number; questions: number; empty_chunks: number };
 type QuestionSetData = {
-  sha: string; path: string; target: number;
+  sha: string; path: string;
+  target: { questions: number; kinds: Record<string, number>; uses: Record<string, number>; per_document: number; coverage: number };
   index: { id: number; chunks: number; label: { chunker: string; embedder: string } };
   summary: { questions: number; kinds: Record<string, number>; uses: Record<string, number>; evidence: number; covered_chunks: number; errors: number; warnings: number; flagged: number };
   last_eval: { id: number; sha: string | null; created_at: string; same_set: boolean } | null;
@@ -75,6 +76,8 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
 
   if (!data) return <>{head}{error ? <p className="source-error">{error}</p> : <p className="muted">불러오는 중…</p>}</>;
   const s = data.summary;
+  const t = data.target;
+  const thin = data.documents.filter(d => d.questions < t.per_document).length;
   const counts: [Filter, string, number][] = [
     ['all', '전체', s.questions], ['직접', '직접', s.kinds['직접'] ?? 0], ['표현 바꿈', '표현 바꿈', s.kinds['표현 바꿈'] ?? 0],
     ['답 없음', '답 없음', s.kinds['답 없음'] ?? 0], ['final', '최종 평가용', s.uses['최종 평가용'] ?? 0], ['flagged', '문제 있음', s.flagged],
@@ -87,13 +90,14 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
 
     {/* 요약 줄 (Fixed) */}
     <section className="qs-sum">
-      <Card className="qs-tile" delay={0.02}><small>질문 수 · 목표 {data.target} (제안)</small><b>{s.questions}<small> / {data.target}</small></b>
-        <span className="qs-goal"><i style={{ width: `${Math.min(100, (s.questions / data.target) * 100)}%` }} /></span></Card>
-      <Card className="qs-tile" delay={0.05}><small>질문 종류</small>
+      <Card className="qs-tile" delay={0.02}><small>질문 수 · 목표 {t.questions}</small><b>{s.questions}<small> / {t.questions}</small></b>
+        <span className="qs-goal"><i style={{ width: `${Math.min(100, (s.questions / t.questions) * 100)}%` }} /></span></Card>
+      <Card className="qs-tile" delay={0.05}><small>질문 종류 · 지금 / 목표</small>
         <span className="qs-bar">{Object.entries(s.kinds).map(([k, n]) => <i key={k} style={{ width: `${(n / Math.max(1, s.questions)) * 100}%`, background: KIND_COLOR[k] }} />)}</span>
-        <span className="qs-legend">{Object.entries(s.kinds).map(([k, n]) => <span key={k}><i style={{ background: KIND_COLOR[k] }} />{k} {n}</span>)}</span></Card>
-      <Card className="qs-tile" delay={0.08}><small>용도</small><b>{s.uses['개선용'] ?? 0} · {s.uses['최종 평가용'] ?? 0}</b><small>개선용 · 최종 평가용</small></Card>
-      <Card className="qs-tile" delay={0.11}><small>근거가 닿은 조각</small><b>{s.covered_chunks}<small> / {data.index.chunks} 조각</small></b>
+        <span className="qs-legend">{Object.entries(s.kinds).map(([k, n]) => <span key={k}><i style={{ background: KIND_COLOR[k] }} />{k} {n}/{t.kinds[k] ?? '—'}</span>)}</span></Card>
+      <Card className="qs-tile" delay={0.08}><small>용도 · 지금 / 목표</small><b>{s.uses['개선용'] ?? 0}<small>/{t.uses['개선용']}</small> · {s.uses['최종 평가용'] ?? 0}<small>/{t.uses['최종 평가용']}</small></b><small>개선용 · 최종 평가용</small></Card>
+      <Card className="qs-tile" delay={0.11}><small>근거가 닿은 조각 · 목표 {Math.round(t.coverage * 100)}%</small><b>{s.covered_chunks}<small> / {data.index.chunks} 조각</small></b>
+        <span className="qs-goal"><i style={{ width: `${Math.min(100, (s.covered_chunks / Math.max(1, data.index.chunks)) / t.coverage * 100)}%` }} /></span>
         <small>{Math.round((s.covered_chunks / Math.max(1, data.index.chunks)) * 100)}% · 현재 색인 기준</small></Card>
       <Card className="qs-tile" delay={0.14}><small>자동 점검</small>
         {s.errors || s.warnings
@@ -106,11 +110,11 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
     <section className="qs-body">
       <div className="qs-left">
         <Card className="qs-card" delay={0.16}>
-          <div className="qs-card-head"><h2>문서별로 고른가</h2><small>근거가 닿은 조각 / 전체 조각 · 질문이 적은 문서가 위</small></div>
+          <div className="qs-card-head"><h2>문서별로 고른가</h2><small>문서마다 최소 {t.per_document}문제 · {thin ? `부족한 문서 ${thin}개` : '모두 채움'} · 오른쪽은 근거가 닿은 조각 / 전체</small></div>
           <div className="qs-cover">{data.documents.map(d => <React.Fragment key={d.path}>
-            <span className={d.questions === 0 ? 'qs-low' : ''} title={`${d.path} · ${d.title}`}>{d.path.includes('/') && <em className="qs-dir">{d.path.slice(0, d.path.lastIndexOf('/') + 1)}</em>}{file(d.path)}</span>
+            <span className={d.questions < t.per_document ? 'qs-low' : ''} title={`${d.path} · ${d.title} · 질문 ${d.questions}개`}>{d.path.includes('/') && <em className="qs-dir">{d.path.slice(0, d.path.lastIndexOf('/') + 1)}</em>}{file(d.path)}<em className="qs-count"> · {d.questions}문제</em></span>
             <span className="qs-goal"><i style={{ width: `${d.chunks ? (d.covered / d.chunks) * 100 : 0}%` }} /></span>
-            <small className={d.questions === 0 ? 'qs-low' : ''}>{d.covered} / {d.chunks}</small>
+            <small className={d.questions < t.per_document ? 'qs-low' : ''}>{d.covered} / {d.chunks}</small>
           </React.Fragment>)}</div>
         </Card>
 
