@@ -3,10 +3,10 @@ import { createRoot } from 'react-dom/client';
 import { AnimatePresence, motion, MotionConfig, useReducedMotion } from 'motion/react';
 import {
   ArrowLeftRight, Receipt, ArrowRight, ArrowUpRight, Bell, BookOpen, Box, Check, CheckCheck,
-  ChevronDown, ChevronRight, CircleAlert, Clock3, Database, FileText, Folder, LoaderCircle,
-  GitBranch, Home, Layers3, Maximize2, MessageSquare, Pause, Play,
-  Plus, Search, Settings2, ShieldCheck, SkipBack, SkipForward, SlidersHorizontal, TextSearch,
-  Sparkles, Trash2, Zap, ChartNoAxesCombined,
+  ChevronDown, CircleAlert, Clock3, Database, FileText, Folder, LoaderCircle,
+  GitBranch, Home, Layers3, Maximize2, MessageSquare, Play,
+  Plus, Search, Settings2, ShieldCheck, SlidersHorizontal, TextSearch,
+  Sparkles, Zap, ChartNoAxesCombined,
   type LucideIcon,
 } from 'lucide-react';
 import './styles.css';
@@ -15,12 +15,11 @@ import { Evaluations } from './evaluations';
 import { Compare } from './compare';
 import { Playground, type DocTarget } from './playground';
 import { UsagePage } from './usage';
+import { Home as HomePage } from './home';
 import { SetupBar, StagePanel, useCatalog, useSetup, type BuildResponse, type IndexInfo, type PanelStage } from './setup';
 
-type Page = 'home' | 'knowledge' | 'pipeline' | 'playground' | 'compare' | 'evaluations' | 'runs' | 'usage' | 'conversations' | 'settings';
+type Page = 'home' | 'knowledge' | 'pipeline' | 'playground' | 'compare' | 'evaluations' | 'runs' | 'usage' | 'settings';
 type Collection = { id: number; name: string; documents: number; color: string };
-type Chat = { id: number; title: string; prompt: string };
-type Run = { id: number; title: string; status: string; time: string };
 type PreviewSettings = { name: string; endpoint: string };
 type DialogState = { type: 'create' | 'search' | 'node' | 'run' | 'notifications'; value?: string } | null;
 const pages: { id: Page; label: string; icon: LucideIcon }[] = [
@@ -32,7 +31,6 @@ const pages: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'evaluations', label: 'Evaluations', icon: ChartNoAxesCombined },
   { id: 'runs', label: 'Run history', icon: Clock3 },
   { id: 'usage', label: '사용 기록', icon: Receipt },
-  { id: 'conversations', label: 'Conversations', icon: BookOpen },
 ];
 const stages = [
   { name: 'Documents', detail: 'Knowledge source', icon: FileText, color: 'lime' },
@@ -46,23 +44,17 @@ function App() {
   const [page, setPage] = useState<Page>('home');
   const [knowledgeView, setKnowledgeView] = useState<'all' | 'blocked'>('all');
   const [docTarget, setDocTarget] = useState<DocTarget | null>(null);   // Playground에서 연 조각
+  const [askFromHome, setAskFromHome] = useState<string | null>(null);   // Home에서 넣은 질문 → Playground가 바로 보냄
   const [settings, setSettings] = useState<PreviewSettings>({ name: 'Local workspace', endpoint: 'http://localhost:11434' });
   const [dialog, setDialog] = useState<DialogState>(null);
   const [toast, setToast] = useState('');
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [enabled, setEnabled] = useState([true, true, false, true]);
-  const [collections, setCollections] = useState<Collection[]>([
+  const [, setCollections] = useState<Collection[]>([
     { id: 1, name: 'Sample documents', documents: 12, color: 'lime' },
     { id: 2, name: 'Research notes', documents: 8, color: 'blue' },
     { id: 3, name: 'Product knowledge', documents: 4, color: 'purple' },
   ]);
-  const [chats, setChats] = useState<Chat[]>([]);
-  const [, setSelectedChat] = useState<Chat | null>(null);
-  const [runs, setRuns] = useState<Run[]>([{ id: 1, title: 'Retrieval pipeline', status: 'Completed', time: 'Sample run' }, { id: 2, title: 'Baseline evaluation', status: 'Completed', time: 'Sample run' }, { id: 3, title: 'Document indexing', status: 'Completed', time: 'Sample run' }]);
-  const [runStep, setRunStep] = useState(-1);
-  const [runState, setRunState] = useState<'idle' | 'running' | 'paused' | 'complete'>('idle');
-  const [score, setScore] = useState(86);
-  const [evaluating, setEvaluating] = useState(false);
   const reduced = useReducedMotion();
   const notify = (message: string) => setToast(message);
   function navigate(next: Page) { if (next === 'knowledge') setKnowledgeView('all'); setPage(next); setDialog(null); setWorkspaceOpen(false); window.scrollTo({ top: 0, behavior: 'instant' }); }
@@ -71,24 +63,6 @@ function App() {
     function handler(e: KeyboardEvent) { if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); setDialog({ type: 'search' }); } if (e.key === 'Escape') setWorkspaceOpen(false); }
     window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler);
   }, []);
-  useEffect(() => {
-    if (runState !== 'running') return;
-    const timer = setTimeout(() => {
-      if (runStep < 4) setRunStep(s => s + 1);
-      else { setRunState('complete'); setRuns(r => [{ id: Date.now(), title: 'Retrieval pipeline', status: 'Completed', time: 'Just now · demo' }, ...r]); notify('Sample run complete'); }
-    }, 850);
-    return () => clearTimeout(timer);
-  }, [runState, runStep]);
-  useEffect(() => {
-    if (!evaluating) return;
-    const timer = setTimeout(() => { setScore(92); setEvaluating(false); setRuns(r => [{ id: Date.now(), title: 'Baseline evaluation', status: 'Completed', time: 'Just now · demo' }, ...r]); notify('Sample evaluation complete'); }, 1700);
-    return () => clearTimeout(timer);
-  }, [evaluating]);
-  function run() {
-    if (runState === 'running') setRunState('paused');
-    else { if (runState !== 'paused') setRunStep(0); setRunState('running'); }
-  }
-  function evaluate() { setScore(0); setEvaluating(true); }
   function flip(index: number) { setEnabled(e => e.map((v, i) => i === index ? !v : v)); }
 
   return <MotionConfig reducedMotion="user" transition={spring}><div className="desktop-stage"><div className="app-shell">
@@ -101,38 +75,18 @@ function App() {
       <header className="topbar">
         <div className="workspace-container"><button className="workspace-button" aria-expanded={workspaceOpen} onClick={() => setWorkspaceOpen(!workspaceOpen)}>My workspace <ChevronDown size={14} /></button><AnimatePresence>{workspaceOpen && <motion.div className="workspace-menu" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}><span className="overline">WORKSPACE</span><button onClick={() => setWorkspaceOpen(false)}><span className="local-dot" />Local workspace <Check size={14} /></button><small>UI preview · Sample data</small></motion.div>}</AnimatePresence></div>
         <nav className="top-nav" aria-label="Workspace sections">{([{ id: 'knowledge', label: 'Knowledge' }, { id: 'pipeline', label: 'Pipelines' }, { id: 'compare', label: '비교' }, { id: 'evaluations', label: 'Evaluations' }, { id: 'playground', label: 'Playground' }] as { id: Page; label: string }[]).map(item => <button key={item.id} className={page === item.id ? 'selected' : ''} onClick={() => navigate(item.id)}>{item.label}</button>)}</nav>
-        <div className="top-actions"><IconButton icon={Plus} label="Create knowledge base" onClick={() => setDialog({ type: 'create' })} /><IconButton icon={Search} label="Search workspace" onClick={() => setDialog({ type: 'search' })} /><IconButton icon={MessageSquare} label="Open conversations" onClick={() => navigate('conversations')} /><IconButton icon={Maximize2} label="Toggle full screen" onClick={() => { if (document.fullscreenElement) void document.exitFullscreen(); else void document.documentElement.requestFullscreen().catch(() => notify('Use your browser’s full-screen control')); }} /></div>
+        <div className="top-actions"><IconButton icon={Plus} label="Create knowledge base" onClick={() => setDialog({ type: 'create' })} /><IconButton icon={Search} label="Search workspace" onClick={() => setDialog({ type: 'search' })} /><IconButton icon={Maximize2} label="Toggle full screen" onClick={() => { if (document.fullscreenElement) void document.exitFullscreen(); else void document.documentElement.requestFullscreen().catch(() => notify('Use your browser’s full-screen control')); }} /></div>
       </header>
       <main className="content" id="main-content"><AnimatePresence mode="wait"><motion.div key={page} className={`page page-${page}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, y: reduced ? 0 : -8, filter: reduced ? 'none' : 'blur(5px)' }} transition={{ duration: 0.2 }}>
-        {page === 'home' && <>
-          <div className="status-row">
-            <Status icon={ShieldCheck} color="peach" title="Local workspace" subtitle="Private by design" delay={0.02} />
-            <Status icon={Database} color="lime" title="Knowledge" subtitle={`${collections.length} collections`} delay={0.07} />
-            <Status icon={Box} color="blue" title="Local models" subtitle="Not connected" badge="Demo" delay={0.12} />
-            <Status icon={ChartNoAxesCombined} color="lilac" title={`${score}%`} subtitle="Sample quality" badge="Sample" delay={0.17} />
-          </div>
-          <div className="section-heading"><h1>Favorites</h1><button className="text-button" onClick={() => navigate('pipeline')}>View pipeline <ArrowUpRight size={14} /></button></div>
-          <div className="quick-grid">{[{ name: 'Retrieval', icon: Search }, { name: 'Reranking', icon: Layers3 }, { name: 'Streaming', icon: Zap }, { name: 'Citations', icon: FileText }].map(({ name, icon: Icon }, i) => <Card key={name} className={`quick-card ${enabled[i] ? 'is-on' : ''}`} delay={0.14 + i * 0.06}><Icon size={19} strokeWidth={1.6} /><Toggle checked={enabled[i]} onChange={() => flip(i)} label={name} /><span>{name}</span></Card>)}</div>
-          <div className="widget-grid">
-            <Card className="score-card" delay={0.3}><div className="card-heading"><ColorIcon icon={ChartNoAxesCombined} color="peach" /><div><h2>Evaluation</h2><small>Sample quality</small></div><IconButton icon={ArrowUpRight} label="Open evaluations" onClick={() => navigate('evaluations')} /></div><Gauge score={score} evaluating={evaluating} /><div className="gauge-legend"><span><i />Faithfulness</span><strong>{score}%</strong></div><div className="widget-controls"><IconButton icon={Clock3} label="Evaluation history" onClick={() => navigate('runs')} /><button className="round-play" aria-label="Preview evaluation" disabled={evaluating} onClick={evaluate}>{evaluating ? <span className="spinner" /> : <Play size={15} fill="currentColor" />}</button><IconButton icon={SlidersHorizontal} label="Evaluation settings" onClick={() => navigate('evaluations')} /></div></Card>
-            <Card className="runner-card" delay={0.37}><div className="card-heading"><ColorIcon icon={GitBranch} color="purple" /><div><h2>Retrieval pipeline</h2><small>{runState === 'running' ? stages[Math.max(0, runStep)].name : runState === 'complete' ? 'Sample complete' : runState === 'paused' ? 'Paused' : 'Ready to preview'}</small></div><span className={`status-dot ${runState === 'running' ? 'pulsing' : ''}`} /></div><div className="pipeline-track">{stages.slice(0, 4).map((s, i) => <React.Fragment key={s.name}><motion.button aria-label={`Inspect ${s.name}`} className={`mini-node ${runStep >= i ? 'lit' : ''}`} onClick={() => setDialog({ type: 'node', value: s.name })} animate={{ y: runState === 'running' && runStep === i && !reduced ? [0, -6, 0] : 0 }} transition={{ duration: 0.6 }}><s.icon size={21} strokeWidth={1.5} /></motion.button>{i < 3 && <div className={`track-link ${runStep > i ? 'passed' : ''}`} />}</React.Fragment>)}</div><div className="runner-description"><span>Documents → Answer</span><span className="tag">Demo</span></div><div className="progress-row"><span>{runStep < 0 ? '0' : Math.min(runStep + 1, 5)} / 5</span><div className="progress-track"><motion.span animate={{ width: `${runStep < 0 ? 0 : (runStep + 1) * 20}%` }} transition={{ duration: 0.7 }} /></div><span>stages</span></div><div className="widget-controls"><IconButton icon={SkipBack} label="Reset pipeline preview" onClick={() => { setRunStep(-1); setRunState('idle'); }} /><button className="round-play" aria-label={runState === 'running' ? 'Pause pipeline preview' : 'Play pipeline preview'} onClick={run}>{runState === 'running' ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}</button><IconButton icon={SkipForward} label="Open pipeline" onClick={() => navigate('pipeline')} /></div></Card>
-            <Card className="retrieval-card" delay={0.44}><div className="card-heading"><div><h2>Knowledge space</h2><small>{collections.reduce((a, c) => a + c.documents, 0)} sample documents</small></div><span className="glass-tag">Preview</span></div><KnowledgeArt /><div className="retrieval-footer"><span>Explore your documents</span><button className="glass-button" aria-label="Explore knowledge base" onClick={() => navigate('knowledge')}><ArrowUpRight size={19} /></button></div></Card>
-          </div>
-          <div className="bottom-grid">
-            <Card delay={0.5}><div className="card-heading"><h2>Knowledge bases</h2><IconButton icon={ArrowUpRight} label="View all knowledge bases" onClick={() => navigate('knowledge')} /></div><div className="collection-mini-list">{collections.slice(0, 2).map(c => <button key={c.id} onClick={() => navigate('knowledge')}><ColorIcon icon={Folder} color={c.color} small /><span>{c.name}</span><small>{c.documents} docs</small><ChevronRight size={14} /></button>)}</div></Card>
-            <Card delay={0.56}><div className="card-heading"><ColorIcon icon={Clock3} color="neutral" small /><div><h2>Recent activity</h2><small>Sample runs</small></div><IconButton icon={ArrowUpRight} label="View all runs" onClick={() => navigate('runs')} /></div><div className="activity-mini"><span className="activity-line" /><CheckCheck size={16} /><div>{runs[0].title}<small>{runs[0].time}</small></div><span className="tiny-success">Completed</span></div></Card>
-            <Card className="playground-promo" delay={0.62}><div className="promo-orbit" /><span className="overline">PLAYGROUND</span><h2>Test your<br />retrieval.</h2><button onClick={() => { setSelectedChat(null); navigate('playground'); }}>Start a conversation <ArrowUpRight size={17} /></button></Card>
-          </div>
-          <div className="page-footer"><span><span className="local-dot" /> Local workspace</span><span>UI preview · Sample data</span></div>
-        </>}
+        {page === 'home' && <HomePage openPipeline={() => navigate('pipeline')} openEvaluations={() => navigate('evaluations')} openUsage={() => navigate('usage')}
+          openKnowledge={() => navigate('knowledge')} openPlayground={q => { setAskFromHome(q ?? null); navigate('playground'); }} />}
         {page === 'knowledge' && <Knowledge view={knowledgeView} target={docTarget} clearTarget={() => setDocTarget(null)} openPipeline={() => navigate('pipeline')} />}
         {page === 'pipeline' && <Pipeline enabled={enabled} flip={flip} openKnowledge={() => { navigate('knowledge'); setKnowledgeView('blocked'); }} />}
-        {page === 'playground' && <Playground openPipeline={() => navigate('pipeline')} openKnowledge={t => { navigate('knowledge'); setDocTarget(t); }} />}
+        {page === 'playground' && <Playground initialQuestion={askFromHome} consume={() => setAskFromHome(null)} openPipeline={() => navigate('pipeline')} openKnowledge={t => { navigate('knowledge'); setDocTarget(t); }} />}
         {page === 'compare' && <Compare />}
         {page === 'evaluations' && <Evaluations openPipeline={() => navigate('pipeline')} openCompare={() => navigate('compare')} />}
         {page === 'runs' && <Runs openPipeline={() => navigate('pipeline')} />}
         {page === 'usage' && <UsagePage openPlayground={() => navigate('playground')} />}
-        {page === 'conversations' && <Conversations chats={chats} open={chat => { setSelectedChat(chat); navigate('playground'); }} create={() => { setSelectedChat(null); navigate('playground'); }} remove={id => setChats(c => c.filter(chat => chat.id !== id))} />}
         {page === 'settings' && <Settings settings={settings} save={setSettings} notify={notify} />}
       </motion.div></AnimatePresence></main>
     </div>
@@ -146,16 +100,6 @@ function App() {
   </MotionConfig>;
 }
 
-function Status({ icon, color, title, subtitle, badge, delay }: { icon: LucideIcon; color: string; title: string; subtitle: string; badge?: string; delay: number }) {
-  return <Card className="status-chip" delay={delay}><ColorIcon icon={icon} color={color} /><div><strong>{title}</strong><small>{subtitle}</small></div>{badge && <span className={`status-badge ${badge === 'Sample' ? 'green' : ''}`}>{badge}</span>}</Card>;
-}
-function Gauge({ score, evaluating }: { score: number; evaluating: boolean }) {
-  const reduced = useReducedMotion();
-  return <div className="gauge"><svg viewBox="0 0 250 155" aria-hidden="true"><defs><linearGradient id="score-gradient" x1="0" y1="1" x2="1" y2="0"><stop stopColor="#89aafa" /><stop offset=".55" stopColor="#a68bf0" /><stop offset="1" stopColor="#d4acf1" /></linearGradient></defs><path className="gauge-track" d="M 31 126 A 94 94 0 0 1 219 126" /><motion.path className="gauge-value" d="M 31 126 A 94 94 0 0 1 219 126" initial={{ pathLength: 0 }} animate={{ pathLength: score / 100 }} transition={{ duration: reduced ? 0 : 1.5, delay: 0.2, ease: [0.22, 1, 0.36, 1] }} /></svg><div className="gauge-number"><AnimatePresence mode="wait"><motion.strong key={score} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>{score}<span>%</span></motion.strong></AnimatePresence><small>{evaluating ? 'Evaluating sample' : 'Overall score'}</small></div><span className="gauge-min">0</span><span className="gauge-max">100</span></div>;
-}
-function KnowledgeArt() {
-  return <div className="knowledge-art" aria-hidden="true"><div className="art-halo" /><svg className="art-lines" viewBox="0 0 400 240"><path d="M75 65L200 120L310 55M200 120L94 195M200 120L320 182M75 65L310 55L320 182L94 195Z" /></svg><div className="art-tile tile-one"><FileText /></div><div className="art-tile tile-two"><Layers3 /></div><div className="art-tile tile-three"><Database /></div><div className="art-tile tile-four"><FileText /></div><div className="art-core"><span /><Box size={40} strokeWidth={1} /></div><i className="art-speck speck-one" /><i className="art-speck speck-two" /></div>;
-}
 type StoredDocument = {
   id: number; source_repo: string; source_path: string; source_commit: string; title: string;
   env: string | null; doc_type: string | null; verification: string; checked_at: string | null;
@@ -1078,11 +1022,6 @@ function Runs({ openPipeline }: { openPipeline: () => void }) {
 
     {open && <JobModal job={jobs?.find(j => j.id === open.id) ?? open} close={() => setOpen(null)} />}
   </>;
-}
-function Conversations({ chats, open, create, remove }: { chats: Chat[]; open: (chat: Chat) => void; create: () => void; remove: (id: number) => void }) {
-  const [query, setQuery] = useState('');
-  const shown = chats.filter(c => c.title.toLowerCase().includes(query.toLowerCase()));
-  return <><Heading title="Conversations"><button className="primary-button" onClick={create}><Plus size={16} />New conversation</button></Heading>{chats.length ? <><div className="table-toolbar"><label className="search-field"><Search size={16} /><input aria-label="Search conversations" placeholder="Search conversations" value={query} onChange={e => setQuery(e.target.value)} /></label><span className="muted">This session</span></div><div className="conversation-list">{shown.map((chat, i) => <Card key={chat.id} delay={i * 0.04}><button className="conversation-open" onClick={() => open(chat)}><ColorIcon icon={MessageSquare} color="lilac" /><div><h3>{chat.title}</h3><small>Retrieval pipeline · Preview conversation</small></div><ArrowUpRight size={17} /></button><IconButton icon={Trash2} label={`Delete conversation ${chat.title}`} onClick={() => remove(chat.id)} /></Card>)}{!shown.length && <p className="muted">No matching conversations.</p>}</div></> : <Card className="empty-state"><div className="empty-orb"><MessageSquare size={29} strokeWidth={1.3} /></div><h2>Your conversations, together.</h2><p>Conversations from the playground will appear here.</p><button className="subtle-button" onClick={create}>Open playground <ArrowRight size={16} /></button></Card>}</>;
 }
 function Settings({ settings, save, notify }: { settings: PreviewSettings; save: (settings: PreviewSettings) => void; notify: (message: string) => void }) {
   const [name, setName] = useState(settings.name);

@@ -240,7 +240,8 @@ function Results({ run, openKnowledge }: { run: Run; openKnowledge: OpenDoc }) {
 
 // ---------- 페이지 ----------
 
-export function Playground({ openPipeline, openKnowledge }: { openPipeline: () => void; openKnowledge: OpenDoc }) {
+// initialQuestion: Home에서 넘겨받은 질문. 설정을 불러온 뒤 한 번만 보내고 consume()으로 비운다.
+export function Playground({ openPipeline, openKnowledge, initialQuestion, consume }: { openPipeline: () => void; openKnowledge: OpenDoc; initialQuestion?: string | null; consume?: () => void }) {
   const { setup } = useSetup();
   const { run, ask, stop } = useSearch();
   const [input, setInput] = useState('');
@@ -270,6 +271,12 @@ export function Playground({ openPipeline, openKnowledge }: { openPipeline: () =
     try { localStorage.setItem(RECENT, JSON.stringify(next)); } catch { /* storage unavailable */ }
     void ask(question, rerankSetting ? mode : 'off');
   }
+
+  useEffect(() => {
+    if (!initialQuestion || !setup) return;
+    consume?.();
+    submit(initialQuestion);
+  }, [initialQuestion, setup]);
 
   const minutes = rerankSetting ? Math.max(1, Math.round(Number(rerankSetting.params.candidates) * SEC_PER_CHUNK / 60)) : 0;
   return <>

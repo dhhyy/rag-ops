@@ -71,7 +71,7 @@ export function useSetup() {
   }
   return {
     setup, saved, indexes, error, reload,
-    update: (body: { index_id?: number; top_k?: number; reranker?: StageSetting | 'off'; generator?: StageSetting | 'off' }) => act('/setup', 'PUT', body),
+    update: (body: { index_id?: number; top_k?: number; reranker?: StageSetting | 'off'; generator?: StageSetting | 'off'; keyword?: StageSetting | 'off' }) => act('/setup', 'PUT', body),
     saveAs: (name: string) => act('/setups', 'POST', { name }),
     load: (id: number) => act(`/setups/${id}/load`, 'POST'),
     remove: (id: number) => act(`/setups/${id}`, 'DELETE'),

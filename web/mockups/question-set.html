@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>시험지 시안</title>
+<style>
+:root{--ink:#302f35;--muted:#7c7887;--faint:#a39dad;--card:#ffffffd9;--soft:#f6f4f9;--line:#ebe7f0;--accent:#9b81d3;--accent-ink:#6f53ad;--dark:#303034;--ok:#6f9f4c;--warn:#b0623a;
+  font-family:'DM Sans',-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Segoe UI',sans-serif;color:var(--ink);font-size:13px;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(125deg,#edeaf5 0%,#efedf3 55%,#efedf1 100%);min-height:100vh}
+h1,h2,h3,p{margin:0}button,input,select,textarea{font:inherit;color:inherit}button{border:0;cursor:pointer;background:none}
+small{font-size:11px;color:var(--muted);line-height:1.5}
+
+.note{position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:9px 16px;background:#302f35;color:#fff;font-size:11px}
+.note b{font-weight:500}.note .k{display:inline-flex;align-items:center;gap:5px;opacity:.85}.note .k i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.note button{margin-left:auto;background:#ffffff1f;color:#fff;padding:5px 10px;border-radius:12px;font-size:11px}
+.show [data-z]{outline:2px dashed;outline-offset:3px}.show [data-z=fixed]{outline-color:#e58a52}.show [data-z=fluid]{outline-color:#5f8be8}.show [data-z=hybrid]{outline-color:#8a5fd1}
+
+.shell{display:flex;gap:34px;padding:27px 30px 24px 22px;min-height:calc(100vh - 37px)}
+.rail{width:58px;flex:0 0 58px;border-radius:30px;background:#ffffffd4;display:flex;flex-direction:column;align-items:center;gap:14px;padding:18px 0}
+.rail i{width:34px;height:34px;border-radius:50%;background:var(--soft);display:block}.rail i.on{background:var(--dark)}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;gap:16px}
+.top{display:flex;align-items:center;gap:22px;height:40px}.top .ws{background:#fff;border-radius:20px;padding:9px 16px}.top span{color:#4a4651}.top .sel{color:var(--ink);font-weight:500}
+
+/* 제목과 탭 — Fixed */
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.head h1{font-size:21px;font-weight:500;letter-spacing:-.7px}.head p{color:var(--muted);font-size:12px;margin-top:4px}
+.tabs{display:inline-flex;padding:3px;border-radius:14px;background:#ffffffb3}
+.tabs span{padding:6px 14px;border-radius:11px;font-size:12px;color:var(--muted)}.tabs .on{background:#fff;color:var(--ink);box-shadow:0 1px 3px #0001}
+.tabs em{font-style:normal;font-size:10px;margin-left:4px;color:var(--faint)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:16px;font-size:12px;background:#fff}
+.btn.dark{background:var(--dark);color:#fff}.btn.sm{padding:5px 10px;font-size:11px}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+
+/* 요약 줄 — Fixed */
+.sum{display:grid;grid-template-columns:1.1fr 1.3fr 1fr 1fr 1fr;gap:12px}
+.tile{background:var(--card);border-radius:17px;padding:13px 15px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.tile b{font-size:18px;font-weight:500;letter-spacing:-.4px}.tile b small{font-size:12px;margin-left:3px}
+.bar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--soft)}.bar i{display:block}
+.legend{display:flex;gap:10px;flex-wrap:wrap;font-size:10px;color:var(--muted)}.legend i{display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:4px}
+.goal{height:6px;border-radius:3px;background:var(--soft);overflow:hidden}.goal i{display:block;height:100%;background:var(--accent)}
+.okc{color:var(--ok)}
+
+/* 본문 — Hybrid: 왼쪽 목록 Fluid + 오른쪽 편집 Fixed 420px */
+.body{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:14px;align-items:start}
+.left{display:flex;flex-direction:column;gap:14px;min-width:0}
+.card{background:var(--card);border-radius:17px;padding:17px 19px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.card-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}.card-head h2{font-size:14px;font-weight:500}
+
+.cover{display:grid;grid-template-columns:minmax(0,1fr) 120px 46px;gap:8px 12px;align-items:center;font-size:12px}
+.cover span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.cover small{text-align:right}
+.cover .goal i{background:#c7b6ea}.cover .low{color:var(--warn)}
+
+.filters{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.chip{padding:5px 10px;border-radius:12px;background:var(--soft);font-size:11px;color:var(--muted)}.chip.on{background:var(--dark);color:#fff}
+.search{flex:1;min-width:140px;display:flex;align-items:center;background:var(--soft);border-radius:12px;padding:5px 10px;font-size:11px;color:var(--faint)}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+th{font-size:10px;font-weight:400;color:var(--faint);text-align:left;padding:0 6px 6px}
+td{padding:9px 6px;border-top:1px solid var(--line);font-size:12px;vertical-align:top}
+td.q{overflow:hidden}td.q div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}td.q small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+tr.sel td{background:#f3eefb}tr.sel td:first-child{border-radius:10px 0 0 10px}tr.sel td:last-child{border-radius:0 10px 10px 0}
+.pill{display:inline-block;padding:2px 8px;border-radius:9px;font-size:10px;background:var(--soft);color:var(--muted);white-space:nowrap}
+.pill.direct{background:#eef3d0;color:#6c7420}.pill.para{background:#e3eafd;color:#4d63a8}.pill.none{background:#fde7d9;color:var(--warn)}.pill.final{background:#efe2fa;color:var(--accent-ink)}
+.st{font-size:11px;white-space:nowrap}.st.ok{color:var(--ok)}.st.warn{color:var(--warn)}
+.col-kind{width:84px}.col-use{width:72px}.col-ev{width:50px}.col-st{width:92px}
+
+/* 초안 검토 */
+.draft{border:1px solid var(--line);border-radius:14px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;background:#fff}
+.draft-head{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center}
+.draft p{font-size:12px;line-height:1.6}.draft p b{font-weight:500}
+.quote{background:#faf6d9;border-radius:6px;padding:1px 3px}
+.src{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.check{font-size:11px;display:flex;gap:10px;flex-wrap:wrap}.check span::before{content:"✓ ";color:var(--ok)}.check span.w::before{content:"! ";color:var(--warn)}.check span.w{color:var(--warn)}
+.draft .actions{justify-content:flex-end}
+
+/* 편집 패널 */
+.editor{position:sticky;top:52px}
+.field{display:flex;flex-direction:column;gap:5px}.field label{font-size:11px;color:var(--muted)}
+.input{background:var(--soft);border-radius:11px;padding:9px 11px;font-size:12px;line-height:1.6}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.seg{display:inline-flex;background:var(--soft);border-radius:11px;padding:2px}.seg span{padding:4px 10px;border-radius:9px;font-size:11px;color:var(--muted)}.seg .on{background:#fff;color:var(--ink);box-shadow:0 1px 3px #0001}
+.ev{border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:5px;background:#fff}
+.ev .path{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ev .qt{font-size:12px;line-height:1.6}
+.ev .ok{font-size:10px;color:var(--ok)}
+.add-ev{border:1px dashed #d8d1e3;border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.hit{font-size:11px;line-height:1.6;padding:6px 8px;border-radius:8px;background:var(--soft)}.hit mark{background:#faf0a8;border-radius:3px}
+.foot{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:12px}
+
+@media(max-width:1200px){.sum{grid-template-columns:repeat(3,minmax(0,1fr))}.body{grid-template-columns:minmax(0,1fr)}.editor{position:static}}
+@media(max-width:760px){.shell{padding:15px 15px 20px 10px;gap:13px}.rail{width:44px;flex-basis:44px}.top span{display:none}
+  .sum{grid-template-columns:repeat(2,minmax(0,1fr))}.cover{grid-template-columns:minmax(0,1fr) 60px 40px}
+  .col-use,.col-ev,td.use,td.ev{display:none}.row2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="note"><b>시험지 시안</b><span>숫자와 질문은 지금 시험지(13문제)의 실제 값이에요. 초안 3개와 경고는 예시예요.</span>
+  <span class="k"><i style="background:#e58a52"></i>Fixed</span><span class="k"><i style="background:#5f8be8"></i>Fluid</span><span class="k"><i style="background:#8a5fd1"></i>Hybrid</span>
+  <button onclick="document.body.classList.toggle('show')">화면 나누기 보기</button></div>
+
+<div class="shell">
+  <nav class="rail"><i></i><i></i><i></i><i></i><i></i><i class="on"></i><i></i><i></i></nav>
+  <div class="main">
+    <div class="top"><span class="ws">My workspace ▾</span><span>Knowledge</span><span>Pipelines</span><span>비교</span><span class="sel">Evaluations</span><span>Playground</span></div>
+
+    <div class="head" data-z="fixed">
+      <div><h1>Evaluations</h1><p>평가에 쓰는 질문과 정답 근거를 관리해요. 저장하면 eval/questions.jsonl이 바뀌어요.</p></div>
+      <div class="actions"><span class="tabs"><span>평가 기록</span><span class="on">시험지<em>13</em></span></span>
+        <button class="btn">＋ 질문 추가</button><button class="btn dark">✦ 초안 만들기</button></div>
+    </div>
+
+    <!-- 요약: 얼마나 있고, 얼마나 고르게 있고, 문제는 없는지 -->
+    <section class="sum" data-z="fixed">
+      <div class="tile"><small>질문 수 · 목표 60</small><b>13<small>/ 60</small></b><div class="goal"><i style="width:22%"></i></div></div>
+      <div class="tile"><small>질문 종류</small>
+        <div class="bar"><i style="width:38%;background:#dfe88a"></i><i style="width:38%;background:#b5c6f8"></i><i style="width:24%;background:#f6c3a3"></i></div>
+        <div class="legend"><span><i style="background:#dfe88a"></i>직접 5</span><span><i style="background:#b5c6f8"></i>표현 바꿈 5</span><span><i style="background:#f6c3a3"></i>답 없음 3</span></div></div>
+      <div class="tile"><small>용도</small><b>10 · 3</b><small>개선용 · 최종 평가용</small></div>
+      <div class="tile"><small>조각에 닿은 질문</small><b>22<small>/ 76 조각</small></b><small>29% · 기본 색인 기준</small></div>
+      <div class="tile"><small>자동 점검</small><b class="okc">문제 없음</b><small>근거 24개 모두 원문·조각에서 찾음</small></div>
+    </section>
+
+    <section class="body" data-z="hybrid">
+      <div class="left" data-z="fluid">
+
+        <div class="card">
+          <div class="card-head"><h2>문서별로 고른가</h2><small>근거가 닿은 조각 / 전체 조각</small></div>
+          <div class="cover">
+            <span>network-infrastructure-article.md</span><div class="goal"><i style="width:27%"></i></div><small>9 / 33</small>
+            <span>learning/tls-certificates.md</span><div class="goal"><i style="width:31%"></i></div><small>4 / 13</small>
+            <span>network-service-expansion-and-troubleshooting.md</span><div class="goal"><i style="width:22%"></i></div><small>2 / 9</small>
+            <span>network-infrastructure-understanding.md</span><div class="goal"><i style="width:20%"></i></div><small>1 / 5</small>
+            <span>single-public-ip-production-development-https-routing.md</span><div class="goal"><i style="width:40%"></i></div><small>2 / 5</small>
+            <span>fortigate-ssh-port-forwarding.md</span><div class="goal"><i style="width:50%"></i></div><small>2 / 4</small>
+            <span>fortigate-https-host-routing.md</span><div class="goal"><i style="width:33%"></i></div><small>1 / 3</small>
+            <span>nginx-docker-request-routing.md</span><div class="goal"><i style="width:33%"></i></div><small>1 / 3</small>
+            <span class="low">articles/network/README.md</span><div class="goal"><i style="width:0"></i></div><small class="low">0 / 1</small>
+          </div>
+          <small>✦ 초안 만들기는 질문이 적은 문서의 조각부터 골라요.</small>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>초안 검토 <span class="pill">3개 기다림</span></h2><small>gpt-6-luna · 초안 3개 $0.0009 · 근거 문장은 원문과 글자 그대로 맞는지 자동 확인</small></div>
+          <div class="draft">
+            <div class="draft-head"><span class="src">learning/tls-certificates.md › 와일드카드 인증서 › DNS-01 검증</span><span class="pill direct">직접</span></div>
+            <p><b>질문</b> 와일드카드 인증서를 발급할 때 HTTP-01 대신 DNS-01 검증을 써야 하는 이유는?</p>
+            <p><b>답</b> 와일드카드 인증서는 DNS-01 검증으로만 발급되기 때문이다.</p>
+            <p><b>근거</b> <span class="quote">와일드카드 인증서는 DNS-01 방식으로만 검증할 수 있다</span></p>
+            <div class="check"><span>원문에 있음</span><span>조각 1개에 들어감</span><span>비슷한 질문 없음</span></div>
+            <div class="actions"><button class="btn sm">버리기</button><button class="btn sm">고쳐서 넣기</button><button class="btn sm dark">맞아요, 넣기</button></div>
+          </div>
+          <div class="draft">
+            <div class="draft-head"><span class="src">같은 조각 › 표현 바꾼 질문</span><span class="pill para">표현 바꿈</span></div>
+            <p><b>질문</b> *.example.com 같은 인증서는 왜 웹 파일로 확인을 못 하지?</p>
+            <p><b>답</b> 와일드카드 인증서는 DNS 레코드(DNS-01)로만 검증되기 때문이다.</p>
+            <div class="check"><span>원문에 있음</span><span>조각 1개에 들어감</span><span class="w">위 초안과 같은 근거 — 하나만 넣어도 돼요</span></div>
+            <div class="actions"><button class="btn sm">버리기</button><button class="btn sm">고쳐서 넣기</button><button class="btn sm dark">맞아요, 넣기</button></div>
+          </div>
+          <div class="draft">
+            <div class="draft-head"><span class="src">network-infrastructure-article.md › HTTPS와 인증서</span><span class="pill direct">직접</span></div>
+            <p><b>질문</b> 같은 443 포트인데 운영과 개발의 인증서 위치가 다른 이유는?</p>
+            <div class="check"><span>원문에 있음</span><span class="w">같은 문장이 다른 문서 1개에도 있어요 → [근거에 함께 추가]</span></div>
+            <div class="actions"><button class="btn sm">버리기</button><button class="btn sm">고쳐서 넣기</button><button class="btn sm dark">맞아요, 넣기</button></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>질문 13개</h2><small>누르면 오른쪽에서 고쳐요</small></div>
+          <div class="filters"><span class="chip on">전체 13</span><span class="chip">직접 5</span><span class="chip">표현 바꿈 5</span><span class="chip">답 없음 3</span><span class="chip">최종 평가용 3</span><span class="chip">경고 0</span><span class="search">질문·근거 검색</span></div>
+          <table>
+            <thead><tr><th>질문</th><th class="col-kind">종류</th><th class="col-use">용도</th><th class="col-ev">근거</th><th class="col-st">점검</th></tr></thead>
+            <tbody>
+              <tr><td class="q"><div>q01 · FortiGate가 HTTPS 요청의 Host를 보고 내부 서버를 고르려면 무엇이 필요한가?</div><small>fortigate-https-host-routing.md 외 1</small></td><td><span class="pill direct">직접</span></td><td class="use"><span class="pill">개선용</span></td><td class="ev">2</td><td><span class="st ok">✓ 통과</span></td></tr>
+              <tr class="sel"><td class="q"><div>q02 · SSH 접속 시 두 개발 서버를 외부에서 어떻게 구분하는가?</div><small>network-infrastructure-article.md 외 1</small></td><td><span class="pill direct">직접</span></td><td class="use"><span class="pill">개선용</span></td><td class="ev">2</td><td><span class="st ok">✓ 통과</span></td></tr>
+              <tr><td class="q"><div>q04 · …</div><small>최종 평가용은 결과를 보고 고치지 않아요</small></td><td><span class="pill direct">직접</span></td><td class="use"><span class="pill final">최종</span></td><td class="ev">3</td><td><span class="st ok">✓ 통과</span></td></tr>
+              <tr><td class="q"><div>q08 · (표현 바꿈) …</div><small>network-infrastructure-article.md 외 2</small></td><td><span class="pill para">표현 바꿈</span></td><td class="use"><span class="pill">개선용</span></td><td class="ev">3</td><td><span class="st ok">✓ 통과</span></td></tr>
+              <tr><td class="q"><div>q13 · 개발 서버 Nginx에 지금 HTTPS가 동작하나?</div><small>근거 없음 · 보류가 정답</small></td><td><span class="pill none">답 없음</span></td><td class="use"><span class="pill final">최종</span></td><td class="ev">—</td><td><span class="st ok">✓ 통과</span></td></tr>
+              <tr><td class="q"><div>예시 · quote가 원문과 한 글자 달라진 질문</div><small>문서를 고친 뒤 생길 수 있어요</small></td><td><span class="pill direct">직접</span></td><td class="use"><span class="pill">개선용</span></td><td class="ev">1</td><td><span class="st warn">! 원문에 없음</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 편집 패널: 폭 고정 -->
+      <aside class="card editor" data-z="fixed">
+        <div class="card-head"><h2>q02 고치기</h2><small>개선용 · 직접</small></div>
+        <div class="field"><label>질문</label><div class="input">SSH 접속 시 두 개발 서버를 외부에서 어떻게 구분하는가?</div></div>
+        <div class="field"><label>정답 (채점에는 안 쓰고, 사람이 볼 때와 답변 평가 참고용)</label><div class="input">외부 포트로 구분한다. PUBLIC_IP:2223은 DEV_SERVER_01_IP:22, PUBLIC_IP:2224는 DEV_SERVER_02_IP:22로 연결한다.</div></div>
+        <div class="row2">
+          <div class="field"><label>종류</label><span class="seg"><span class="on">직접</span><span>표현 바꿈</span><span>답 없음</span></span></div>
+          <div class="field"><label>용도</label><span class="seg"><span class="on">개선용</span><span>최종 평가용</span></span></div>
+        </div>
+        <div class="field"><label>정답 근거 2개 — 조각에 이 문장이 들어 있으면 정답</label>
+          <div class="ev"><span class="path">network-infrastructure-article.md › VIP: 외부 포트를 내부 서비스에 연결하기</span><span class="qt">“외부에서는 2223과 2224로 구분함”</span><span class="ok">✓ 원문에 있음 · 조각 #18에 들어감</span></div>
+          <div class="ev"><span class="path">fortigate-ssh-port-forwarding.md › VIP로 외부 포트와 내부 SSH 서비스를 연결한다</span><span class="qt">“사용자는 외부 포트 2223과 2224로 대상을 구분한다”</span><span class="ok">✓ 원문에 있음 · 조각 #41에 들어감</span></div>
+          <div class="add-ev"><small>근거 추가 — 문장을 검색해서 고르면 원문 그대로 들어가요</small>
+            <div class="input" style="color:#a39dad">2224</div>
+            <div class="hit">network-service-expansion…md › 접속 경로 정리 — “… 외부 포트 <mark>2224</mark>는 개발 서버 2의 22번으로 …” <b>[근거로 넣기]</b></div>
+          </div>
+        </div>
+        <div class="foot"><button class="btn sm">질문 지우기</button><span class="actions"><button class="btn sm">되돌리기</button><button class="btn sm dark">저장</button></span></div>
+      </aside>
+    </section>
+  </div>
+</div>
+</body>
+</html>
