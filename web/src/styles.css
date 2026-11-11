@@ -862,6 +862,7 @@ html.qs-drawer-open .app-shell{transform:scale(.965) translateX(-18px);transform
 .qs-ib{width:32px;height:32px;flex-shrink:0;display:grid;place-items:center;border-radius:11px;background:#f6f4f9;color:var(--muted);transition:background .2s,color .2s}
 .qs-ib:hover:not(:disabled){background:#ece8f2;color:var(--ink)}
 .qs-ib:disabled{opacity:.35;cursor:default}
+.qs-focus-top .qs-ib{background:#fff}
 .qs-drawer-body{flex:1;overflow:auto;overscroll-behavior:contain;padding:18px 26px 0}
 .qs-drawer-content{display:flex;flex-direction:column;gap:12px;min-height:100%}
 .qs-drawer-content .qs-wiz{flex:1;min-height:0}

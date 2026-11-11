@@ -485,7 +485,7 @@ function Summary({ q, seed, sha, indexLabel, onDirty, onSaved, onCancel }: {
     {error && <p className="qs-check error" role="alert"><CircleAlert size={13} />{error}</p>}
     {seed
       ? <div className="qs-wiz-foot">
-          <button className="qs-btn qs-btn-ghost" onClick={onCancel} disabled={busy}><ArrowLeft size={13} />취소</button>
+          <button className="qs-btn qs-btn-ghost" onClick={onCancel} disabled={busy}>취소</button>
           <button className="qs-btn qs-btn-dark" onClick={() => void save(draft)} disabled={busy || !draft.question.trim()}>{busy ? '넣는 중…' : '넣고 다음 초안'}</button>
         </div>
       : <div className="qs-foot">
@@ -708,9 +708,9 @@ function Review({ data, onChange, onClose }: { data: QuestionSetData; onChange: 
 
   return <section className="qs-focus">
     <div className="qs-focus-top">
-      <button className="qs-btn" onClick={close}><ArrowLeft size={13} />시험지로</button>
       <span className="qs-progress" role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={made.cards}><i style={{ width: `${total ? (made.cards / total) * 100 : 0}%` }} /></span>
       <span className="qs-focus-count">{g ? `${made.cards + 1} / ${total}장` : `${made.cards} / ${total}장`}</span>
+      <button className="qs-ib" aria-label="시험지로 닫기" title="시험지로 닫기 (Esc)" onClick={close}><X size={15} /></button>
     </div>
     {last && <p className="qs-toast" role="status"><span>{last.text}</span><button onClick={() => void undo()} disabled={busy}>되돌리기</button></p>}
     {error && <p className="qs-check error qs-focus-w" role="alert"><CircleAlert size={13} />{error}</p>}
@@ -730,7 +730,6 @@ function Review({ data, onChange, onClose }: { data: QuestionSetData; onChange: 
           : <div className="qs-one qs-done">
               <b>다 골랐어요</b>
               <small>넣음 {made.accepted} · 버림 {made.discarded} · 질문 {startCount} → {data.summary.questions}개</small>
-              <button className="qs-btn qs-btn-dark" onClick={onClose}>시험지로 돌아가기</button>
             </div>}
   </section>;
 }
