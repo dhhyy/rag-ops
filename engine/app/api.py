@@ -31,6 +31,7 @@ from psycopg.types.json import Jsonb
 import components as comp
 import evaluate
 import indexes
+import questions
 from ingest import STAGES, IngestError, connect, ingest_file, load_env
 from jobs import JOB_COLUMNS, fetch_job
 from search import answer, hit_dict, load_setup, query_defaults, retrieve_steps
@@ -695,6 +696,15 @@ def create_eval(req: EvalRequest) -> dict:
 def get_usage(service: str = "playground", days: int = Query(14, ge=1, le=90)) -> dict:
     env = load_env()
     return usage.overview(env, service, days) | {"grafana_url": env.get("GRAFANA_PUBLIC_URL", "http://localhost:3000")}
+
+
+# 평가 시험지와 점검 결과. index_id를 주지 않으면 현재 설정의 색인으로 조각 경계를 본다.
+@app.get("/questions")
+def get_questions(index_id: int | None = None) -> dict:
+    try:
+        return questions.check(index_id)
+    except IngestError as e:
+        raise HTTPException(404, str(e))
 
 
 @app.get("/evals")

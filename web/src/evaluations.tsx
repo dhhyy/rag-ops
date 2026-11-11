@@ -2,6 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { ArrowLeftRight, ChartNoAxesCombined, Check, ChevronDown, CircleAlert, Clock3, Layers3, LoaderCircle, Play } from 'lucide-react';
+import { QuestionSet } from './questionset';
 import { api, Card, ColorIcon, ease, Heading, MetricCard, pct, shortTime, useSize } from './ui';
 import { SetupChips, useSetup, type StageSetting } from './setup';
 
@@ -277,7 +278,21 @@ function AnswerBlock({ a }: { a: AnswerEval }) {
 
 type EvalFilter = 'all' | 'missed' | string;
 
+type EvalTab = 'runs' | 'questions';
+const TAB_KEY = 'evaluations-tab';
+
+// 평가 기록 / 시험지 두 탭. 고른 탭은 브라우저에 기억한다.
 export function Evaluations({ openPipeline, openCompare }: { openPipeline: () => void; openCompare: () => void }) {
+  const [tab, setTab] = useState<EvalTab>(() => { try { return localStorage.getItem(TAB_KEY) === 'questions' ? 'questions' : 'runs'; } catch { return 'runs'; } });
+  function pick(next: EvalTab) { setTab(next); try { localStorage.setItem(TAB_KEY, next); } catch { /* storage unavailable */ } }
+  const tabs = <span className="qs-tabs" role="tablist" aria-label="Evaluations 보기">
+    {([['runs', '평가 기록'], ['questions', '시험지']] as const).map(([id, label]) =>
+      <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? 'is-on' : ''} onClick={() => pick(id)}>{label}</button>)}
+  </span>;
+  return tab === 'questions' ? <QuestionSet tabs={tabs} /> : <EvalRuns openPipeline={openPipeline} openCompare={openCompare} tabs={tabs} />;
+}
+
+function EvalRuns({ openPipeline, openCompare, tabs }: { openPipeline: () => void; openCompare: () => void; tabs: React.ReactNode }) {
   const { list, runs, want, reload, error } = useEvalRuns();
   const { setup } = useSetup();
   const [runId, setRunId] = useState<number | null>(null);
@@ -321,7 +336,7 @@ export function Evaluations({ openPipeline, openCompare }: { openPipeline: () =>
   </Card>;
 
   if (list && !list.length) return <>
-    <Heading title="Evaluations" subtitle="Retrieval quality on the evaluation set" />
+    <Heading title="Evaluations" subtitle="Retrieval quality on the evaluation set">{tabs}</Heading>
     {runner}
     <Card className="empty-state"><ColorIcon icon={ChartNoAxesCombined} color="peach" /><h2>No evaluation runs yet</h2><p>Press “Evaluate current setup”. The result is stored and listed here.</p></Card>
   </>;
@@ -334,7 +349,7 @@ export function Evaluations({ openPipeline, openCompare }: { openPipeline: () =>
   const firstHits = run ? run.questions.filter(q => !q.abstain && q.rank === 1).length : 0;
 
   return <>
-    <Heading title="Evaluations" subtitle={run ? `Run #${run.meta.run_id} · ${run.meta.documents} documents · ${run.meta.chunks} chunks · ${run.meta.questions_file} @ ${run.meta.questions_sha256}` : 'Retrieval quality on the evaluation set'} />
+    <Heading title="Evaluations" subtitle={run ? `Run #${run.meta.run_id} · ${run.meta.documents} documents · ${run.meta.chunks} chunks · ${run.meta.questions_file} @ ${run.meta.questions_sha256}` : 'Retrieval quality on the evaluation set'}>{tabs}</Heading>
     {runner}
 
     <div className="eval-pickers">
