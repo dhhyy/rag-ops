@@ -53,13 +53,27 @@ class IngestRequest(BaseModel):
     doc_type: Literal["설정", "실행 결과", "해설", "장애 기록"] | None = None
     verification: Literal["확인", "추정", "미확인", "폐기"] = "미확인"
     checked_at: date | None = None
-    external_ok: bool = False
+    # 비우면 폴더로 정한다: EXTERNAL_OK_ROOTS 안의 문서만 허용, 나머지(회사 문서 등)는 불가
+    external_ok: bool | None = None
 
 
 # .env의 INGEST_ROOTS를 폴더 목록으로 읽는다. 값이 없으면 아무 파일도 읽지 못하게 빈 목록을 돌려준다.
 def allowed_roots() -> list[Path]:
     raw = load_env().get("INGEST_ROOTS", "")
     return [Path(p).expanduser() for p in raw.split(":") if p.strip()]
+
+
+# 외부 API로 보내도 되는 폴더 목록(.env의 EXTERNAL_OK_ROOTS). 비어 있으면 모든 문서가 기본 "불가"다.
+def external_ok_roots() -> list[Path]:
+    raw = load_env().get("EXTERNAL_OK_ROOTS", "")
+    return [Path(p).expanduser().resolve() for p in raw.split(":") if p.strip()]
+
+
+# 요청에 값이 없으면 문서 위치로 외부 전송 기본값을 정한다. 목록에 없는 폴더는 안전하게 "불가".
+def default_external(path: Path, given: bool | None, roots: list[Path]) -> bool:
+    if given is not None:
+        return given
+    return any(path.is_relative_to(root) for root in roots)
 
 
 # 웹에서 받은 경로가 허용 폴더 안의 파일인지 검사하고, 안전하게 정리한 경로를 돌려준다.
@@ -114,7 +128,7 @@ def create_document(req: IngestRequest) -> dict:
     try:
         return ingest_file(path, env_label=req.env, doc_type=req.doc_type, verification=req.verification,
                            checked_at=req.checked_at.isoformat() if req.checked_at else None,
-                           external_ok=req.external_ok)
+                           external_ok=default_external(path, req.external_ok, external_ok_roots()))
     except IngestError as e:
         raise HTTPException(422, str(e))
 
@@ -165,7 +179,8 @@ def create_jobs(req: IngestRequest) -> dict:
     except ValueError as e:
         raise HTTPException(400, str(e))
 
-    params = Jsonb(req.model_dump(mode="json", exclude={"path"}) | {"kind": "ingest"})
+    base_params = req.model_dump(mode="json", exclude={"path"}) | {"kind": "ingest"}
+    ok_roots = external_ok_roots()
     created = []
     with connect(load_env()) as conn:
         for path in files:
@@ -175,6 +190,7 @@ def create_jobs(req: IngestRequest) -> dict:
             if busy:
                 skipped.append({"path": str(path), "reason": f"같은 문서를 가져오는 작업이 진행 중입니다 (job {busy[0]})"})
                 continue
+            params = Jsonb(base_params | {"external_ok": default_external(path, req.external_ok, ok_roots)})
             job_id = conn.execute("INSERT INTO ingest_jobs (path, params) VALUES (%s, %s) RETURNING id",
                                   (str(path), params)).fetchone()[0]
             created.append({"job_id": job_id, "path": str(path)})
