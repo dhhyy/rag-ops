@@ -790,6 +790,11 @@ textarea.qs-input:focus,.qs-quote-input:focus{box-shadow:0 0 0 2px #c7b6ea}
 .qs-focus-count{font-size:12px;color:var(--muted);white-space:nowrap}
 .qs-toast{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:0;padding:9px 14px;border-radius:14px;background:#eef5e6;color:#4f7a33;font-size:12px}
 .qs-toast button{padding:0;background:transparent;color:#4f7a33;text-decoration:underline;font-size:12px}
+.qs-finished{margin-bottom:14px;padding:11px 14px;font-size:13px}
+.qs-finished>span:first-child{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.qs-finished b{font-weight:500}.qs-finished em{font-style:normal;opacity:.8}
+.qs-toast-act{display:flex;align-items:center;gap:12px;flex-shrink:0}
+.qs-toast .qs-toast-x{display:grid;place-items:center;text-decoration:none;opacity:.7}
 .qs-one{background:#fff;border-radius:24px;padding:26px 28px;display:flex;flex-direction:column;gap:18px;box-shadow:0 10px 30px #3a2f5a12;min-width:0}
 .qs-one p{margin:0}
 .qs-one-edit{gap:12px;padding:22px 24px}

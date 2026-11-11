@@ -45,6 +45,8 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
   const [dir, setDir] = useState(1);   // 서랍 안에서 다음(1)·이전(-1) 질문으로 넘어간 방향
   const [reviewing, setReviewing] = useState(false);   // 초안 하나씩 고르기 화면
   const [draftsVersion, setDraftsVersion] = useState(0);  // 바뀌면 초안 카드를 다시 불러온다
+  const [finished, setFinished] = useState<Finished | null>(null);   // 초안을 다 고르고 돌아왔을 때 보이는 안내
+  const [undoing, setUndoing] = useState(false);
   const dirty = useRef(false);   // 서랍에 저장하지 않은 변경이 있는지
   const leaveOk = () => !dirty.current || window.confirm('저장하지 않은 변경이 있어요. 버리고 넘어갈까요?');
 
@@ -111,8 +113,19 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
 
   if (!data) return <>{head}{error ? <p className="source-error">{error}</p> : <p className="muted">불러오는 중…</p>}</>;
   if (reviewing) return <>{head}
-    <Review data={data} onChange={setData} onClose={() => { setReviewing(false); setDraftsVersion(v => v + 1); }} />
+    <Review data={data} onChange={setData} onClose={done => { setReviewing(false); setFinished(done ?? null); setDraftsVersion(v => v + 1); }} />
   </>;
+
+  // 시험지로 돌아온 뒤 마지막 결정을 되돌리면, 그 카드를 다시 고를 수 있게 고르기 화면을 다시 연다.
+  async function undoFinished() {
+    if (!finished?.last || undoing || !data) return;
+    setUndoing(true);
+    try {
+      await undoDrafts(finished.last.draftIds, data.sha, setData);
+      setFinished(null); setReviewing(true);
+    } catch (e) { setError(message(e)); }
+    setUndoing(false);
+  }
 
   const s = data.summary;
   const t = data.target;
@@ -126,6 +139,13 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
   return <>
     {head}
     {error && <p className="source-error">{error}</p>}
+    <AnimatePresence>{finished && <motion.p className="qs-toast qs-finished" role="status"
+      initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+      <span><CircleCheck size={14} /><b>초안을 다 골랐어요</b> · 넣음 {finished.accepted} · 버림 {finished.discarded} · 질문 {finished.from} → {finished.to}개
+        {finished.last && <em> · 마지막: {finished.last.text}</em>}</span>
+      <span className="qs-toast-act">{finished.last && <button onClick={() => void undoFinished()} disabled={undoing}>마지막 되돌리기</button>}
+        <button className="qs-toast-x" aria-label="안내 닫기" onClick={() => setFinished(null)}><X size={13} /></button></span>
+    </motion.p>}</AnimatePresence>
     {data.last_eval && !data.last_eval.same_set && <p className="qs-banner"><CircleAlert size={14} />마지막 평가(#{data.last_eval.id}) 뒤에 시험지가 바뀌었어요. 기준점을 다시 잡으려면 평가 기록 탭에서 평가를 다시 돌려 주세요.</p>}
 
     {/* 요약 줄 (Fixed) */}
@@ -635,9 +655,20 @@ function groupDrafts(ds: DraftItem[]): Group[] {
 }
 type Pick = { d: DraftItem; question: string; answer: string };
 type Last = { draftIds: number[]; text: string };
+type Finished = { last: Last | null; accepted: number; discarded: number; from: number; to: number };
+
+// 초안 결정 되돌리기: 넣은 질문은 시험지에서 빼고 초안은 다시 '고를 것'으로. 해시가 바뀌므로 하나씩 차례로.
+async function undoDrafts(draftIds: number[], sha: string, onChange: (d: QuestionSetData) => void) {
+  let back = 0, kept = 0;
+  for (const id of [...draftIds].reverse()) {
+    const res = await api<{ questions: QuestionSetData | null }>(`/drafts/${id}/undo`, { method: 'POST', body: { sha } });
+    if (res.questions) { sha = res.questions.sha; onChange(res.questions); back++; } else kept++;
+  }
+  return { back, kept };
+}
 const toEditor = (p: Pick): Draft => ({ ...draftToEditor(p.d), question: p.question, answer: p.answer });
 
-function Review({ data, onChange, onClose }: { data: QuestionSetData; onChange: (d: QuestionSetData) => void; onClose: () => void }) {
+function Review({ data, onChange, onClose }: { data: QuestionSetData; onChange: (d: QuestionSetData) => void; onClose: (done?: Finished) => void }) {
   const [list, setList] = useState<DraftList | null>(null);
   const [made, setMade] = useState({ accepted: 0, discarded: 0, cards: 0 });   // 이번에 고른 수
   const [startCount] = useState(data.summary.questions);
@@ -655,6 +686,11 @@ function Review({ data, onChange, onClose }: { data: QuestionSetData; onChange: 
   const groups = useMemo(() => groupDrafts(list?.drafts ?? []), [list]);
   const g = groups[0] ?? null;
   const total = made.cards + groups.length;
+  // 이번에 하나라도 고른 뒤 남은 카드가 없으면 시험지로 돌아간다. 마지막 결정은 시험지 위 안내에서 되돌릴 수 있다.
+  useEffect(() => {
+    if (list && !g && made.cards > 0 && !busy)
+      onClose({ last, accepted: made.accepted, discarded: made.discarded, from: startCount, to: data.summary.questions });
+  }, [list, busy]);
 
   // 고른 질문은 넣고, 나머지는 버린다. 넣을 때마다 시험지 해시가 바뀌므로 다음 요청에는 새 해시를 쓴다.
   async function decide(put: Pick[], drop: DraftItem[]) {
@@ -681,12 +717,9 @@ function Review({ data, onChange, onClose }: { data: QuestionSetData; onChange: 
   async function undo() {
     if (!last || busy) return;
     setBusy(true); setError('');
-    let sha = data.sha, back = 0, kept = 0;
+    let back = 0, kept = 0;
     try {
-      for (const id of [...last.draftIds].reverse()) {
-        const res = await api<{ questions: QuestionSetData | null }>(`/drafts/${id}/undo`, { method: 'POST', body: { sha } });
-        if (res.questions) { sha = res.questions.sha; onChange(res.questions); back++; } else kept++;
-      }
+      ({ back, kept } = await undoDrafts(last.draftIds, data.sha, onChange));
       setLast(null);
     } catch (e) { setError(message(e)); }
     setMade(m => ({ accepted: m.accepted - back, discarded: m.discarded - kept, cards: Math.max(0, m.cards - 1) }));
@@ -728,8 +761,8 @@ function Review({ data, onChange, onClose }: { data: QuestionSetData; onChange: 
           ? <PairCard key={g.map(d => d.id).join('-')} group={g} busy={busy}
               onDecide={(put, drop) => void decide(put, drop)} onEditEvidence={p => setEditing(p)} />
           : <div className="qs-one qs-done">
-              <b>다 골랐어요</b>
-              <small>넣음 {made.accepted} · 버림 {made.discarded} · 질문 {startCount} → {data.summary.questions}개</small>
+              <b>고를 초안이 없어요</b>
+              <small>시험지에서 [초안 더 만들기]로 만들 수 있어요</small>
             </div>}
   </section>;
 }
