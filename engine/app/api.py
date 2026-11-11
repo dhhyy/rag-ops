@@ -707,6 +707,41 @@ def get_questions(index_id: int | None = None) -> dict:
         raise HTTPException(404, str(e))
 
 
+# 근거 문장 찾기: 원문에서 검색어가 든 문장. 고르면 그대로 quote로 들어간다.
+@app.get("/questions/evidence-search")
+def evidence_search(q: str = Query("", max_length=200)) -> list[dict]:
+    return questions.search_evidence(q)
+
+
+class QuestionSave(BaseModel):
+    sha: str                   # 불러올 때의 시험지 해시. 그사이 파일이 바뀌었으면 덮어쓰지 않는다
+    question: dict
+
+
+def _question_call(fn, *args) -> dict:
+    try:
+        return fn(*args)
+    except questions.QuestionError as e:
+        raise HTTPException(e.status, str(e))
+    except IngestError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/questions")
+def add_question(req: QuestionSave) -> dict:
+    return _question_call(questions.save, req.sha, req.question)
+
+
+@app.put("/questions/{qid}")
+def edit_question(qid: str, req: QuestionSave) -> dict:
+    return _question_call(questions.save, req.sha, req.question, qid)
+
+
+@app.delete("/questions/{qid}")
+def delete_question(qid: str, sha: str) -> dict:
+    return _question_call(questions.delete, sha, qid)
+
+
 @app.get("/evals")
 def list_evals(limit: int = Query(50, ge=1, le=200)) -> list[dict]:
     return evaluate.list_runs(limit)

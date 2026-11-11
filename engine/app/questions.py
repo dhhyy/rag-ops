@@ -1,6 +1,6 @@
 """평가 시험지(eval/questions.jsonl) 점검.
 
-웹의 Evaluations › 시험지 탭이 GET /questions로 부른다. 1단계라 읽기만 한다 (고치기는 다음 단계).
+웹의 Evaluations › 시험지 탭이 부른다. GET /questions로 점검하고, POST·PUT·DELETE로 파일을 고친다.
 
 점검은 "이 시험지로 채점하면 공정한가"를 본다. 채점 규칙은 evaluate.py와 같다:
 꺼낸 조각이 근거 문서이고, 근거 문장(quote)을 글자 그대로 포함하면 정답.
@@ -9,11 +9,14 @@
 """
 from __future__ import annotations
 
+import json
+import os
 import re
+import threading
 from collections import Counter, defaultdict
 
 import components as comp
-from evaluate import load_questions, norm
+from evaluate import QUESTIONS, load_questions, norm
 from indexes import get_index
 from ingest import connect, load_env
 from search import load_setup
@@ -34,8 +37,17 @@ def _similarity(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b) if a and b else 0.0
 
 
-def check(index_id: int | None = None) -> dict:
-    questions, sha = load_questions()
+class QuestionError(Exception):
+    """저장을 거절한 이유. status는 API 응답 코드로 쓴다 (404 없음, 409 그사이 바뀜, 422 점검 오류)."""
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
+def check(index_id: int | None = None, questions: list[dict] | None = None, sha: str | None = None) -> dict:
+    """시험지를 점검한다. questions를 주면 파일 대신 그 목록을 본다 (저장 전에 미리 점검할 때)."""
+    if questions is None:
+        questions, sha = load_questions()
     with connect(load_env()) as conn:
         index = get_index(conn, index_id) if index_id else load_setup(conn)["index"]
         docs = {path: {"id": did, "title": title, "text": norm(content) if content else None}
@@ -124,3 +136,130 @@ def check(index_id: int | None = None) -> dict:
         "last_eval": {"id": last[0], "sha": last[1], "created_at": last[2].isoformat(), "same_set": last[1] == sha} if last else None,
         "documents": documents, "questions": out,
     }
+
+
+# ── 고치기 ───────────────────────────────────────────────────────────────
+# 파일 하나를 통째로 다시 쓴다. 엔진 안에서 동시에 두 번 쓰지 않게 잠그고,
+# 읽을 때의 해시(sha)가 지금 파일과 다르면 (그사이 다른 곳에서 고쳤으면) 덮어쓰지 않는다.
+_lock = threading.Lock()
+FIELDS = ("id", "kind", "question", "answer", "evidence", "env", "abstain", "use")   # 파일에 쓰는 순서 (지금 파일과 같게)
+
+
+def _chunk_headings(conn) -> dict[str, list[tuple[str, str]]]:
+    """현재 색인의 조각을 문서별로: (정규화한 본문, 마지막 제목)."""
+    index = load_setup(conn)["index"]
+    out: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for path, content, heading in conn.execute(
+            """SELECT d.source_path, c.content, c.heading_path FROM chunks c JOIN documents d ON d.id = c.document_id
+               WHERE c.index_id = %s ORDER BY d.source_path, c.chunk_index""", (index["id"],)):
+        out[path].append((norm(content), heading.split(" > ")[-1]))
+    return out
+
+
+def _clean(raw: dict, qid: str, old: dict | None) -> dict:
+    """화면에서 온 값을 파일에 쓸 모양으로. 모르는 항목은 버리고, 제목이 빈 근거는 조각에서 채운다."""
+    kind = str(raw.get("kind", "")).strip()
+    evidence = [{"path": str(e.get("path", "")).strip(), "heading": str(e.get("heading") or "").strip(),
+                 "quote": " ".join(str(e.get("quote") or "").split())}
+                for e in raw.get("evidence") or []]
+    if any(not e["heading"] for e in evidence):
+        with connect(load_env()) as conn:
+            chunks = _chunk_headings(conn)
+        for e in evidence:
+            if not e["heading"]:
+                e["heading"] = next((h for text, h in chunks.get(e["path"], []) if e["quote"] and norm(e["quote"]) in text), "")
+    q = {"id": qid, "kind": kind, "question": str(raw.get("question", "")).strip(), "answer": str(raw.get("answer") or "").strip(),
+         "evidence": evidence, "env": str(raw.get("env") or (old or {}).get("env") or "혼합").strip(),
+         "abstain": kind == "답 없음",            # 답 없는 질문 = 문서에 답이 없어 보류가 정답
+         "use": str(raw.get("use", "")).strip()}
+    if not q["question"]:
+        raise QuestionError(422, "질문을 적어 주세요")
+    return {k: q[k] for k in FIELDS}
+
+
+def _next_id(questions: list[dict]) -> str:
+    nums = [int(m.group(1)) for q in questions if (m := re.fullmatch(r"q(\d+)", str(q.get("id", ""))))]
+    return f"q{max(nums, default=0) + 1:02d}"
+
+
+def _write(questions: list[dict]) -> None:
+    """임시 파일에 다 쓴 뒤 바꿔치기한다. 쓰다가 멈춰도 원래 파일은 그대로 남는다."""
+    tmp = QUESTIONS.with_name(f".{QUESTIONS.name}.tmp")
+    tmp.write_text("".join(json.dumps(q, ensure_ascii=False) + "\n" for q in questions), encoding="utf-8")
+    os.replace(tmp, QUESTIONS)
+
+
+def _load_expected(sha: str) -> list[dict]:
+    questions, current = load_questions()
+    if current != sha:
+        raise QuestionError(409, "그사이 시험지 파일이 바뀌었어요. [다시 점검]으로 새로 불러온 뒤 고쳐 주세요")
+    return questions
+
+
+def save(sha: str, raw: dict, qid: str | None = None) -> dict:
+    """질문 하나를 추가(qid 없음)하거나 고친다. 저장 전에 점검하고, 그 질문에 오류가 있으면 쓰지 않는다."""
+    with _lock:
+        questions = _load_expected(sha)
+        if qid is None:
+            new_id = _next_id(questions)
+            q = _clean(raw, new_id, None)
+            after = questions + [q]
+        else:
+            pos = next((i for i, x in enumerate(questions) if x.get("id") == qid), None)
+            if pos is None:
+                raise QuestionError(404, f"질문 {qid}가 없어요")
+            q = _clean(raw, qid, questions[pos])
+            after = questions[:pos] + [q] + questions[pos + 1:]
+        result = check(questions=after, sha=sha)
+        mine = next(x for x in result["questions"] if x["id"] == q["id"])
+        errors = [c for c in mine["checks"] if c["level"] == "error"]
+        if errors:
+            raise QuestionError(422, "저장하지 않았어요: " + " · ".join(
+                (f"근거 {c['evidence'] + 1}: " if c["evidence"] is not None else "") + c["message"] for c in errors))
+        _write(after)
+    return {"id": q["id"], **check()}
+
+
+def delete(sha: str, qid: str) -> dict:
+    with _lock:
+        questions = _load_expected(sha)
+        after = [q for q in questions if q.get("id") != qid]
+        if len(after) == len(questions):
+            raise QuestionError(404, f"질문 {qid}가 없어요")
+        _write(after)
+    return check()
+
+
+# ── 근거 문장 찾기 ─────────────────────────────────────────────────────────
+# 문서 원문에서 검색어가 든 문장을 돌려준다. 고르면 그 문장이 그대로 quote가 되어, 손으로 옮겨 적다 틀리는 일을 막는다.
+MARKER = re.compile(r"^\s*(?:#{1,6}|[-*+>]|\d+[.)])\s+")
+SENTENCE = re.compile(r"(?<=[.!?])\s+")
+
+
+def search_evidence(query: str, limit: int = 20) -> list[dict]:
+    words = norm(query).lower()
+    if len(words) < 2:
+        return []
+    out = []
+    with connect(load_env()) as conn:
+        chunks = _chunk_headings(conn)
+        docs = conn.execute("SELECT source_path, title, content FROM documents WHERE content IS NOT NULL ORDER BY source_path").fetchall()
+    for path, title, content in docs:
+        seen = set()
+        for line in content.splitlines():
+            text = norm(MARKER.sub("", line))
+            if words not in text.lower():
+                continue
+            # 긴 문단이면 검색어가 든 문장만. 검색어가 문장 경계를 넘으면 줄 전체를 쓴다.
+            parts = [p for p in SENTENCE.split(text) if words in p.lower()] or [text]
+            for part in parts:
+                part = part.strip("| ").strip()
+                if not part or part in seen:
+                    continue
+                seen.add(part)
+                inside = [h for t, h in chunks.get(path, []) if part in t]
+                out.append({"path": path, "title": title, "quote": part, "heading": inside[0] if inside else "",
+                            "in_chunk": bool(inside)})
+                if len(out) >= limit:
+                    return out
+    return out

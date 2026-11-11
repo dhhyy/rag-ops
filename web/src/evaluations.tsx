@@ -308,6 +308,13 @@ function EvalRuns({ openPipeline, openCompare, tabs }: { openPipeline: () => voi
 
   // Open on the latest run.
   useEffect(() => { if (list?.length && runId == null) setRunId(list[0].run_id); }, [list]);
+  // 마지막 평가 뒤에 시험지가 바뀌었는지. 바뀌었으면 숫자를 이전 기록과 바로 비교할 수 없다.
+  const [setChanged, setSetChanged] = useState<{ sha: string; old: string | null } | null>(null);
+  useEffect(() => {
+    api<{ sha: string; last_eval: { sha: string | null; same_set: boolean } | null }>('/questions')
+      .then(d => setSetChanged(d.last_eval && !d.last_eval.same_set ? { sha: d.sha, old: d.last_eval.sha } : null))
+      .catch(() => setSetChanged(null));
+  }, [list]);
   useEffect(() => { want(runId); }, [runId]);
 
   const run = runId != null ? runs[runId] : undefined;
@@ -351,6 +358,7 @@ function EvalRuns({ openPipeline, openCompare, tabs }: { openPipeline: () => voi
   return <>
     <Heading title="Evaluations" subtitle={run ? `Run #${run.meta.run_id} · ${run.meta.documents} documents · ${run.meta.chunks} chunks · ${run.meta.questions_file} @ ${run.meta.questions_sha256}` : 'Retrieval quality on the evaluation set'}>{tabs}</Heading>
     {runner}
+    {setChanged && <p className="qs-banner"><CircleAlert size={14} />마지막 평가 뒤에 시험지가 바뀌었어요 ({setChanged.old ?? '?'} → {setChanged.sha}). 이전 기록과 숫자를 바로 비교하지 말고, 위에서 평가를 다시 돌려 기준점을 새로 잡아 주세요.</p>}
 
     <div className="eval-pickers">
       <label className="eval-run-select"><span>Run</span>

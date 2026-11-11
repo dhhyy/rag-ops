@@ -738,3 +738,31 @@ button.cmp-row:hover{background:#faf8fd}
 @media(max-width:1200px){.qs-sum{grid-template-columns:repeat(3,minmax(0,1fr))}.qs-body{grid-template-columns:minmax(0,1fr)}.qs-detail-wrap{position:static}.qs-detail{max-height:none}}
 @media(max-width:760px){.qs-sum{grid-template-columns:repeat(2,minmax(0,1fr))}.qs-cover{grid-template-columns:minmax(0,1fr) 60px 40px}
   .qs-col-use,.qs-col-ev,.qs-dir{display:none}}
+/* 시험지 편집 패널 (2단계) */
+.qs-head-right{display:inline-flex;align-items:center;gap:10px}
+.qs-btn-dark{background:#303034;color:#fff}.qs-btn-bad{background:#c2463b;color:#fff}
+.qs-btn:disabled{opacity:.45;cursor:default}
+textarea.qs-input{width:100%;border:0;resize:vertical;font:inherit;font-size:12px;color:var(--ink);outline:none}
+textarea.qs-input:focus,.qs-quote-input:focus{box-shadow:0 0 0 2px #c7b6ea}
+.qs-row2{display:grid;grid-template-columns:auto auto;justify-content:start;gap:10px 14px}
+.qs-seg{display:inline-flex;align-self:flex-start;flex-wrap:wrap;padding:2px;border-radius:11px;background:#f6f4f9}
+.qs-seg button{padding:4px 10px;border-radius:9px;background:transparent;font-size:11px;color:var(--muted)}
+.qs-seg button.is-on{background:#fff;color:var(--ink);box-shadow:0 1px 3px #0000001a}
+.qs-ev-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.qs-x{flex-shrink:0;display:grid;place-items:center;width:22px;height:22px;border-radius:7px;background:transparent;color:#a39dad}
+.qs-x:hover{background:#f3f1f6;color:var(--ink)}
+.qs-quote-input{width:100%;padding:6px 8px;border:0;border-radius:8px;background:#f6f4f9;resize:vertical;font:inherit;font-size:12px;line-height:1.6;outline:none}
+.qs-ev-state.muted{color:#a39dad}
+.qs-add-ev{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px dashed #d8d1e3;border-radius:12px}
+.qs-add-ev>small{font-size:11px;line-height:1.5;color:var(--muted)}
+.qs-hits{display:flex;flex-direction:column;gap:6px;max-height:300px;overflow:auto}
+.qs-hit{display:flex;flex-direction:column;gap:3px;padding:7px 9px;border-radius:9px;background:#f6f4f9}
+.qs-hit mark{background:#faf0a8;border-radius:3px}
+.qs-hit-foot{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.qs-hit-foot small{font-size:10px}
+.qs-link{padding:0;margin-left:4px;background:transparent;font-size:11px;color:#6f53ad;white-space:nowrap}
+.qs-link:disabled{color:#a39dad;cursor:default}
+.qs-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;border-top:1px solid #ebe7f0;padding-top:12px}
+.qs-actions{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+.qs-actions small{font-size:11px;color:var(--muted)}
+@media(max-width:760px){.qs-row2{grid-template-columns:minmax(0,1fr)}}

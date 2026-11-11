@@ -89,8 +89,9 @@ services:
         # 문서 폴더를 Mac과 같은 경로로 읽기 전용 연결한다. 엔진의 경로 검사와 worker가 같은 경로를 본다.
         # INGEST_ROOTS에 폴더가 하나일 때만 이대로 동작한다. 여러 개면 줄을 나눠 적는다
         - ${INGEST_ROOTS}:${INGEST_ROOTS}:ro
-        # 평가 질문 파일(eval/questions.jsonl). 웹의 [현재 설정으로 평가]가 읽는다
-        - ./eval:/srv/eval:ro
+        # 평가 질문 파일(eval/questions.jsonl). 웹의 [현재 설정으로 평가]가 읽고, 시험지 탭에서 고치면 엔진이 쓴다
+        # (임시 파일 → 바꿔치기라서 파일이 아니라 폴더를 쓰기로 연결한다)
+        - ./eval:/srv/eval
       depends_on:
         db:
           condition: service_healthy
