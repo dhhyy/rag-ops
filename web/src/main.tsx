@@ -45,6 +45,7 @@ function App() {
   const [knowledgeView, setKnowledgeView] = useState<'all' | 'blocked'>('all');
   const [docTarget, setDocTarget] = useState<DocTarget | null>(null);   // Playground에서 연 조각
   const [askFromHome, setAskFromHome] = useState<string | null>(null);   // Home에서 넣은 질문 → Playground가 바로 보냄
+  const [callIngest, setCallIngest] = useState(false);   // [문서 넣기]로 왔으면 Pipeline의 경로 입력칸을 바로 연다
   const [settings, setSettings] = useState<PreviewSettings>({ name: 'Local workspace', endpoint: 'http://localhost:11434' });
   const [dialog, setDialog] = useState<DialogState>(null);
   const [toast, setToast] = useState('');
@@ -63,6 +64,7 @@ function App() {
     function handler(e: KeyboardEvent) { if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); setDialog({ type: 'search' }); } if (e.key === 'Escape') setWorkspaceOpen(false); }
     window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler);
   }, []);
+  const openIngest = () => { navigate('pipeline'); setCallIngest(true); };
   function flip(index: number) { setEnabled(e => e.map((v, i) => i === index ? !v : v)); }
 
   return <MotionConfig reducedMotion="user" transition={spring}><div className="desktop-stage"><div className="app-shell">
@@ -80,12 +82,12 @@ function App() {
       <main className="content" id="main-content"><AnimatePresence mode="wait"><motion.div key={page} className={`page page-${page}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, y: reduced ? 0 : -8, filter: reduced ? 'none' : 'blur(5px)' }} transition={{ duration: 0.2 }}>
         {page === 'home' && <HomePage openPipeline={() => navigate('pipeline')} openEvaluations={() => navigate('evaluations')} openUsage={() => navigate('usage')}
           openKnowledge={() => navigate('knowledge')} openPlayground={q => { setAskFromHome(q ?? null); navigate('playground'); }} />}
-        {page === 'knowledge' && <Knowledge view={knowledgeView} target={docTarget} clearTarget={() => setDocTarget(null)} openPipeline={() => navigate('pipeline')} />}
-        {page === 'pipeline' && <Pipeline enabled={enabled} flip={flip} openKnowledge={() => { navigate('knowledge'); setKnowledgeView('blocked'); }} />}
+        {page === 'knowledge' && <Knowledge view={knowledgeView} target={docTarget} clearTarget={() => setDocTarget(null)} openPipeline={openIngest} />}
+        {page === 'pipeline' && <Pipeline enabled={enabled} flip={flip} callIngest={callIngest} consumeIngest={() => setCallIngest(false)} openKnowledge={() => { navigate('knowledge'); setKnowledgeView('blocked'); }} />}
         {page === 'playground' && <Playground initialQuestion={askFromHome} consume={() => setAskFromHome(null)} openPipeline={() => navigate('pipeline')} openKnowledge={t => { navigate('knowledge'); setDocTarget(t); }} />}
         {page === 'compare' && <Compare />}
         {page === 'evaluations' && <Evaluations openPipeline={() => navigate('pipeline')} openCompare={() => navigate('compare')} />}
-        {page === 'runs' && <Runs openPipeline={() => navigate('pipeline')} />}
+        {page === 'runs' && <Runs openPipeline={openIngest} />}
         {page === 'usage' && <UsagePage openPlayground={() => navigate('playground')} />}
         {page === 'settings' && <Settings settings={settings} save={setSettings} notify={notify} />}
       </motion.div></AnimatePresence></main>
@@ -172,7 +174,7 @@ function Knowledge({ view, target, clearTarget, openPipeline }: { view: 'all' | 
 
   return <>
     <Heading title="Knowledge base" subtitle={docs ? `${docs.length} documents · ${totalChunks.toLocaleString()} chunks stored` : 'Documents stored by the engine'}>
-      <button className="primary-button" onClick={openPipeline}><Play size={15} />Ingest</button>
+      <button className="primary-button" onClick={openPipeline} title="Pipelines 화면의 경로 입력칸으로 가요">문서 넣기<ArrowRight size={15} /></button>
     </Heading>
 
     <div className="section-heading"><h2>Repositories</h2><span className="muted">{repos.length} total</span></div>
@@ -243,7 +245,7 @@ type Group = { id: GroupId; title: string; icon: LucideIcon; color: string; node
 const LAST_PATH_KEY = 'rag-ops:last-ingest-path';
 const ENV_OPTIONS = ['혼합', '운영', '개발', '샘플'];
 const DOC_TYPE_OPTIONS = ['해설', '설정', '실행 결과', '장애 기록'];
-const jobKind = (j: Job) => String(j.params?.kind ?? 'ingest') as 'ingest' | 'build' | 'eval';
+const jobKind = (j: Job) => String(j.params?.kind ?? 'ingest') as 'ingest' | 'build' | 'eval' | 'drafts';
 
 // The whole RAG flow in three groups. Indexing cards are engine stages; cards with settings open the stage panel.
 const groups: Group[] = [
@@ -686,7 +688,9 @@ function QueueStrip({ jobs, selected, select }: { jobs: Job[]; selected: number 
   </div>;
 }
 
-function Pipeline({ enabled, flip, openKnowledge }: { enabled: boolean[]; flip: (i: number) => void; openKnowledge: () => void }) {
+function Pipeline({ enabled, flip, callIngest, consumeIngest, openKnowledge }: {
+  enabled: boolean[]; flip: (i: number) => void; callIngest: boolean; consumeIngest: () => void; openKnowledge: () => void;
+}) {
   const { jobs, job, select, moments, offline, start, adopt } = useIngestQueue();
   const s = useSetup();
   const { catalog } = useCatalog();
@@ -698,6 +702,17 @@ function Pipeline({ enabled, flip, openKnowledge }: { enabled: boolean[]; flip: 
   const [submitting, setSubmitting] = useState(false);
   const [chunksOf, setChunksOf] = useState<{ doc: number; index?: number } | null>(null);
   const [panel, setPanel] = useState<{ group: GroupId; node: number } | null>(null);
+  // 다른 화면의 [문서 넣기]로 왔으면 경로 입력칸에 커서를 두고 잠깐 빛나게 한다 (화면 전환이 끝난 뒤).
+  const sourceInput = useRef<HTMLInputElement>(null);
+  const [called, setCalled] = useState(false);
+  // 화면이 처음 열릴 때 한 번만 본다. (callIngest를 지우면 값이 바뀌지만, 그때 타이머를 지우면 안 되므로 의존성에 넣지 않는다.)
+  useEffect(() => {
+    if (!callIngest) return;
+    consumeIngest();
+    const t1 = setTimeout(() => { sourceInput.current?.focus(); setCalled(true); }, 250);
+    const t2 = setTimeout(() => setCalled(false), 2000);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
   const [open, setOpen] = useState<Record<GroupId, boolean>>({ indexing: true, retrieval: true, generation: false });
   const queueActive = jobs.some(isActive);
   const busy = submitting || queueActive;
@@ -790,10 +805,10 @@ function Pipeline({ enabled, flip, openKnowledge }: { enabled: boolean[]; flip: 
 
     <SetupBar s={s} onBuild={followBuild} />
 
-    <Card className="source-card">
+    <Card className={`source-card ${called ? 'is-called' : ''}`}>
       <form className="source-form" onSubmit={submit}>
         <ColorIcon icon={FileText} color="lime" small />
-        <input className="source-input" aria-label="Document or folder path" placeholder="/path/to/docs-repo — a folder or one .md file" value={path} onChange={e => setPath(e.target.value)} spellCheck={false} />
+        <input ref={sourceInput} className="source-input" aria-label="Document or folder path" placeholder="/path/to/docs-repo — a folder or one .md file" value={path} onChange={e => setPath(e.target.value)} spellCheck={false} />
         <select className="chip-select" aria-label="Environment" value={env} onChange={e => setEnv(e.target.value)}>{ENV_OPTIONS.map(o => <option key={o}>{o}</option>)}</select>
         <select className="chip-select" aria-label="Document type" value={docType} onChange={e => setDocType(e.target.value)}>{DOC_TYPE_OPTIONS.map(o => <option key={o}>{o}</option>)}</select>
         <button className="primary-button" disabled={busy || !path.trim()}>
@@ -898,11 +913,13 @@ const jobTone: Record<JobStatus, { label: string; color: string }> = {
   done: { label: 'Done', color: 'lime' }, failed: { label: 'Failed', color: 'peach' },
 };
 const fileName = (path: string) => path.split('/').pop() ?? path;
-const kindLabel = (j: Job) => jobKind(j) === 'build' ? `Index #${String(j.params?.index_id ?? '?')}` : jobKind(j) === 'eval' ? 'Evaluation' : 'Ingest';
+const kindLabel = (j: Job) => jobKind(j) === 'build' ? `Index #${String(j.params?.index_id ?? '?')}` : jobKind(j) === 'eval' ? 'Evaluation' : jobKind(j) === 'drafts' ? 'Question drafts' : 'Ingest';
 // What a finished or stopped job came to, in one short phrase.
 function jobOutcome(j: Job) {
   if (j.result?.status === 'evaluated') return `R@1 ${j.result.summary?.['recall@1'] != null ? Math.round(j.result.summary['recall@1'] * 100) + '%' : '—'} · run #${j.result.eval_run_id}`;
-  if (j.result) return resultTone[j.result.status].label;
+  // 질문 초안 작업은 결과 모양이 달라서(status 없이 made·cost_usd) 따로 적는다.
+  if (jobKind(j) === 'drafts' && j.result) { const d = j.result as unknown as { made?: number; cost_usd?: number }; return `${d.made ?? 0} drafts · $${(d.cost_usd ?? 0).toFixed(4)}`; }
+  if (j.result) return resultTone[j.result.status]?.label ?? 'Done';
   if (j.status === 'failed') return `Stopped at ${j.stage ? stageLabels[j.stage] ?? j.stage : 'start'}`;
   if (j.stage) return j.progress_total && jobKind(j) === 'eval' ? `${stageLabels[j.stage]} ${j.progress_done ?? 0} / ${j.progress_total}` : stageLabels[j.stage] ?? j.stage;
   return '—';
@@ -975,7 +992,7 @@ function Runs({ openPipeline }: { openPipeline: () => void }) {
 
   return <>
     <Heading title="Run history" subtitle="Ingest, index build and evaluation jobs, and the Celery worker that runs them">
-      <button className="subtle-button" onClick={openPipeline}><Play size={15} />New ingest</button>
+      <button className="subtle-button" onClick={openPipeline} title="Pipelines 화면의 경로 입력칸으로 가요">문서 넣기<ArrowRight size={15} /></button>
     </Heading>
 
     <div className="queue-cards">
