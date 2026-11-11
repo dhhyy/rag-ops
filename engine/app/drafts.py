@@ -24,13 +24,18 @@ MODEL = "gpt-6-luna"           # 가장 싼 모델. 조각 하나에 약 $0.0002
 MAX_CHUNKS = 20                # 한 번에 보낼 조각 수 상한 (비용·검토 부담)
 MIN_BODY = 80                  # 본문이 이보다 짧은 조각(제목만 있는 조각 등)은 고르지 않는다
 MIN_QUOTE = 8
+# 목차 조각: 줄 대부분이 "- [제목](파일.md)" 같은 링크 목록이면 고르지 않는다.
+# 여기서 나온 질문은 "어느 항목에서 다루나요?"처럼 문서 구조를 묻게 되어 실제 질문이 아니고, 목차만 찾아와도 정답이 되어 점수가 부푼다.
+LINK_LINE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s*\[[^\]]+\]\([^)]+\)")
+LINK_SHARE = 0.5
 
 RULES = """너는 RAG 검색 평가에 쓸 질문을 만든다. 아래 문서 조각 하나만 보고 JSON 객체 하나만 출력한다. 설명이나 코드 블록 없이 JSON만.
 - question: 이 조각을 읽어야 답할 수 있는 질문 하나. 실제 사람이 물어볼 말투로, 한국어로. 조각의 문장을 그대로 옮기지 않는다.
 - answer: 한두 문장의 정답.
 - quote: 정답의 근거가 되는 조각 속 문장. 조각에서 글자 그대로 복사한다. 고치거나 바꿔 쓰지 않는다. 한 문장, 되도록 120자 이내.
 - paraphrase: question과 같은 것을 묻지만, 조각에 나온 핵심 단어를 되도록 쓰지 않고 다른 말로 바꾼 질문.
-조각에 질문을 만들 만한 사실이 없으면(목차, 인사말 등) {"skip": true}만 출력한다.
+- 문서의 구조(몇 번 항목, 어느 문서·어느 절에서 다루는지)를 묻지 않는다. 내용 자체를 묻는다.
+조각에 질문을 만들 만한 사실이 없으면(목차, 링크 목록, 인사말 등) {"skip": true}만 출력한다.
 형식: {"question": "...", "answer": "...", "quote": "...", "paraphrase": "..."}"""
 
 
@@ -43,6 +48,11 @@ def _parse(text: str) -> dict | None:
     except ValueError:
         return None
     return data if isinstance(data, dict) else None
+
+
+def is_link_list(body: str) -> bool:
+    lines = [line for line in body.splitlines() if line.strip()]
+    return len(lines) >= 2 and sum(bool(LINK_LINE.match(line)) for line in lines) / len(lines) >= LINK_SHARE
 
 
 def pick_chunks(conn, count: int) -> tuple[list[dict], int]:
@@ -69,7 +79,7 @@ def pick_chunks(conn, count: int) -> tuple[list[dict], int]:
             continue
         text = norm(content)
         body = content.split("\n", 1)[-1].strip()
-        if cid in taken or len(body) < MIN_BODY or any(qt in text for qt in quotes.get(path, [])):
+        if cid in taken or len(body) < MIN_BODY or is_link_list(body) or any(qt in text for qt in quotes.get(path, [])):
             continue
         by_doc[path].append({"id": cid, "path": path, "title": title, "heading": heading.split(" > ")[-1], "content": content,
                               "external_ok": external_ok})

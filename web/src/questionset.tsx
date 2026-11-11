@@ -616,14 +616,33 @@ function DraftsCard({ version, onReview }: { version: number; onReview: () => vo
   </Card>;
 }
 
-// 초안 하나씩 고르기. 고를 것을 id 순으로 하나씩 보여 주고, 마지막 결정 하나는 [되돌리기]로 무를 수 있다.
-type Last = { draftId: number; text: string };
+// 초안 고르기. 한 조각에서 나온 "직접"·"표현 바꿈" 두 질문을 한 장(짝)으로 보여 주고, 넣을 것만 남겨 넣는다.
+// 마지막 결정 하나(짝 한 장)는 [되돌리기]로 통째로 무를 수 있다.
+type Group = DraftItem[];
+function groupDrafts(ds: DraftItem[]): Group[] {
+  const para = new Map<number, DraftItem>();
+  ds.forEach(d => { if (d.pair_id != null) para.set(d.pair_id, d); });
+  const used = new Set<number>(), out: Group[] = [];
+  for (const d of ds) {
+    if (used.has(d.id)) continue;
+    used.add(d.id);
+    const g = [d];
+    const p = d.pair_id == null ? para.get(d.id) : undefined;   // 짝이 이미 골라졌으면 혼자 나온다
+    if (p && !used.has(p.id)) { g.push(p); used.add(p.id); }
+    out.push(g);
+  }
+  return out;
+}
+type Pick = { d: DraftItem; question: string; answer: string };
+type Last = { draftIds: number[]; text: string };
+const toEditor = (p: Pick): Draft => ({ ...draftToEditor(p.d), question: p.question, answer: p.answer });
+
 function Review({ data, onChange, onClose }: { data: QuestionSetData; onChange: (d: QuestionSetData) => void; onClose: () => void }) {
   const [list, setList] = useState<DraftList | null>(null);
-  const [made, setMade] = useState({ accepted: 0, discarded: 0 });   // 이번에 고른 수
+  const [made, setMade] = useState({ accepted: 0, discarded: 0, cards: 0 });   // 이번에 고른 수
   const [startCount] = useState(data.summary.questions);
   const [last, setLast] = useState<Last | null>(null);
-  const [editing, setEditing] = useState<DraftItem | null>(null);
+  const [editing, setEditing] = useState<Pick | null>(null);   // [근거까지 고치기]로 연 초안
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const editDirty = useRef(false);
@@ -633,63 +652,56 @@ function Review({ data, onChange, onClose }: { data: QuestionSetData; onChange: 
     catch (e) { setError(message(e)); }
   }
   useEffect(() => { void load(); }, []);
-  const d = list?.drafts[0] ?? null;
-  const done = made.accepted + made.discarded;
-  const total = done + (list?.drafts.length ?? 0);
-  const usable = !!d && d.in_document && d.chunk_ids.length > 0;
+  const groups = useMemo(() => groupDrafts(list?.drafts ?? []), [list]);
+  const g = groups[0] ?? null;
+  const total = made.cards + groups.length;
 
-  function accepted(next: QuestionSetData & { id?: string }, draftId: number) {
-    onChange(next);
-    setMade(m => ({ ...m, accepted: m.accepted + 1 }));
-    setLast({ draftId, text: `${next.id ?? '시험지'}로 넣었어요` });
-    setEditing(null); editDirty.current = false;
-    void load();
-  }
-  async function act(kind: 'accept' | 'discard' | 'edit') {
-    if (!d || busy || editing) return;
-    if (kind === 'edit') { setEditing(d); return; }
-    if (kind === 'accept' && !usable) return;
+  // 고른 질문은 넣고, 나머지는 버린다. 넣을 때마다 시험지 해시가 바뀌므로 다음 요청에는 새 해시를 쓴다.
+  async function decide(put: Pick[], drop: DraftItem[]) {
+    if (busy) return;
     setBusy(true); setError('');
+    let sha = data.sha;
+    const ids: string[] = [], touched: number[] = [];
     try {
-      if (kind === 'accept') {
-        accepted(await api<QuestionSetData & { id: string }>('/questions', { method: 'POST', body: { sha: data.sha, question: draftToEditor(d), draft_id: d.id } }), d.id);
-      } else {
-        setList(await api<DraftList>(`/drafts/${d.id}/discard`, { method: 'POST' }));
-        setMade(m => ({ ...m, discarded: m.discarded + 1 }));
-        setLast({ draftId: d.id, text: '버렸어요' });
+      for (const p of put) {
+        const res = await api<QuestionSetData & { id: string }>('/questions', { method: 'POST', body: { sha, question: toEditor(p), draft_id: p.d.id } });
+        sha = res.sha; onChange(res); ids.push(res.id); touched.push(p.d.id);
       }
+      for (const d of drop) { await api<DraftList>(`/drafts/${d.id}/discard`, { method: 'POST' }); touched.push(d.id); }
     } catch (e) { setError(message(e)); }
+    // 중간에 실패해도 이미 한 것은 [되돌리기]로 무를 수 있게 남긴다.
+    if (touched.length) {
+      setMade(m => ({ accepted: m.accepted + ids.length, discarded: m.discarded + touched.length - ids.length, cards: m.cards + 1 }));
+      setLast({ draftIds: touched, text: ids.length ? `${ids.join('·')}로 넣었어요${drop.length ? ' · 나머지는 버림' : ''}` : drop.length > 1 ? '둘 다 버렸어요' : '버렸어요' });
+    }
+    setEditing(null); editDirty.current = false;
+    await load();
     setBusy(false);
   }
   async function undo() {
     if (!last || busy) return;
     setBusy(true); setError('');
+    let sha = data.sha, back = 0, kept = 0;
     try {
-      const res = await api<{ questions: QuestionSetData | null }>(`/drafts/${last.draftId}/undo`, { method: 'POST', body: { sha: data.sha } });
-      if (res.questions) onChange(res.questions);
-      setMade(m => res.questions ? { ...m, accepted: m.accepted - 1 } : { ...m, discarded: m.discarded - 1 });
+      for (const id of [...last.draftIds].reverse()) {
+        const res = await api<{ questions: QuestionSetData | null }>(`/drafts/${id}/undo`, { method: 'POST', body: { sha } });
+        if (res.questions) { sha = res.questions.sha; onChange(res.questions); back++; } else kept++;
+      }
       setLast(null);
-      await load();
     } catch (e) { setError(message(e)); }
+    setMade(m => ({ accepted: m.accepted - back, discarded: m.discarded - kept, cards: Math.max(0, m.cards - 1) }));
+    await load();
     setBusy(false);
   }
   function close() {
     if (editDirty.current && !window.confirm('고치던 초안이 있어요. 버리고 시험지로 갈까요?')) return;
     onClose();
   }
-
-  // 키보드: Enter 넣기 · ← 버리기 · E 고치기 · Esc 시험지로. 글을 쓰는 중에는 듣지 않는다.
-  const keys = useRef<(e: KeyboardEvent) => void>(() => {});
-  keys.current = e => {
-    const el = e.target as HTMLElement;
-    if (e.metaKey || e.ctrlKey || e.altKey || el.closest('input, textarea, select, [contenteditable="true"], .qs-focus-top, .qs-toast')) return;
-    if (e.key === 'Escape') { e.preventDefault(); if (editing) setEditing(null); else close(); return; }
-    if (editing) return;
-    const kind = e.key === 'Enter' ? 'accept' : e.key === 'ArrowLeft' ? 'discard' : e.key.toLowerCase() === 'e' ? 'edit' : null;
-    if (kind) { e.preventDefault(); void act(kind); }   // 버튼에 포커스가 있어도 Enter가 그 버튼을 누르지 않게 막는다
-  };
+  // Esc: 근거 고치기 중이면 카드로, 아니면 시험지로
+  const esc = useRef<(e: KeyboardEvent) => void>(() => {});
+  esc.current = e => { if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); if (editing) setEditing(null); else close(); } };
   useEffect(() => {
-    const on = (e: KeyboardEvent) => keys.current(e);
+    const on = (e: KeyboardEvent) => esc.current(e);
     window.addEventListener('keydown', on);
     return () => window.removeEventListener('keydown', on);
   }, []);
@@ -697,8 +709,8 @@ function Review({ data, onChange, onClose }: { data: QuestionSetData; onChange: 
   return <section className="qs-focus">
     <div className="qs-focus-top">
       <button className="qs-btn" onClick={close}><ArrowLeft size={13} />시험지로</button>
-      <span className="qs-progress" role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={done}><i style={{ width: `${total ? (done / total) * 100 : 0}%` }} /></span>
-      <span className="qs-focus-count">{d ? `${done + 1} / ${total}` : `${done} / ${total}`}</span>
+      <span className="qs-progress" role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={made.cards}><i style={{ width: `${total ? (made.cards / total) * 100 : 0}%` }} /></span>
+      <span className="qs-focus-count">{g ? `${made.cards + 1} / ${total}장` : `${made.cards} / ${total}장`}</span>
     </div>
     {last && <p className="qs-toast" role="status"><span>{last.text}</span><button onClick={() => void undo()} disabled={busy}>되돌리기</button></p>}
     {error && <p className="qs-check error qs-focus-w" role="alert"><CircleAlert size={13} />{error}</p>}
@@ -706,37 +718,80 @@ function Review({ data, onChange, onClose }: { data: QuestionSetData; onChange: 
     {!list ? <p className="muted">불러오는 중…</p>
       : editing
         ? <article className="qs-one qs-one-edit">
-            <Summary key={editing.id} q={null} seed={{ draftId: editing.id, draft: draftToEditor(editing) }} sha={data.sha}
-              onDirty={v => { editDirty.current = v; }} onSaved={next => accepted(next, editing.id)}
+            <Summary key={editing.d.id} q={null} seed={{ draftId: editing.d.id, draft: toEditor(editing) }} sha={data.sha}
+              onDirty={v => { editDirty.current = v; }}
+              onSaved={(next, id) => { onChange(next); setMade(m => ({ ...m, accepted: m.accepted + 1, cards: m.cards + 1 }));
+                setLast({ draftIds: [editing.d.id], text: `${id}로 넣었어요` }); setEditing(null); editDirty.current = false; void load(); }}
               onCancel={() => { if (!editDirty.current || window.confirm('고친 내용을 버릴까요?')) { editDirty.current = false; setEditing(null); } }} />
           </article>
-        : d
-          ? <>
-              <article className="qs-one" aria-live="polite">
-                <div className="qs-one-src"><span>#{d.id} · {file(d.path)}{d.heading ? ` › ${d.heading}` : ''}</span><span className={`qs-pill ${KIND_TONE[d.kind] ?? ''}`}>{d.kind}</span></div>
-                <p className="qs-one-q">{d.question}</p>
-                <div><p className="qs-one-lbl">답</p><p className="qs-one-a">{d.answer || '—'}</p></div>
-                <div><p className="qs-one-lbl">근거 — 문서에서 이 문장을 찾아오면 정답</p><p className="qs-one-quote">“{d.quote}”</p></div>
-                <div className="qs-one-checks">
-                  {usable ? <span className="ok"><CircleCheck size={12} />원문에 있음 · 조각 #{d.chunk_ids.join(', #')}에 들어감</span>
-                    : <span className="bad"><CircleAlert size={12} />{d.in_document ? '조각 경계에 걸려 이대로는 넣을 수 없어요. [고쳐서 넣기]로 근거를 다시 골라 주세요' : '원문에 없어요 (문서가 바뀜). 버려 주세요'}</span>}
-                  {d.pair_id && <span>초안 #{d.pair_id}와 같은 근거를 다른 말로 물어본 질문이에요</span>}
-                  {d.elsewhere.length > 0 && <span className="warn">같은 문장이 {d.elsewhere.map(file).join(', ')}에도 있어요 → 넣으면 그 문서도 근거로 함께 들어가요</span>}
-                  {d.similar.length > 0 && <span className="warn">비슷한 질문이 이미 있어요: {d.similar.join(', ')}</span>}
-                </div>
-              </article>
-              <p className="qs-ask">이 질문, 사람이 실제로 물어볼 만한가요? 답이 맞나요?</p>
-              <div className="qs-choices">
-                <button className="qs-btn" onClick={() => void act('discard')} disabled={busy}>버리기</button>
-                <button className="qs-btn" onClick={() => void act('edit')} disabled={busy}>고쳐서 넣기</button>
-                <button className="qs-btn qs-btn-dark" onClick={() => void act('accept')} disabled={busy || !usable}>{busy ? '처리 중…' : '맞아요, 넣기'}</button>
-              </div>
-              <p className="qs-hint">키보드: ← 버리기 · E 고쳐서 넣기 · Enter 넣기 · Esc 시험지로</p>
-            </>
+        : g
+          ? <PairCard key={g.map(d => d.id).join('-')} group={g} busy={busy}
+              onDecide={(put, drop) => void decide(put, drop)} onEditEvidence={p => setEditing(p)} />
           : <div className="qs-one qs-done">
               <b>다 골랐어요</b>
               <small>넣음 {made.accepted} · 버림 {made.discarded} · 질문 {startCount} → {data.summary.questions}개</small>
               <button className="qs-btn qs-btn-dark" onClick={onClose}>시험지로 돌아가기</button>
             </div>}
   </section>;
+}
+
+// 짝 카드: 근거·답은 한 번만, 질문 두 개는 줄을 눌러 넣기/빼기. 말투는 [고치기]로 그 자리에서 고친다.
+function PairCard({ group, busy, onDecide, onEditEvidence }: {
+  group: Group; busy: boolean; onDecide: (put: Pick[], drop: DraftItem[]) => void; onEditEvidence: (p: Pick) => void;
+}) {
+  const head = group[0];
+  const [on, setOn] = useState<Record<number, boolean>>(() => Object.fromEntries(group.map(d => [d.id, true])));
+  const [texts, setTexts] = useState<Record<number, string>>(() => Object.fromEntries(group.map(d => [d.id, d.question])));
+  const [answer, setAnswer] = useState(head.answer ?? '');
+  const [editing, setEditing] = useState<number | 'answer' | null>(null);
+  const usable = group.every(d => d.in_document && d.chunk_ids.length > 0);
+  const chosen = group.filter(d => on[d.id]);
+  const pick = (d: DraftItem): Pick => ({ d, question: texts[d.id].trim() || d.question, answer });
+  const pair = group.length > 1;
+  const putLabel = !chosen.length ? '넣을 질문이 없어요' : !pair ? '넣기' : chosen.length === 2 ? '2개 넣기' : `${chosen[0].kind}만 넣기`;
+  const toggle = (id: number) => { if (pair) setOn(o => ({ ...o, [id]: !o[id] })); };
+
+  return <>
+    <article className="qs-one" aria-live="polite">
+      <div className="qs-one-src"><span>#{group.map(d => d.id).join('·#')} · {file(head.path)}{head.heading ? ` › ${head.heading}` : ''}</span></div>
+      <div><p className="qs-one-lbl">근거 — 문서에서 이 문장을 찾아오면 정답</p><p className="qs-one-quote">“{head.quote}”</p></div>
+
+      <div><p className="qs-one-lbl">{pair ? '질문 두 개 — 넣을 것만 남겨요' : '질문'}</p>
+        <div className="qs-pq-list">{group.map(d => {
+          const off = !on[d.id];
+          return <div key={d.id} className={`qs-pq ${off ? 'is-off' : ''} ${pair ? '' : 'is-single'}`} role={pair ? 'checkbox' : undefined} aria-checked={pair ? !off : undefined}
+            tabIndex={pair ? 0 : undefined} onClick={e => { if (!(e.target as HTMLElement).closest('button, textarea')) toggle(d.id); }}
+            onKeyDown={e => { if ((e.key === ' ' || e.key === 'Enter') && e.target === e.currentTarget) { e.preventDefault(); toggle(d.id); } }}>
+            {pair && <span className="qs-tick" aria-hidden>{off ? '' : '✓'}</span>}
+            <span className="qs-pq-body">
+              <span className="qs-pq-head"><span className={`qs-pill ${KIND_TONE[d.kind] ?? ''}`}>{d.kind === '직접' ? '직접 · 문서 말 그대로' : '표현 바꿈 · 다른 말로'}</span>
+                <button className="qs-edit" onClick={() => setEditing(editing === d.id ? null : d.id)}>{editing === d.id ? '완료' : '고치기'}</button></span>
+              {editing === d.id
+                ? <textarea autoFocus className="qs-field-big qs-field-sm" aria-label={`${d.kind} 질문`} value={texts[d.id]} onChange={e => setTexts(t => ({ ...t, [d.id]: e.target.value }))} />
+                : <span className="qs-pq-text">{texts[d.id]}</span>}
+              {d.similar.length > 0 && <small className="qs-warn">비슷한 질문이 이미 있어요: {d.similar.join(', ')}</small>}
+            </span>
+          </div>;
+        })}</div></div>
+
+      <div><span className="qs-pq-head"><p className="qs-one-lbl">{pair ? '답 (두 질문 같음)' : '답'}</p>
+        <button className="qs-edit" onClick={() => setEditing(editing === 'answer' ? null : 'answer')}>{editing === 'answer' ? '완료' : '고치기'}</button></span>
+        {editing === 'answer'
+          ? <textarea autoFocus className="qs-field-big qs-field-sm" aria-label="답" value={answer} onChange={e => setAnswer(e.target.value)} />
+          : <p className="qs-one-a">{answer || '—'}</p>}</div>
+
+      <div className="qs-one-checks">
+        {usable ? <span className="ok"><CircleCheck size={12} />원문에 있음 · 조각 #{head.chunk_ids.join(', #')}에 들어감</span>
+          : <span className="bad"><CircleAlert size={12} />{head.in_document ? '조각 경계에 걸려 이대로는 넣을 수 없어요. 아래 [근거까지 고치기]로 근거를 다시 골라 주세요' : '원문에 없어요 (문서가 바뀜). 버려 주세요'}</span>}
+        {head.elsewhere.length > 0 && <span className="warn">같은 문장이 {head.elsewhere.map(file).join(', ')}에도 있어요 → 넣으면 그 문서도 근거로 함께 들어가요</span>}
+      </div>
+    </article>
+    <p className="qs-ask">사람이 실제로 물어볼 만한 질문만 남기고 넣어요.</p>
+    <div className="qs-choices qs-choices-2">
+      <button className="qs-btn" onClick={() => onDecide([], group)} disabled={busy}>{pair ? '둘 다 버리기' : '버리기'}</button>
+      <button className="qs-btn qs-btn-dark" onClick={() => onDecide(chosen.map(pick), group.filter(d => !on[d.id]))} disabled={busy || !usable || !chosen.length}>
+        {busy ? '처리 중…' : putLabel}</button>
+    </div>
+    <p className="qs-more"><button className="qs-link" onClick={() => onEditEvidence(pick(chosen[0] ?? head))} disabled={busy}>근거까지 고치기</button> · 근거 문장이 틀렸을 때만</p>
+  </>;
 }

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>초안 짝 카드 시안</title>
+<style>
+:root{--ink:#302f35;--muted:#7c7887;--faint:#a39dad;--soft:#f6f4f9;--line:#ebe7f0;--accent:#9b81d3;--accent-ink:#6f53ad;--dark:#303034;--ok:#6f9f4c;--warn:#b0623a;
+  font-family:'DM Sans',-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Segoe UI',sans-serif;color:var(--ink);font-size:13px;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(125deg,#edeaf5 0%,#efedf3 55%,#efedf1 100%);min-height:100vh}
+h1,h2,h3,p{margin:0}button,textarea{font:inherit;color:inherit}button{border:0;cursor:pointer;background:none}
+small{font-size:11px;color:var(--muted);line-height:1.5}
+.note{position:sticky;top:0;z-index:20;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 16px;background:#302f35;color:#fff;font-size:11px}
+.note b{font-weight:500}.note .sp{flex:1}.note .k{display:inline-flex;align-items:center;gap:5px;opacity:.85}.note .k i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.note button{background:#ffffff1f;color:#fff;padding:5px 11px;border-radius:12px;font-size:11px}
+.show [data-z]{outline:2px dashed;outline-offset:3px}.show [data-z=fixed]{outline-color:#e58a52}.show [data-z=fluid]{outline-color:#5f8be8}.show [data-z=hybrid]{outline-color:#8a5fd1}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 14px;border-radius:16px;font-size:12px;background:#fff}
+.btn.dark{background:var(--dark);color:#fff}.btn:disabled{opacity:.4;cursor:default}
+.pill{display:inline-block;padding:2px 8px;border-radius:9px;font-size:10px;white-space:nowrap}
+.pill.direct{background:#eef3d0;color:#6c7420}.pill.para{background:#e3eafd;color:#4d63a8}
+
+.page{padding:30px 20px 60px}
+/* Hybrid: 배경 Fluid + 가운데 600px Fixed */
+.focus{display:flex;flex-direction:column;align-items:center;gap:16px}
+.focus>*{width:100%;max-width:600px}
+.top{display:flex;align-items:center;gap:12px}.progress{flex:1;height:6px;border-radius:3px;background:#ffffffb3;overflow:hidden}.progress i{display:block;height:100%;width:12.5%;background:var(--accent)}
+.count{font-size:12px;color:var(--muted)}
+.one{background:#fff;border-radius:24px;padding:24px 26px;display:flex;flex-direction:column;gap:16px;box-shadow:0 10px 30px #3a2f5a12}
+.src{display:flex;justify-content:space-between;gap:10px;font-size:11px;color:var(--muted)}
+.lbl{font-size:11px;color:var(--faint);margin-bottom:5px}
+.quote{font-size:13px;line-height:1.7;padding:12px 14px;border-radius:14px;background:var(--soft);color:#4a4458}
+.a{font-size:14px;line-height:1.65}
+.checks{display:flex;flex-direction:column;gap:4px;font-size:11px}.checks .ok{color:var(--ok)}.checks .warn{color:var(--warn)}
+
+/* 질문 두 개: 줄을 누르면 넣기/빼기가 바뀐다 */
+.qs{display:flex;flex-direction:column;gap:8px}
+.q{display:flex;gap:12px;align-items:flex-start;padding:13px 14px;border-radius:16px;border:1.5px solid var(--accent);background:#fbf9fe;text-align:left;width:100%;transition:all .2s}
+.q.off{border-color:var(--line);background:#fff}
+.q.off .qt{color:var(--faint);text-decoration:line-through;text-decoration-color:#d8d1e3}
+.tick{flex-shrink:0;width:22px;height:22px;border-radius:7px;display:grid;place-items:center;background:var(--accent);color:#fff;font-size:13px;margin-top:2px;transition:all .2s}
+.q.off .tick{background:#fff;border:1.5px solid #d8d1e3;color:transparent}
+.qb{flex:1;display:flex;flex-direction:column;gap:5px;min-width:0}
+.qt{font-size:16px;line-height:1.5;letter-spacing:-.3px;font-weight:500}
+.qhead{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.edit{font-size:11px;color:var(--accent-ink);padding:3px 9px;border-radius:9px;background:#f3eefb}
+.field{width:100%;min-height:64px;padding:10px 12px;border:0;border-radius:12px;background:#fff;box-shadow:0 0 0 1.5px #c7b6ea;resize:vertical;font-size:15px;line-height:1.5;outline:none}
+
+.ask{text-align:center;font-size:13px;color:var(--muted)}
+.choices{display:grid;grid-template-columns:1fr 1.6fr;gap:10px}
+.choices .btn{padding:14px 10px;border-radius:16px;font-size:13px}.choices .btn.dark{font-size:14px}
+.more{text-align:center;font-size:11px}.more button{color:var(--accent-ink);text-decoration:underline;font-size:11px}
+.toast{display:flex;justify-content:space-between;align-items:center;padding:9px 14px;border-radius:14px;background:#eef5e6;color:#4f7a33;font-size:12px}
+.toast button{color:#4f7a33;text-decoration:underline;font-size:12px}
+.explain{max-width:600px;margin:30px auto 0;font-size:12px;color:var(--muted);line-height:1.8}
+@media(max-width:760px){.one{padding:20px 18px}.qt{font-size:15px}}
+</style>
+</head>
+<body>
+<div class="note"><b>초안 짝 카드 (시안)</b><span>질문 줄을 눌러 넣기/빼기 · [고치기]로 그 자리에서 고치기</span><span class="sp"></span>
+  <span class="k"><i style="background:#e58a52"></i>Fixed</span><span class="k"><i style="background:#5f8be8"></i>Fluid</span><span class="k"><i style="background:#8a5fd1"></i>Hybrid</span>
+  <button onclick="document.body.classList.toggle('show')">화면 나누기 보기</button></div>
+<div class="page">
+  <section class="focus" data-z="hybrid">
+    <div class="top" data-z="fixed"><button class="btn">← 시험지로</button><span class="progress"><i></i></span><span class="count">짝 2 / 8</span></div>
+    <p class="toast" id="toast" style="display:none"><span id="toast-t"></span><button onclick="hideToast()">되돌리기</button></p>
+
+    <article class="one" data-z="fixed">
+      <div class="src"><span>#5·#6 · network-infrastructure-understanding.md › 먼저 전체 네트워크의 경계를 살펴보기</span></div>
+      <div><p class="lbl">근거 — 문서에서 이 문장을 찾아오면 정답</p><p class="quote">“→ PUBLIC_IP의 FortiGate WAN → 허용된 전달 규칙과 방화벽 정책 → DEV(port3)의 서버”</p></div>
+      <div><p class="lbl">질문 두 개 — 넣을 것만 남겨요</p>
+        <div class="qs">
+          <div class="q" data-q><span class="tick">✓</span><span class="qb"><span class="qhead"><span class="pill direct">직접 · 문서 말 그대로</span><button class="edit">고치기</button></span>
+            <span class="qt">회사 PC에서 DEV 서버에 접속할 때 거치는 경로는 어떻게 되나요?</span></span></div>
+          <div class="q" data-q><span class="tick">✓</span><span class="qb"><span class="qhead"><span class="pill para">표현 바꿈 · 다른 말로</span><button class="edit">고치기</button></span>
+            <span class="qt">사무실 컴퓨터에서 개발용 장비까지 연결이 어떤 순서로 이뤄지나요?</span></span></div>
+        </div></div>
+      <div><div class="qhead"><p class="lbl">답 (두 질문 같음)</p><button class="edit">고치기</button></div>
+        <p class="a">회사 PC의 요청은 회사망 인터넷 출구를 거쳐 PUBLIC_IP의 FortiGate WAN으로 들어갑니다. 허용된 전달 규칙과 방화벽 정책을 통과한 뒤 DEV(port3)의 서버에 도달합니다.</p></div>
+      <div class="checks"><span class="ok">✓ 원문에 있음 · 조각 #294에 들어감</span>
+        <span class="warn">같은 문장이 network-infrastructure-article.md에도 있어요 → 넣으면 그 문서도 근거로 함께 들어가요</span></div>
+    </article>
+
+    <p class="ask">사람이 실제로 물어볼 만한 질문만 남기고 넣어요.</p>
+    <div class="choices" data-z="fixed">
+      <button class="btn" id="drop">둘 다 버리기</button>
+      <button class="btn dark" id="put">2개 넣기</button>
+    </div>
+    <p class="more"><button>근거까지 고치기</button> · 근거 문장이 틀렸을 때만</p>
+  </section>
+  <div class="explain">
+    <b>지금과 달라지는 것</b><br>
+    · 조각 하나에서 나온 "직접"과 "표현 바꿈" 두 질문을 한 장에 같이 봐요. 16장 → 8장.<br>
+    · 근거와 답은 두 질문이 같아서 한 번만 보여요.<br>
+    · 질문 줄을 누르면 체크가 풀리며 그 질문만 빼요. 아래 버튼 글자가 "2개 넣기 / 직접만 넣기 / 표현 바꿈만 넣기"로 바뀌어요. 둘 다 빼면 "둘 다 버리기"만 남아요.<br>
+    · 말투만 어색하면 [고치기]로 그 자리에서 고쳐요(따로 화면 안 넘어감). 근거가 틀렸을 때만 아래 [근거까지 고치기].<br>
+    · [되돌리기]는 짝 한 장을 통째로 되돌려요.
+  </div>
+</div>
+<script>
+const qsEl = [...document.querySelectorAll('[data-q]')];
+const label = () => {
+  const on = qsEl.map(q => !q.classList.contains('off'));
+  const put = document.getElementById('put');
+  put.disabled = !on[0] && !on[1];
+  put.textContent = on[0] && on[1] ? '2개 넣기' : on[0] ? '직접만 넣기' : on[1] ? '표현 바꿈만 넣기' : '넣을 질문이 없어요';
+};
+qsEl.forEach(q => q.addEventListener('click', e => {
+  if (e.target.closest('.edit') || e.target.closest('textarea')) return;
+  q.classList.toggle('off'); label();
+}));
+document.querySelectorAll('.qs .edit').forEach(b => b.onclick = () => {
+  const t = b.closest('.qb').querySelector('.qt');
+  if (t.tagName === 'TEXTAREA') return;
+  const ta = document.createElement('textarea'); ta.className = 'field'; ta.value = t.textContent; t.replaceWith(ta); ta.focus();
+  b.textContent = '완료'; b.onclick = () => { const s = document.createElement('span'); s.className = 'qt'; s.textContent = ta.value; ta.replaceWith(s); b.textContent = '고치기'; };
+});
+function toast(t) { document.getElementById('toast-t').textContent = t; document.getElementById('toast').style.display = ''; }
+function hideToast() { document.getElementById('toast').style.display = 'none'; }
+document.getElementById('put').onclick = () => toast(document.getElementById('put').textContent.replace('넣기', '넣었어요 (q14' + (qsEl.every(q => !q.classList.contains('off')) ? '·q15)' : ')')));
+document.getElementById('drop').onclick = () => toast('둘 다 버렸어요');
+</script>
+</body>
+</html>
