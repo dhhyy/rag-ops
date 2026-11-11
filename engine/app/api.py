@@ -777,6 +777,21 @@ def create_drafts(req: DraftRequest) -> dict:
     return {"job_id": job_id}
 
 
+class DraftUndo(BaseModel):
+    sha: str
+
+
+# 방금 고른 것 되돌리기 (넣은 질문은 시험지에서 지운다)
+@app.post("/drafts/{draft_id}/undo")
+def undo_draft(draft_id: int, req: DraftUndo) -> dict:
+    try:
+        return drafts.undo(draft_id, req.sha)
+    except questions.QuestionError as e:
+        raise HTTPException(e.status, str(e))
+    except IngestError as e:
+        raise HTTPException(409, str(e))
+
+
 @app.post("/drafts/{draft_id}/discard")
 def discard_draft(draft_id: int) -> dict:
     with connect(load_env()) as conn:

@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>시험지 한 번에 하나씩 시안</title>
+<style>
+:root{--ink:#302f35;--muted:#7c7887;--faint:#a39dad;--card:#ffffffd9;--soft:#f6f4f9;--line:#ebe7f0;--accent:#9b81d3;--accent-ink:#6f53ad;--dark:#303034;--ok:#6f9f4c;--warn:#b0623a;--bad:#c2463b;
+  font-family:'DM Sans',-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Segoe UI',sans-serif;color:var(--ink);font-size:13px;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(125deg,#edeaf5 0%,#efedf3 55%,#efedf1 100%);min-height:100vh}
+h1,h2,h3,p{margin:0}button,input,select,textarea{font:inherit;color:inherit}button{border:0;cursor:pointer;background:none}
+small{font-size:11px;color:var(--muted);line-height:1.5}
+
+.note{position:sticky;top:0;z-index:20;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 16px;background:#302f35;color:#fff;font-size:11px}
+.note b{font-weight:500;margin-right:6px}.note .k{display:inline-flex;align-items:center;gap:5px;opacity:.85}.note .k i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.note button{background:#ffffff1f;color:#fff;padding:5px 11px;border-radius:12px;font-size:11px}.note button.on{background:#fff;color:#302f35}
+.note .sp{flex:1}
+.show [data-z]{outline:2px dashed;outline-offset:3px}.show [data-z=fixed]{outline-color:#e58a52}.show [data-z=fluid]{outline-color:#5f8be8}.show [data-z=hybrid]{outline-color:#8a5fd1}
+
+.shell{display:flex;gap:34px;padding:27px 30px 24px 22px;min-height:calc(100vh - 37px)}
+.rail{width:58px;flex:0 0 58px;border-radius:30px;background:#ffffffd4;display:flex;flex-direction:column;align-items:center;gap:14px;padding:18px 0}
+.rail i{width:34px;height:34px;border-radius:50%;background:var(--soft);display:block}.rail i.on{background:var(--dark)}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;gap:16px}
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.head h1{font-size:21px;font-weight:500;letter-spacing:-.7px}.head p{color:var(--muted);font-size:12px;margin-top:4px}
+.tabs{display:inline-flex;padding:3px;border-radius:14px;background:#ffffffb3}
+.tabs span{padding:6px 14px;border-radius:11px;font-size:12px;color:var(--muted)}.tabs .on{background:#fff;color:var(--ink);box-shadow:0 1px 3px #0001}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 14px;border-radius:16px;font-size:12px;background:#fff}
+.btn.dark{background:var(--dark);color:#fff}.btn.sm{padding:5px 10px;font-size:11px}.btn.ghost{background:transparent;color:var(--muted)}
+.card{background:var(--card);border-radius:20px;padding:17px 19px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.card-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap}.card-head h2{font-size:14px;font-weight:500}
+.pill{display:inline-block;padding:2px 8px;border-radius:9px;background:#f3f1f6;color:var(--muted);font-size:10px;white-space:nowrap}
+.pill.direct{background:#eef3d0;color:#6c7420}.pill.para{background:#e3eafd;color:#4d63a8}.pill.none{background:#fde7d9;color:#b0623a}
+.scene{display:none}.scene.on{display:contents}
+
+/* ── 장면 A: 시험지 화면의 초안 카드 (작게) ── */
+.compact{flex-direction:row;align-items:center;flex-wrap:wrap;gap:12px 16px}
+.compact .big{font-size:26px;font-weight:500;letter-spacing:-.6px}
+.compact .txt{flex:1;min-width:220px;display:flex;flex-direction:column;gap:2px}
+
+/* ── 장면 A: 초안 하나씩 고르기 (Hybrid: 배경 Fluid + 가운데 카드 폭 Fixed 600px) ── */
+.focus{flex:1;display:flex;flex-direction:column;align-items:center;gap:16px}
+.focus-top{width:100%;max-width:600px;display:flex;align-items:center;gap:12px}
+.focus-top .count{font-size:12px;color:var(--muted);white-space:nowrap}
+.progress{flex:1;height:6px;border-radius:3px;background:#ffffffb3;overflow:hidden}.progress i{display:block;height:100%;background:var(--accent);transition:width .3s}
+.one{width:100%;max-width:600px;background:#fff;border-radius:24px;padding:26px 28px;display:flex;flex-direction:column;gap:18px;box-shadow:0 10px 30px #3a2f5a12}
+.one .src{display:flex;justify-content:space-between;gap:10px;font-size:11px;color:var(--muted)}
+.one .q{font-size:20px;line-height:1.5;letter-spacing:-.4px;font-weight:500}
+.one .lbl{font-size:11px;color:var(--faint);margin-bottom:4px}
+.one .a{font-size:14px;line-height:1.65}
+.one .quote{font-size:13px;line-height:1.7;padding:12px 14px;border-radius:14px;background:var(--soft);color:#4a4458}
+.one .checks{display:flex;flex-direction:column;gap:5px;font-size:11px}
+.one .checks .ok{color:var(--ok)}.one .checks .warn{color:var(--warn)}
+.ask{width:100%;max-width:600px;text-align:center;font-size:13px;color:var(--muted)}
+.choices{width:100%;max-width:600px;display:grid;grid-template-columns:1fr 1fr 1.4fr;gap:10px}
+.choices .btn{padding:14px 10px;border-radius:16px;font-size:13px}
+.choices .btn.dark{font-size:14px}
+.hint{font-size:10px;color:var(--faint);text-align:center}
+.toast{width:100%;max-width:600px;display:flex;justify-content:space-between;align-items:center;padding:9px 14px;border-radius:14px;background:#eef5e6;color:#4f7a33;font-size:12px}
+.toast button{color:#4f7a33;text-decoration:underline;font-size:12px}
+.done{width:100%;max-width:600px;background:#fff;border-radius:24px;padding:40px 28px;text-align:center;display:flex;flex-direction:column;gap:10px;align-items:center}
+.done b{font-size:20px;font-weight:500}
+
+/* ── 장면 B·C: 오른쪽 편집 패널 (Fixed 420px) ── */
+.body{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:14px;align-items:start}
+.list .row{display:flex;justify-content:space-between;gap:10px;padding:10px 6px;border-top:1px solid var(--line);font-size:12px}
+.list .row.sel{background:#f3eefb;border-radius:10px}
+.panel{position:sticky;top:52px;min-height:560px}
+.dots{display:flex;gap:6px}.dots i{width:7px;height:7px;border-radius:50%;background:#e4dfec}.dots i.on{background:var(--accent);width:18px;border-radius:4px}.dots i.past{background:#c7b6ea}
+.step{flex:1;display:flex;flex-direction:column;gap:14px}
+.step h3{font-size:19px;font-weight:500;letter-spacing:-.5px;line-height:1.4}
+.step p.sub{font-size:12px;color:var(--muted);line-height:1.6}
+.kinds{display:flex;flex-direction:column;gap:8px}
+.kind{display:flex;flex-direction:column;gap:3px;text-align:left;padding:13px 15px;border-radius:16px;border:1.5px solid var(--line);background:#fff}
+.kind b{font-weight:500;font-size:14px}.kind span{font-size:11px;color:var(--muted)}
+.kind.on{border-color:var(--accent);background:#f7f3fd}
+.field{width:100%;min-height:90px;padding:12px 14px;border:0;border-radius:14px;background:var(--soft);resize:none;font-size:14px;line-height:1.6;outline:none}
+.field:focus{box-shadow:0 0 0 2px #c7b6ea}
+.search{display:flex;align-items:center;gap:8px;padding:10px 13px;border-radius:14px;background:var(--soft);color:var(--faint);font-size:13px}
+.hit{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:12px;border:1.5px solid var(--line);font-size:12px;line-height:1.6;text-align:left;background:#fff}
+.hit mark{background:#faf0a8;border-radius:3px}.hit small{font-size:10px}
+.hit.on{border-color:var(--accent);background:#f7f3fd}
+.picked{font-size:11px;color:var(--ok)}
+.foot{display:flex;gap:8px;border-top:1px solid var(--line);padding-top:12px;margin-top:auto}
+.foot .btn{flex:1;padding:12px}.foot .btn.ghost{flex:0 0 auto}
+.sumrow{display:flex;flex-direction:column;gap:4px;padding:11px 0;border-top:1px solid var(--line)}
+.sumrow:first-of-type{border-top:0}
+.sumrow .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.sumrow .top small{font-size:11px}
+.sumrow .val{font-size:13px;line-height:1.6}
+.sumrow .edit{font-size:11px;color:var(--accent-ink);padding:3px 8px;border-radius:9px;background:#f3eefb}
+.sumrow .ev{font-size:12px;line-height:1.6;padding:8px 10px;border-radius:10px;background:var(--soft)}
+.sumrow .ev small{display:block;font-size:10px}
+.chk{font-size:11px;padding:8px 11px;border-radius:11px;background:#eef5e6;color:#4f7a33}
+.warnbox{font-size:11px;padding:8px 11px;border-radius:11px;background:#fdf0e7;color:#9a5530;line-height:1.5}
+.inline{display:flex;flex-direction:column;gap:8px;padding:10px;border-radius:14px;border:1.5px solid var(--accent);background:#fbf9fe}
+.inline .row2{display:flex;justify-content:flex-end;gap:6px}
+
+@media(max-width:1200px){.body{grid-template-columns:minmax(0,1fr)}.panel{position:static}}
+@media(max-width:760px){.shell{padding:15px 15px 20px 10px;gap:13px}.rail{width:44px;flex-basis:44px}
+  .choices{grid-template-columns:1fr 1fr}.choices .btn.dark{grid-column:1/-1;order:-1}
+  .one{padding:20px 18px}.one .q{font-size:17px}.list{display:none}}
+</style>
+</head>
+<body>
+<div class="note"><b>시험지 · 한 번에 하나씩 (시안)</b>
+  <button data-go="a1" class="on">① 초안 카드</button><button data-go="a2">② 초안 하나씩 고르기</button><button data-go="b">③ 새 질문 (단계별)</button><button data-go="c">④ 기존 질문 (요약)</button>
+  <span class="sp"></span>
+  <span class="k"><i style="background:#e58a52"></i>Fixed</span><span class="k"><i style="background:#5f8be8"></i>Fluid</span><span class="k"><i style="background:#8a5fd1"></i>Hybrid</span>
+  <button onclick="document.body.classList.toggle('show')">화면 나누기 보기</button></div>
+
+<div class="shell">
+  <nav class="rail"><i></i><i></i><i></i><i class="on"></i><i></i></nav>
+  <main class="main">
+    <div class="head" data-z="fixed"><div><h1>Evaluations</h1><p>평가에 쓰는 질문과 정답 근거 · eval/questions.jsonl @ 46ce49a8e5c1</p></div>
+      <span class="tabs"><span>평가 기록</span><span class="on">시험지</span></span></div>
+
+    <!-- ① 시험지 화면: 초안 카드는 숫자와 버튼만 -->
+    <section class="scene on" id="a1">
+      <div class="card compact" data-z="fluid">
+        <div><div class="big">16</div><small>고를 초안</small></div>
+        <div class="txt"><b style="font-weight:500">LLM 초안이 16개 있어요</b><small>한 장씩 보고 넣을지 정해요. 1장에 10초쯤 걸려요. 넣음 0 · 버림 0 · 지금까지 $0.0011</small></div>
+        <button class="btn">＋ 초안 더 만들기</button>
+        <button class="btn dark" data-go="a2">하나씩 고르기 →</button>
+      </div>
+      <div class="card" style="opacity:.55"><div class="card-head"><h2>질문 13개</h2><small>(아래는 지금과 같음)</small></div>
+        <div class="list"><div class="row"><span>q01 · FortiGate가 HTTPS 요청의 Host를 보고…</span><span class="pill direct">직접</span></div>
+        <div class="row"><span>q02 · SSH 접속 시 두 개발 서버를 외부에서 어떻게 구분하는가?</span><span class="pill direct">직접</span></div></div></div>
+      <p style="font-size:12px;color:var(--muted);line-height:1.7">지금은 초안 16장이 목록으로 길게 펼쳐져 있어요. 바꾸면 이 카드 하나만 남고, [하나씩 고르기]를 누르면 ② 화면으로 넘어가요.</p>
+    </section>
+
+    <!-- ② 초안 하나씩 고르기: 시험지 본문 자리를 차지 -->
+    <section class="scene" id="a2">
+      <div class="focus" data-z="hybrid">
+        <div class="focus-top" data-z="fixed"><button class="btn sm" data-go="a1">← 시험지로</button><span class="progress"><i id="bar"></i></span><span class="count" id="count">1 / 16</span></div>
+        <div class="toast" id="toast" style="display:none"><span id="toast-text"></span><button id="undo">되돌리기</button></div>
+        <article class="one" id="one" data-z="fixed">
+          <div class="src"><span id="src"></span><span id="kind"></span></div>
+          <p class="q" id="q"></p>
+          <div><p class="lbl">답</p><p class="a" id="a"></p></div>
+          <div><p class="lbl">근거 — 문서에서 이 문장을 찾아오면 정답</p><p class="quote" id="quote"></p></div>
+          <div class="checks" id="checks"></div>
+        </article>
+        <p class="ask" id="ask">이 질문, 사람이 실제로 물어볼 만한가요? 답이 맞나요?</p>
+        <div class="choices" data-z="fixed">
+          <button class="btn" data-act="discard">버리기</button>
+          <button class="btn" data-act="edit">고쳐서 넣기</button>
+          <button class="btn dark" data-act="accept">맞아요, 넣기</button>
+        </div>
+        <p class="hint">키보드: ← 버리기 · E 고쳐서 넣기 · Enter 넣기</p>
+        <div class="done" id="done" style="display:none"><b>다 골랐어요</b><small>넣음 2 · 버림 1 · 질문 13 → 15개</small><button class="btn dark" data-go="a1">시험지로 돌아가기</button></div>
+      </div>
+    </section>
+
+    <!-- ③ 새 질문: 오른쪽 패널이 단계별 -->
+    <section class="scene" id="b">
+      <div class="body" data-z="hybrid">
+        <div class="card list" data-z="fluid" style="opacity:.55"><div class="card-head"><h2>질문 13개</h2><button class="btn sm dark">＋ 새 질문</button></div>
+          <div class="row"><span>q01 · FortiGate가 HTTPS 요청의 Host를…</span><span class="pill direct">직접</span></div>
+          <div class="row"><span>q02 · SSH 접속 시 두 개발 서버를…</span><span class="pill direct">직접</span></div>
+          <div class="row"><span>q11 · …</span><span class="pill none">답 없음</span></div></div>
+        <aside class="card panel" data-z="fixed" id="wizard"></aside>
+      </div>
+    </section>
+
+    <!-- ④ 기존 질문: 요약 + 항목별 고치기 -->
+    <section class="scene" id="c">
+      <div class="body" data-z="hybrid">
+        <div class="card list" data-z="fluid" style="opacity:.55"><div class="card-head"><h2>질문 13개</h2></div>
+          <div class="row"><span>q01 · FortiGate가 HTTPS 요청의 Host를…</span><span class="pill direct">직접</span></div>
+          <div class="row sel"><span>q02 · SSH 접속 시 두 개발 서버를…</span><span class="pill direct">직접</span></div>
+          <div class="row"><span>q03 · 인증서 갱신에서 standalone…</span><span class="pill direct">직접</span></div></div>
+        <aside class="card panel" data-z="fixed" id="summary"></aside>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+// 장면 전환
+const go = id => { document.querySelectorAll('.scene').forEach(s => s.classList.toggle('on', s.id === id));
+  document.querySelectorAll('.note [data-go]').forEach(b => b.classList.toggle('on', b.dataset.go === id)); if (id === 'b') wiz(0); if (id === 'c') sum(null); };
+document.addEventListener('click', e => { const g = e.target.closest('[data-go]'); if (g) go(g.dataset.go); });
+
+// ② 초안 하나씩 (실제 초안 3개로 흉내)
+const drafts = [
+  { src: 'fortigate-https-host-routing.md › FortiGate Virtual Server의 HTTPS 도메인 분기', kind: '직접', q: '이 글에서 설명하는 HTTPS 구성은 이미 운영 중인 설정인가요?', a: '아니요. 기존 HTTP 도메인 분기와 달리, HTTPS 443 구성은 아직 적용 전인 검토 예시입니다.', quote: '기존 HTTP 도메인 분기와 달리, 아래 HTTPS 443 구성은 아직 적용 전인 검토 예시다.', checks: [['ok', '✓ 원문에 있음 · 조각 #285에 들어감']] },
+  { src: 'fortigate-https-host-routing.md › FortiGate Virtual Server의 HTTPS 도메인 분기', kind: '표현 바꿈', q: '글에 나온 보안 웹 연결 방식은 현장에 반영된 상태인가요?', a: '아니요. 아직 적용 전인 검토 예시입니다.', quote: '기존 HTTP 도메인 분기와 달리, 아래 HTTPS 443 구성은 아직 적용 전인 검토 예시다.', checks: [['ok', '✓ 원문에 있음 · 조각 #285에 들어감'], ['', '바로 앞 초안과 같은 근거를 다른 말로 물어본 질문이에요']] },
+  { src: 'network-infrastructure-understanding.md › 먼저 전체 네트워크의 경계를 살펴보기', kind: '직접', q: '회사 PC에서 DEV 서버에 접속할 때 거치는 경로는 어떻게 되나요?', a: 'PUBLIC_IP의 FortiGate WAN을 지나 허용된 전달 규칙과 방화벽 정책을 거쳐 DEV(port3)의 서버로 갑니다.', quote: '→ PUBLIC_IP의 FortiGate WAN → 허용된 전달 규칙과 방화벽 정책 → DEV(port3)의 서버', checks: [['ok', '✓ 원문에 있음 · 조각 #294에 들어감'], ['warn', '같은 문장이 network-infrastructure-article.md에도 있어요 → 넣으면 그 문서도 근거로 함께 들어가요']] },
+];
+let i = 0, last = null;
+function show() {
+  const done = i >= drafts.length;
+  ['one', 'ask'].forEach(id => document.getElementById(id).style.display = done ? 'none' : '');
+  document.querySelector('.choices').style.display = done ? 'none' : ''; document.querySelector('.hint').style.display = done ? 'none' : '';
+  document.getElementById('done').style.display = done ? '' : 'none';
+  document.getElementById('bar').style.width = `${(Math.min(i, 16) / 16) * 100}%`;
+  document.getElementById('count').textContent = `${Math.min(i + 1, 16)} / 16`;
+  if (done) return;
+  const d = drafts[i];
+  document.getElementById('src').textContent = d.src;
+  document.getElementById('kind').innerHTML = `<span class="pill ${d.kind === '직접' ? 'direct' : 'para'}">${d.kind}</span>`;
+  document.getElementById('q').textContent = d.q; document.getElementById('a').textContent = d.a; document.getElementById('quote').textContent = `“${d.quote}”`;
+  document.getElementById('checks').innerHTML = d.checks.map(([c, t]) => `<span class="${c}">${t}</span>`).join('');
+}
+function act(kind) {
+  if (i >= drafts.length) return;
+  if (kind === 'edit') { go('c'); sum(drafts[i]); return; }
+  last = i; const t = document.getElementById('toast');
+  document.getElementById('toast-text').textContent = kind === 'accept' ? `q${14 + i}로 넣었어요` : '버렸어요';
+  t.style.display = ''; i++; show();
+}
+document.querySelectorAll('[data-act]').forEach(b => b.onclick = () => act(b.dataset.act));
+document.getElementById('undo').onclick = () => { if (last != null) { i = last; last = null; document.getElementById('toast').style.display = 'none'; show(); } };
+document.addEventListener('keydown', e => { if (!document.getElementById('a2').classList.contains('on')) return;
+  if (e.key === 'Enter') act('accept'); else if (e.key === 'ArrowLeft') act('discard'); else if (e.key.toLowerCase() === 'e') act('edit'); });
+show();
+
+// ③ 새 질문 단계별
+const state = { kind: null, q: '', a: '', ev: null };
+function stepsFor() { return state.kind === '답 없음' ? ['kind', 'q', 'a', 'check'] : ['kind', 'q', 'a', 'ev', 'check']; }
+function wiz(n) {
+  const steps = stepsFor(), s = steps[n], el = document.getElementById('wizard');
+  const dots = steps.map((_, k) => `<i class="${k === n ? 'on' : k < n ? 'past' : ''}"></i>`).join('');
+  const back = n ? `<button class="btn ghost" data-w="${n - 1}">← 이전</button>` : '';
+  let body = '', next = `<button class="btn dark" data-w="${n + 1}">다음</button>`;
+  if (s === 'kind') {
+    body = `<h3>어떤 질문을 만들까요?</h3>
+      <div class="kinds">${[['직접', '문서에 있는 말 그대로 묻기'], ['표현 바꿈', '같은 내용을 다른 말로 묻기 — 검색이 뜻을 이해하는지 봐요'], ['답 없음', '문서에 답이 없는 질문 — "모른다"고 하는지 봐요']].map(([k, t]) =>
+        `<button class="kind ${state.kind === k ? 'on' : ''}" data-kind="${k}"><b>${k}</b><span>${t}</span></button>`).join('')}</div>`;
+    next = `<button class="btn dark" data-w="1" ${state.kind ? '' : 'disabled style="opacity:.4"'}>다음</button>`;
+  } else if (s === 'q') {
+    body = `<h3>질문을 적어 주세요</h3><p class="sub">사람이 실제로 물어볼 말투로 적어요.</p><textarea class="field" id="fq" placeholder="예: 개발 서버 2에 SSH로 들어가는 포트는?">${state.q}</textarea>`;
+  } else if (s === 'a') {
+    body = `<h3>정답은 뭔가요?</h3><p class="sub">채점에는 안 쓰고, 나중에 사람이 볼 때와 답변 평가 참고용이에요. 비워도 돼요.</p><textarea class="field" id="fa" placeholder="예: 2224번 포트">${state.a}</textarea>`;
+    next = `<button class="btn" data-w="${n + 1}">건너뛰기</button><button class="btn dark" data-w="${n + 1}">다음</button>`;
+  } else if (s === 'ev') {
+    body = `<h3>근거 문장을 골라 주세요</h3><p class="sub">문서에서 정답이 적힌 문장을 찾아 눌러요. 원문 그대로 들어가요.</p>
+      <div class="search">⌕ 2224</div>
+      ${[['fortigate-ssh-port-forwarding.md › VIP로 외부 포트와…', '두 서버 모두 내부에서는 SSH 기본 포트 22를 사용하지만, 사용자는 외부 포트 2223과 <mark>2224</mark>로 대상을 구분한다.'],
+         ['network-service-expansion…md › 외부 또는 회사 PC 쪽에서…', 'ssh -p <mark>2224</mark> deploy@PUBLIC_IP']].map(([p, t], k) =>
+        `<button class="hit ${state.ev === k ? 'on' : ''}" data-ev="${k}"><small>${p}</small><span>${t}</span></button>`).join('')}
+      ${state.ev != null ? '<span class="picked">✓ 고름 · 원문에 있음 · 조각 #288에 들어감</span>' : ''}
+      <button class="btn sm" style="align-self:flex-start">＋ 근거 하나 더</button>`;
+    next = `<button class="btn dark" data-w="${n + 1}" ${state.ev != null ? '' : 'disabled style="opacity:.4"'}>다음</button>`;
+  } else {
+    body = `<h3>이대로 넣을까요?</h3>
+      <div class="sumrow"><div class="top"><small>종류</small><button class="edit" data-w="0">고치기</button></div><span class="val">${state.kind}</span></div>
+      <div class="sumrow"><div class="top"><small>질문</small><button class="edit" data-w="1">고치기</button></div><span class="val">${state.q || '—'}</span></div>
+      <div class="sumrow"><div class="top"><small>정답</small><button class="edit" data-w="2">고치기</button></div><span class="val">${state.a || '—'}</span></div>
+      ${state.kind === '답 없음' ? '' : `<div class="sumrow"><div class="top"><small>근거 1개</small><button class="edit" data-w="3">고치기</button></div><span class="ev">두 서버 모두 내부에서는 SSH 기본 포트 22를 사용하지만…<small>fortigate-ssh-port-forwarding.md</small></span></div>`}
+      <div class="sumrow"><div class="top"><small>용도 · 환경</small><button class="edit">바꾸기</button></div><span class="val">개선용 · 혼합</span></div>
+      <p class="chk">✓ 자동 점검 통과 — 저장하면 q14가 돼요</p>`;
+    next = `<button class="btn dark">저장</button>`;
+  }
+  el.innerHTML = `<div class="card-head"><div class="dots">${dots}</div><small>새 질문 · ${n + 1}/${steps.length}</small></div><div class="step">${body}</div><div class="foot">${back}${next}</div>`;
+  el.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => { state.kind = b.dataset.kind; wiz(0); });
+  el.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => { state.ev = +b.dataset.ev; wiz(n); });
+  el.querySelectorAll('[data-w]').forEach(b => b.onclick = () => {
+    const fq = el.querySelector('#fq'), fa = el.querySelector('#fa'); if (fq) state.q = fq.value; if (fa) state.a = fa.value; wiz(+b.dataset.w); });
+}
+
+// ④ 기존 질문 요약 (또는 초안 고쳐서 넣기의 확인 화면)
+function sum(draft) {
+  const el = document.getElementById('summary');
+  const d = draft ?? { q: 'SSH 접속 시 두 개발 서버를 외부에서 어떻게 구분하는가?', a: '외부 포트로 구분한다. PUBLIC_IP:2223은 DEV_SERVER_01_IP:22, PUBLIC_IP:2224는 DEV_SERVER_02_IP:22로 연결한다.', kind: '직접', quote: null };
+  const head = draft ? `<div class="card-head"><h2>초안 고쳐서 넣기</h2><small>고칠 곳만 눌러요</small></div><p class="warnbox">LLM이 만든 초안이에요. 질문 말투와 답만 보면 돼요. 근거는 원문과 맞는 걸 확인했어요.</p>`
+                     : `<div class="card-head"><h2>q02</h2><small>개선용 · 직접 · 혼합</small></div><p class="chk">✓ 자동 점검 통과 · 근거 2개 모두 원문·조각에 있음</p>`;
+  el.innerHTML = `${head}
+    <div class="sumrow" id="row-q"><div class="top"><small>질문</small><button class="edit" data-open="q">고치기</button></div><span class="val">${d.q}</span></div>
+    <div class="sumrow"><div class="top"><small>정답</small><button class="edit">고치기</button></div><span class="val">${d.a}</span></div>
+    <div class="sumrow"><div class="top"><small>종류 · 용도 · 환경</small><button class="edit">바꾸기</button></div><span class="val">${d.kind} · 개선용 · 혼합</span></div>
+    <div class="sumrow"><div class="top"><small>${draft ? '근거 1개' : '근거 2개'}</small><button class="edit">고치기</button></div>
+      ${draft ? `<span class="ev">${draft.quote}<small>${draft.src.split(' › ')[0]} · ✓ 조각에 들어감</small></span>`
+              : `<span class="ev">외부에서는 2223과 2224로 구분함<small>network-infrastructure-article.md · ✓ 조각 #18</small></span>
+                 <span class="ev">사용자는 외부 포트 2223과 2224로 대상을 구분한다<small>fortigate-ssh-port-forwarding.md · ✓ 조각 #41</small></span>`}</div>
+    <div class="foot">${draft ? '<button class="btn ghost" data-go="a2">← 취소</button><button class="btn dark" data-go="a2">넣고 다음 초안</button>'
+                              : '<button class="btn ghost">질문 지우기</button><button class="btn dark" disabled style="opacity:.4">바뀐 게 없어요</button>'}</div>`;
+  el.querySelector('[data-open=q]').onclick = () => {
+    el.querySelector('#row-q').innerHTML = `<div class="inline"><small>질문 고치기</small><textarea class="field" style="min-height:70px">${d.q}</textarea>
+      <div class="row2"><button class="btn sm" id="c-cancel">취소</button><button class="btn sm dark" id="c-ok">완료</button></div></div>`;
+    el.querySelector('#c-cancel').onclick = el.querySelector('#c-ok').onclick = () => sum(draft);
+  };
+}
+</script>
+</body>

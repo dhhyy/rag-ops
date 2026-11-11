@@ -206,3 +206,19 @@ def decide(draft_id: int, status: str, question_id: str | None = None) -> None:
         conn.execute("UPDATE eval_drafts SET status = %s, question_id = %s, decided_at = now() WHERE id = %s AND status = 'pending'",
                      (status, question_id, draft_id))
 
+
+def undo(draft_id: int, sha: str) -> dict:
+    """[되돌리기]: 넣은 초안이면 시험지에서 그 질문을 지우고, 버린 초안이면 그대로 "고를 것"으로 돌린다."""
+    import questions
+    with connect(load_env()) as conn:
+        row = conn.execute("SELECT status, question_id FROM eval_drafts WHERE id = %s", (draft_id,)).fetchone()
+    if row is None:
+        raise IngestError(f"초안 {draft_id}이 없어요")
+    status, question_id = row
+    if status == "pending":
+        raise IngestError(f"초안 {draft_id}은 아직 고르기 전이에요")
+    result = questions.delete(sha, question_id) if status == "accepted" and question_id else None
+    with connect(load_env()) as conn:
+        conn.execute("UPDATE eval_drafts SET status = 'pending', question_id = NULL, decided_at = NULL WHERE id = %s", (draft_id,))
+    return {"questions": result}
+
