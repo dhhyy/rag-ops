@@ -4,6 +4,7 @@
   ingest  문서 하나를 가져와 기본 색인에 넣는다 (기본값)
   build   저장된 문서 하나를 다른 색인에 넣는다 (색인 만들기·갱신)
   eval    현재 설정으로 평가를 돌린다
+  drafts  LLM으로 평가 질문 초안을 만든다 (시험지 3단계)
 상태는 queued(대기) → running(진행) → done(완료) / failed(실패) 순서로만 바뀐다.
 """
 from __future__ import annotations
@@ -71,6 +72,9 @@ def run_job(job_id: int) -> None:
                               index_id=int(params["index_id"]) if params.get("index_id") else None,
                               reranker=params.get("reranker"), keyword=params.get("keyword"),
                               answers=bool(params.get("answers")))
+        elif kind == "drafts":
+            from drafts import make_drafts
+            result = make_drafts(int(params.get("count", 10)), params.get("batch", ""), on_step)
         else:
             result = ingest_file(Path(path), env_label=params.get("env"), doc_type=params.get("doc_type"),
                                  verification=params.get("verification") or "미확인",

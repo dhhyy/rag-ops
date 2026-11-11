@@ -29,6 +29,7 @@ from pydantic import BaseModel
 from psycopg.types.json import Jsonb
 
 import components as comp
+import drafts
 import evaluate
 import indexes
 import questions
@@ -716,6 +717,7 @@ def evidence_search(q: str = Query("", max_length=200)) -> list[dict]:
 class QuestionSave(BaseModel):
     sha: str                   # 불러올 때의 시험지 해시. 그사이 파일이 바뀌었으면 덮어쓰지 않는다
     question: dict
+    draft_id: int | None = None  # LLM 초안을 넣는 거면 그 초안 번호. 저장되면 초안을 "넣음"으로 바꾼다
 
 
 def _question_call(fn, *args) -> dict:
@@ -729,7 +731,61 @@ def _question_call(fn, *args) -> dict:
 
 @app.post("/questions")
 def add_question(req: QuestionSave) -> dict:
-    return _question_call(questions.save, req.sha, req.question)
+    if req.draft_id is None:
+        return _question_call(questions.save, req.sha, req.question)
+    # LLM 초안은 개선용으로만 넣는다. 최종 평가용은 사람이 쓴 질문 위주로 둔다 (docs/question-set.md)
+    if req.question.get("use") == "최종 평가용":
+        raise HTTPException(422, "LLM 초안은 개선용으로만 넣어요. 최종 평가용은 사람이 직접 쓴 질문으로 채워 주세요")
+    with connect(load_env()) as conn:
+        try:
+            drafts.get_pending(conn, req.draft_id)
+        except IngestError as e:
+            raise HTTPException(409, str(e))
+    result = _question_call(questions.save, req.sha, req.question)
+    drafts.decide(req.draft_id, "accepted", result["id"])
+    return result
+
+
+# LLM 초안: 고르기 전 목록, 만들기(작업 대기열), 버리기
+@app.get("/drafts")
+def get_drafts() -> dict:
+    return drafts.list_drafts()
+
+
+class DraftRequest(BaseModel):
+    count: int = 10            # 보낼 조각 수. 조각 하나에서 직접·표현 바꿈 초안이 하나씩 나온다
+
+
+@app.post("/drafts", status_code=202)
+def create_drafts(req: DraftRequest) -> dict:
+    if not 1 <= req.count <= drafts.MAX_CHUNKS:
+        raise HTTPException(400, f"조각 수는 1~{drafts.MAX_CHUNKS}개로 정해 주세요")
+    ok, reason = comp.OpenAIGenerator.availability(load_env())
+    if not ok:
+        raise HTTPException(409, reason)
+    with connect(load_env()) as conn:
+        busy = conn.execute("SELECT id FROM ingest_jobs WHERE params->>'kind'='drafts' AND status IN ('queued','running')").fetchone()
+        if busy:
+            raise HTTPException(409, f"초안을 이미 만드는 중이에요 (job {busy[0]})")
+        params = {"kind": "drafts", "count": req.count, "batch": uuid.uuid4().hex}
+        job_id = conn.execute("INSERT INTO ingest_jobs (path, params) VALUES (%s, %s) RETURNING id",
+                              (f"drafts: 조각 {req.count}개", Jsonb(params))).fetchone()[0]
+    try:
+        ingest_task.delay(job_id)
+    except Exception as e:
+        raise HTTPException(503, f"대기열(Redis)에 연결할 수 없습니다: {type(e).__name__}")
+    return {"job_id": job_id}
+
+
+@app.post("/drafts/{draft_id}/discard")
+def discard_draft(draft_id: int) -> dict:
+    with connect(load_env()) as conn:
+        try:
+            drafts.get_pending(conn, draft_id)
+        except IngestError as e:
+            raise HTTPException(409, str(e))
+    drafts.decide(draft_id, "discarded")
+    return drafts.list_drafts()
 
 
 @app.put("/questions/{qid}")

@@ -1,7 +1,7 @@
 // Evaluations › 시험지: 평가 질문(eval/questions.jsonl)과 자동 점검 결과. 오른쪽 패널에서 고치면 엔진이 파일을 다시 쓴다.
 // 화면 나누기: 제목·요약 줄 = Fixed, 본문 = Hybrid (왼쪽 문서별·질문 목록 Fluid + 오른쪽 편집 420px Fixed).
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { CircleAlert, CircleCheck, Plus, RefreshCw, Search, TriangleAlert, X } from 'lucide-react';
+import { CircleAlert, CircleCheck, LoaderCircle, Plus, RefreshCw, Search, Sparkles, TriangleAlert, X } from 'lucide-react';
 import { api, Card, Heading } from './ui';
 
 type Level = 'error' | 'warn';
@@ -37,11 +37,14 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const detail = useRef<HTMLDivElement>(null);
   const dirty = useRef(false);   // 편집 패널에 저장하지 않은 변경이 있는지
+  const [seed, setSeed] = useState<Seed | null>(null);   // [고쳐서 넣기]로 편집 패널에 올린 초안
+  const [draftsVersion, setDraftsVersion] = useState(0);  // 바뀌면 초안 목록을 다시 불러온다
   // 좁은 화면에서는 편집 패널이 목록 아래에 있어서, 고르면 그쪽으로 내려 준다.
-  function choose(id: string) {
-    if (id === selectedId) return;
+  function choose(id: string, nextSeed: Seed | null = null) {
+    if (id === selectedId && !nextSeed && !seed) return;
     if (dirty.current && !window.confirm('저장하지 않은 변경이 있어요. 버리고 다른 질문으로 갈까요?')) return;
     dirty.current = false;
+    setSeed(nextSeed);
     setSelectedId(id);
     if (window.innerWidth <= 1200) requestAnimationFrame(() => detail.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   }
@@ -65,6 +68,8 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
   // 저장·삭제가 끝나면 엔진이 새 점검 결과를 돌려준다. 그걸로 화면 전체를 바꾼다.
   function applySaved(next: QuestionSetData, id: string | null) {
     dirty.current = false;
+    if (seed) setDraftsVersion(v => v + 1);
+    setSeed(null);
     setData(next);
     setSelectedId(id ?? next.questions[0]?.id ?? null);
   }
@@ -118,6 +123,9 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
           </React.Fragment>)}</div>
         </Card>
 
+        <Drafts sha={data.sha} version={draftsVersion} onAccepted={applySaved}
+          onEdit={d => choose(NEW, { draftId: d.id, draft: draftToEditor(d) })} />
+
         <Card className="qs-card" delay={0.2}>
           <div className="qs-card-head"><h2>질문 {s.questions}개</h2><span className="qs-head-right"><small>누르면 오른쪽에서 고쳐요</small>
             <button className="qs-btn qs-btn-dark" onClick={() => choose(NEW)}><Plus size={13} />새 질문</button></span></div>
@@ -146,7 +154,7 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
 
       <div ref={detail} className="qs-detail-wrap"><Card className="qs-card qs-detail" delay={0.22}>
         {selected || selectedId === NEW
-          ? <Editor key={`${selectedId}@${data.sha}`} q={selected} sha={data.sha} onDirty={d => { dirty.current = d; }} onSaved={applySaved}
+          ? <Editor key={`${selectedId}@${data.sha}@${seed?.draftId ?? ''}`} q={selected} sha={data.sha} seed={seed} onDirty={d => { dirty.current = d; }} onSaved={applySaved}
               indexLabel={`${data.index.label.chunker} × ${data.index.label.embedder.split(' · ').pop()}`} />
           : <p className="muted">질문을 고르세요.</p>}
       </Card></div>
@@ -158,6 +166,7 @@ type EvDraft = { path: string; heading: string; quote: string };
 type Draft = { question: string; answer: string; kind: string; use: string; env: string; evidence: EvDraft[] };
 type Hit = { path: string; title: string; quote: string; heading: string; in_chunk: boolean };
 const ENVS = ['혼합', '운영', '개발', '샘플'];
+type Seed = { draftId: number; draft: Draft };
 const KINDS = ['직접', '표현 바꿈', '답 없음'];
 
 function toDraft(q: Question | null): Draft {
@@ -173,11 +182,11 @@ function Seg({ value, options, onChange, label }: { value: string; options: stri
 }
 
 // 편집 패널. 저장하면 엔진이 다시 점검하고, 오류가 있으면 쓰지 않고 이유를 돌려준다.
-function Editor({ q, sha, indexLabel, onDirty, onSaved }: {
-  q: Question | null; sha: string; indexLabel: string;
+function Editor({ q, sha, seed, indexLabel, onDirty, onSaved }: {
+  q: Question | null; sha: string; seed: Seed | null; indexLabel: string;
   onDirty: (dirty: boolean) => void; onSaved: (data: QuestionSetData, id: string | null) => void;
 }) {
-  const original = useMemo(() => toDraft(q), [q]);
+  const original = useMemo(() => seed?.draft ?? toDraft(q), [q, seed]);
   const [draft, setDraft] = useState<Draft>(original);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -190,7 +199,7 @@ function Editor({ q, sha, indexLabel, onDirty, onSaved }: {
   async function save(next: Draft = draft) {
     setBusy(true); setError('');
     try {
-      const body = { sha, question: next };
+      const body = { sha, question: next, draft_id: q ? undefined : seed?.draftId };
       const res = q
         ? await api<QuestionSetData & { id: string }>(`/questions/${q.id}`, { method: 'PUT', body })
         : await api<QuestionSetData & { id: string }>('/questions', { method: 'POST', body });
@@ -212,7 +221,8 @@ function Editor({ q, sha, indexLabel, onDirty, onSaved }: {
   const savedEv = (e: EvDraft) => q?.evidence.find(x => x.path === e.path && (x.quote ?? '') === e.quote);
 
   return <>
-    <div className="qs-card-head"><h2>{q ? `${q.id} 고치기` : '새 질문'}</h2><small>{q ? `${q.use} · ${q.kind}` : '저장하면 다음 번호가 붙어요'}</small></div>
+    <div className="qs-card-head"><h2>{q ? `${q.id} 고치기` : seed ? `초안 ${seed.draftId} 고쳐서 넣기` : '새 질문'}</h2><small>{q ? `${q.use} · ${q.kind}` : '저장하면 다음 번호가 붙어요'}</small></div>
+    {seed && <p className="qs-check warn"><Sparkles size={13} />LLM이 만든 초안이에요. 질문이 자연스러운지, 답이 맞는지 보고 고쳐 주세요. 초안은 개선용으로만 넣어요.</p>}
     {q?.use === '최종 평가용' && <p className="qs-check warn"><TriangleAlert size={13} />최종 평가용 질문이에요. 평가 결과를 보고 고치면 최종 평가의 의미가 없어져요. 오타나 근거 오류만 고쳐 주세요.</p>}
     {q && q.checks.length > 0 && <div className="qs-checks">{q.checks.map((c, i) => {
       const ev = c.evidence != null ? q.evidence[c.evidence] : null;
@@ -230,7 +240,7 @@ function Editor({ q, sha, indexLabel, onDirty, onSaved }: {
       <textarea id="qs-answer" className="qs-input" rows={2} value={draft.answer} onChange={e => set({ answer: e.target.value })} /></div>
     <div className="qs-row2">
       <div className="qs-field"><label>종류</label><Seg label="종류" value={draft.kind} options={KINDS} onChange={kind => set({ kind })} /></div>
-      <div className="qs-field"><label>용도</label><Seg label="용도" value={draft.use} options={['개선용', '최종 평가용']} onChange={use => set({ use })} /></div>
+      <div className="qs-field"><label>용도</label><Seg label="용도" value={draft.use} options={seed ? ['개선용'] : ['개선용', '최종 평가용']} onChange={use => set({ use })} /></div>
     </div>
     <div className="qs-field"><label>환경</label><Seg label="환경" value={draft.env} options={ENVS.includes(draft.env) ? ENVS : [...ENVS, draft.env]} onChange={env => set({ env })} /></div>
 
@@ -302,4 +312,114 @@ function EvidenceSearch({ have, onPick }: { have: EvDraft[]; onPick: (hit: Hit) 
       </div>;
     })}</div>}
   </div>;
+}
+
+// ── LLM 초안 (3단계) ─────────────────────────────────────────────────────
+type DraftItem = {
+  id: number; kind: string; question: string; answer: string | null; path: string; heading: string | null; quote: string;
+  chunk_id: number | null; pair_id: number | null; in_document: boolean; chunk_ids: number[]; elsewhere: string[]; similar: string[];
+};
+type DraftList = { drafts: DraftItem[]; totals: Record<'pending' | 'accepted' | 'discarded', number>; spent_usd: number; model: string; max_chunks: number };
+type DraftJob = { id: number; status: string; progress_done: number | null; progress_total: number | null; error: string | null;
+  result: { chunks: number; made: number; quote_mismatch: number; skipped: number; bad_format: number; api_error: number; cost_usd: number } | null };
+
+// 같은 문장이 다른 문서에도 있으면 그 문서도 근거로 함께 넣는다 (그래야 어느 문서를 꺼내도 정답으로 채점된다).
+function draftToEditor(d: DraftItem): Draft {
+  return { question: d.question, answer: d.answer ?? '', kind: d.kind, use: '개선용', env: '혼합',
+    evidence: [{ path: d.path, heading: d.heading ?? '', quote: d.quote }, ...d.elsewhere.map(p => ({ path: p, heading: '', quote: d.quote }))] };
+}
+
+function Drafts({ sha, version, onAccepted, onEdit }: {
+  sha: string; version: number; onAccepted: (data: QuestionSetData, id: string | null) => void; onEdit: (d: DraftItem) => void;
+}) {
+  const [list, setList] = useState<DraftList | null>(null);
+  const [count, setCount] = useState(10);
+  const [job, setJob] = useState<DraftJob | null>(null);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [errors, setErrors] = useState<Record<number, string>>({});
+  const [error, setError] = useState('');
+
+  async function load() {
+    try { setList(await api<DraftList>('/drafts')); setError(''); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  }
+  useEffect(() => { void load(); }, [version]);
+
+  // 만드는 중이면 1.5초마다 작업 상태를 본다. 끝나면 목록을 다시 불러온다.
+  useEffect(() => {
+    if (!job || job.status === 'done' || job.status === 'failed') return;
+    const timer = window.setTimeout(() => {
+      api<DraftJob>(`/jobs/${job.id}`).then(next => { setJob(next); if (next.status === 'done' || next.status === 'failed') void load(); })
+        .catch(e => setError(e instanceof Error ? e.message : String(e)));
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [job]);
+  const running = !!job && job.status !== 'done' && job.status !== 'failed';
+
+  async function start() {
+    setError('');
+    try {
+      const { job_id } = await api<{ job_id: number }>('/drafts', { method: 'POST', body: { count } });
+      setJob({ id: job_id, status: 'queued', progress_done: 0, progress_total: count, error: null, result: null });
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  }
+  async function accept(d: DraftItem) {
+    setBusyId(d.id); setErrors(x => ({ ...x, [d.id]: '' }));
+    try {
+      const res = await api<QuestionSetData & { id: string }>('/questions', { method: 'POST', body: { sha, question: draftToEditor(d), draft_id: d.id } });
+      onAccepted(res, res.id);
+      await load();
+    } catch (e) { setErrors(x => ({ ...x, [d.id]: e instanceof Error ? e.message : String(e) })); }
+    setBusyId(null);
+  }
+  async function discard(d: DraftItem) {
+    setBusyId(d.id);
+    try { setList(await api<DraftList>(`/drafts/${d.id}/discard`, { method: 'POST' })); }
+    catch (e) { setErrors(x => ({ ...x, [d.id]: e instanceof Error ? e.message : String(e) })); }
+    setBusyId(null);
+  }
+
+  const r = job?.result;
+  const dropped = r ? r.quote_mismatch + r.bad_format + r.api_error : 0;
+  return <Card className="qs-card" delay={0.18}>
+    <div className="qs-card-head"><h2>LLM 초안{list ? ` · 고를 것 ${list.totals.pending}개` : ''}</h2>
+      {list && <small>넣음 {list.totals.accepted} · 버림 {list.totals.discarded} · 지금까지 ${list.spent_usd.toFixed(4)}</small>}</div>
+    <div className="qs-draft-run">
+      <label className="qs-draft-count">조각
+        <select value={count} onChange={e => setCount(Number(e.target.value))} disabled={running} aria-label="보낼 조각 수">
+          {[5, 10, 20].map(n => <option key={n} value={n}>{n}개</option>)}
+        </select></label>
+      <small>질문이 적은 문서의 조각부터 골라 {list?.model ?? 'gpt-6-luna'}에 보내요. 조각 하나에서 직접·표현 바꿈 질문이 하나씩 나와요. 예상 약 ${(count * 0.00013).toFixed(4)}</small>
+      <button className="qs-btn qs-btn-dark" onClick={() => void start()} disabled={running}>
+        {running ? <><LoaderCircle size={13} className="spin" />조각 {job?.progress_done ?? 0}/{job?.progress_total ?? count}</> : <><Sparkles size={13} />초안 만들기</>}</button>
+    </div>
+    <p className="qs-note qs-draft-note">외부 전송이 허용된 문서만 보내요. "답 없음" 질문은 만들지 않아요(문서에 없는 걸 아는 건 사람이라서). 근거 문장이 원문과 글자 그대로 맞지 않는 초안은 자동으로 버려요.</p>
+    {job?.status === 'failed' && <p className="qs-check error"><CircleAlert size={13} />초안을 만들지 못했어요: {job.error}</p>}
+    {r && job?.status === 'done' && <p className="qs-check ok"><CircleCheck size={13} />조각 {r.chunks}개에서 초안 {r.made}개를 만들었어요{dropped ? ` · ${dropped}개는 버림(근거 문장 불일치 ${r.quote_mismatch}, 형식 ${r.bad_format}, API 오류 ${r.api_error})` : ''}{r.skipped ? ` · 질문거리 없는 조각 ${r.skipped}개` : ''} · ${r.cost_usd.toFixed(4)}</p>}
+    {error && <p className="qs-check error"><CircleAlert size={13} />{error}</p>}
+
+    {list && list.drafts.length > 0 && <div className="qs-drafts">{list.drafts.map(d => {
+      const usable = d.in_document && d.chunk_ids.length > 0;
+      return <div key={d.id} className="qs-draft">
+        <div className="qs-draft-head"><span className="qs-path">#{d.id} · {file(d.path)}{d.heading ? ` › ${d.heading}` : ''}</span><span className={`qs-pill ${KIND_TONE[d.kind] ?? ''}`}>{d.kind}</span></div>
+        <p><b>질문</b> {d.question}</p>
+        {d.answer && <p><b>답</b> {d.answer}</p>}
+        <p className="qs-draft-quote"><b>근거</b> “{d.quote}”</p>
+        <div className="qs-draft-checks">
+          {usable ? <span className="ok"><CircleCheck size={11} />원문에 있음 · 조각 #{d.chunk_ids.join(', #')}</span>
+            : <span className="bad"><CircleAlert size={11} />{d.in_document ? '조각 경계에 걸림' : '원문에 없음 (문서가 바뀜)'}</span>}
+          {d.pair_id && <span>초안 #{d.pair_id}와 같은 근거의 표현 바꾼 질문</span>}
+          {d.elsewhere.length > 0 && <span className="warn">같은 문장이 있는 {d.elsewhere.map(file).join(', ')}도 근거로 함께 넣어요</span>}
+          {d.similar.length > 0 && <span className="warn">비슷한 질문: {d.similar.join(', ')}</span>}
+        </div>
+        {errors[d.id] && <p className="qs-check error"><CircleAlert size={13} />{errors[d.id]}</p>}
+        <div className="qs-actions qs-draft-actions">
+          <button className="qs-btn" onClick={() => void discard(d)} disabled={busyId != null}>버리기</button>
+          <button className="qs-btn" onClick={() => onEdit(d)} disabled={busyId != null}>고쳐서 넣기</button>
+          <button className="qs-btn qs-btn-dark" onClick={() => void accept(d)} disabled={busyId != null || !usable}>{busyId === d.id ? '넣는 중…' : '맞아요, 넣기'}</button>
+        </div>
+      </div>;
+    })}</div>}
+    {list && !list.drafts.length && !running && <p className="muted">고를 초안이 없어요. [초안 만들기]를 누르면 여기에 쌓여요.</p>}
+  </Card>;
 }
