@@ -1,9 +1,11 @@
 // Evaluations › 시험지: 평가 질문(eval/questions.jsonl)과 자동 점검 결과. 오른쪽 패널에서 고치면 엔진이 파일을 다시 쓴다.
 // 화면 나누기
-// - 목록 모드: 제목·요약 줄 = Fixed, 본문 = Hybrid (왼쪽 문서별·질문 목록 Fluid + 오른쪽 패널 420px Fixed).
+// - 목록 모드: 제목·요약 줄 = Fixed, 본문 = Fluid (화면 폭 전체). 질문을 누르면 오른쪽에서 서랍(Hybrid)이 열린다.
 // - 초안 고르기 모드: Hybrid (배경 Fluid + 가운데 카드 폭 600px Fixed). 한 번에 초안 하나만 보여 준다.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, CircleAlert, CircleCheck, LoaderCircle, Plus, RefreshCw, Search, Sparkles, TriangleAlert, X } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { AnimatePresence, motion } from 'motion/react';
+import { ArrowDown, ArrowLeft, ArrowUp, CircleAlert, CircleCheck, LoaderCircle, Plus, RefreshCw, Search, Sparkles, TriangleAlert, X } from 'lucide-react';
 import { api, Card, Heading } from './ui';
 
 type Level = 'error' | 'warn';
@@ -39,19 +41,12 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);   // 서랍에 열린 질문 (NEW = 새 질문)
+  const [dir, setDir] = useState(1);   // 서랍 안에서 다음(1)·이전(-1) 질문으로 넘어간 방향
   const [reviewing, setReviewing] = useState(false);   // 초안 하나씩 고르기 화면
   const [draftsVersion, setDraftsVersion] = useState(0);  // 바뀌면 초안 카드를 다시 불러온다
-  const detail = useRef<HTMLDivElement>(null);
-  const dirty = useRef(false);   // 오른쪽 패널에 저장하지 않은 변경이 있는지
+  const dirty = useRef(false);   // 서랍에 저장하지 않은 변경이 있는지
   const leaveOk = () => !dirty.current || window.confirm('저장하지 않은 변경이 있어요. 버리고 넘어갈까요?');
-  // 좁은 화면에서는 오른쪽 패널이 목록 아래에 있어서, 고르면 그쪽으로 내려 준다.
-  function choose(id: string) {
-    if (id === selectedId || !leaveOk()) return;
-    dirty.current = false;
-    setSelectedId(id);
-    if (window.innerWidth <= 1200) requestAnimationFrame(() => detail.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-  }
 
   async function load() {
     setLoading(true);
@@ -67,14 +62,47 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
       (filter === 'all' || (filter === 'final' ? q.use === '최종 평가용' : filter === 'flagged' ? q.checks.length > 0 : q.kind === filter))
       && (!words || `${q.id} ${q.question} ${q.answer ?? ''} ${q.evidence.map(e => `${e.path} ${e.quote ?? ''}`).join(' ')}`.toLowerCase().includes(words)));
   }, [data, filter, query]);
-  useEffect(() => { if (data && selectedId !== NEW && !data.questions.some(q => q.id === selectedId)) setSelectedId(data.questions[0]?.id ?? null); }, [data]);
-  const selected = data?.questions.find(q => q.id === selectedId) ?? null;
-  // 저장·삭제가 끝나면 엔진이 새 점검 결과를 돌려준다. 그걸로 화면 전체를 바꾼다.
+  // 열린 질문이 지워졌으면 서랍을 닫는다.
+  useEffect(() => { if (data && openId && openId !== NEW && !data.questions.some(q => q.id === openId)) setOpenId(null); }, [data]);
+  const opened = data?.questions.find(q => q.id === openId) ?? null;
+  const at = shown.findIndex(q => q.id === openId);
+
+  function open(id: string) {
+    if (id === openId || !leaveOk()) return;
+    dirty.current = false;
+    const from = shown.findIndex(q => q.id === openId), to = shown.findIndex(q => q.id === id);
+    setDir(from >= 0 && to < from ? -1 : 1);
+    setOpenId(id);
+  }
+  function close() {
+    if (!openId || !leaveOk()) return;
+    const was = openId;
+    dirty.current = false;
+    setOpenId(null);
+    // 닫으면 보던 줄로 돌아간다 (키보드로 이어서 고를 수 있게)
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(`.qs-table tr[data-qid="${was}"]`)?.focus({ preventScroll: true }));
+  }
+  // 저장·삭제가 끝나면 엔진이 새 점검 결과를 돌려준다. 그걸로 화면 전체를 바꾼다. 지웠으면 서랍을 닫는다.
   function applySaved(next: QuestionSetData, id: string | null) {
     dirty.current = false;
     setData(next);
-    setSelectedId(id ?? next.questions[0]?.id ?? null);
+    setOpenId(id);
   }
+
+  // 서랍 키보드: Esc 닫기 · ↑↓ 이전·다음 질문 (글을 쓰는 중에는 ↑↓를 듣지 않는다)
+  const keys = useRef<(e: KeyboardEvent) => void>(() => {});
+  keys.current = e => {
+    if (!openId || e.isComposing) return;
+    if (e.key === 'Escape') { e.preventDefault(); close(); return; }
+    if ((e.target as HTMLElement).closest('input, textarea, select, [contenteditable="true"]')) return;
+    if (e.key === 'ArrowDown' && at >= 0 && at < shown.length - 1) { e.preventDefault(); open(shown[at + 1].id); }
+    if (e.key === 'ArrowUp' && at > 0) { e.preventDefault(); open(shown[at - 1].id); }
+  };
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => keys.current(e);
+    window.addEventListener('keydown', on);
+    return () => window.removeEventListener('keydown', on);
+  }, []);
 
   const head = <Heading title="Evaluations" subtitle={data ? `평가에 쓰는 질문과 정답 근거 · ${data.path} @ ${data.sha}` : '평가에 쓰는 질문과 정답 근거'}>
     {tabs}
@@ -118,11 +146,10 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
         <small>근거 {s.evidence}개 · {s.errors ? '오류가 있으면 채점이 틀어져요' : '모두 원문·조각에서 찾음'}</small></Card>
     </section>
 
-    {/* 본문 (Hybrid) */}
-    <section className="qs-body">
-      <div className="qs-left">
-        <DraftsCard version={draftsVersion} onReview={() => { if (leaveOk()) { dirty.current = false; setReviewing(true); } }} />
-
+    {/* 본문 (Fluid, 화면 폭 전체). 질문을 누르면 서랍이 열린다 */}
+    <section className="qs-main">
+      <div className="qs-duo">
+        <DraftsCard version={draftsVersion} onReview={() => setReviewing(true)} />
         <Card className="qs-card" delay={0.18}>
           <div className="qs-card-head"><h2>문서별로 고른가</h2><small>문서마다 최소 {t.per_document}문제 · {thin ? `부족한 문서 ${thin}개` : '모두 채움'} · 오른쪽은 근거가 닿은 조각 / 전체</small></div>
           <div className="qs-cover">{data.documents.map(d => <React.Fragment key={d.path}>
@@ -131,43 +158,105 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
             <small className={d.questions < t.per_document ? 'qs-low' : ''}>{d.covered} / {d.chunks}</small>
           </React.Fragment>)}</div>
         </Card>
-
-        <Card className="qs-card" delay={0.2}>
-          <div className="qs-card-head"><h2>질문 {s.questions}개</h2><span className="qs-head-right"><small>누르면 오른쪽에서 고쳐요</small>
-            <button className="qs-btn qs-btn-dark" onClick={() => choose(NEW)}><Plus size={13} />새 질문</button></span></div>
-          <div className="qs-filters">
-            {counts.map(([f, label, n]) => <button key={f} className={`qs-chip ${filter === f ? 'is-on' : ''}`} aria-pressed={filter === f} onClick={() => setFilter(f)}>{label} {n}</button>)}
-            <label className="qs-search"><Search size={13} /><input aria-label="질문·근거 검색" placeholder="질문·근거 검색" value={query} onChange={e => setQuery(e.target.value)} /></label>
-          </div>
-          <table className="qs-table">
-            <thead><tr><th>질문</th><th className="qs-col-kind">종류</th><th className="qs-col-use">용도</th><th className="qs-col-ev">근거</th><th className="qs-col-st">점검</th></tr></thead>
-            <tbody>{shown.map(q => {
-              const level = worst(q);
-              return <tr key={q.id} className={q.id === selectedId ? 'is-selected' : ''} onClick={() => choose(q.id)} tabIndex={0}
-                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(q.id); } }}>
-                <td className="qs-q"><div>{q.id} · {q.question}</div>
-                  <small>{q.abstain ? '근거 없음 · 보류가 정답' : q.evidence.length ? `${file(q.evidence[0].path)}${q.evidence.length > 1 ? ` 외 ${q.evidence.length - 1}` : ''}` : '—'}</small></td>
-                <td><span className={`qs-pill ${KIND_TONE[q.kind] ?? ''}`}>{q.kind}</span></td>
-                <td className="qs-col-use"><span className={`qs-pill ${q.use === '최종 평가용' ? 'final' : ''}`}>{q.use === '최종 평가용' ? '최종' : q.use}</span></td>
-                <td className="qs-col-ev">{q.evidence.length || '—'}</td>
-                <td><span className={`qs-st ${level ?? 'ok'}`}>{level === 'error' ? `! 오류 ${q.checks.filter(c => c.level === 'error').length}` : level === 'warn' ? `! 경고 ${q.checks.length}` : '✓ 통과'}</span></td>
-              </tr>;
-            })}</tbody>
-          </table>
-          {!shown.length && <p className="muted">조건에 맞는 질문이 없어요.</p>}
-        </Card>
       </div>
 
-      <div ref={detail} className="qs-detail-wrap"><Card className="qs-card qs-detail" delay={0.22}>
-        {selectedId === NEW
-          ? <Wizard key={`new@${data.sha}`} nextId={nextId(data.questions)} {...panelProps} />
-          : selected
-            ? <Summary key={`${selected.id}@${data.sha}`} q={selected} {...panelProps}
-                indexLabel={`${data.index.label.chunker} × ${data.index.label.embedder.split(' · ').pop()}`} />
-            : <p className="muted">질문을 고르세요.</p>}
-      </Card></div>
+      <Card className="qs-card" delay={0.2}>
+        <div className="qs-card-head"><h2>질문 {s.questions}개</h2><span className="qs-head-right"><small>누르면 서랍에서 고쳐요</small>
+          <button className="qs-btn qs-btn-dark" onClick={() => open(NEW)}><Plus size={13} />새 질문</button></span></div>
+        <div className="qs-filters">
+          {counts.map(([f, label, n]) => <button key={f} className={`qs-chip ${filter === f ? 'is-on' : ''}`} aria-pressed={filter === f} onClick={() => setFilter(f)}>{label} {n}</button>)}
+          <label className="qs-search"><Search size={13} /><input aria-label="질문·근거 검색" placeholder="질문·근거 검색" value={query} onChange={e => setQuery(e.target.value)} /></label>
+        </div>
+        <table className="qs-table">
+          <thead><tr><th>질문</th><th className="qs-col-kind">종류</th><th className="qs-col-use">용도</th><th className="qs-col-ev">근거</th><th className="qs-col-st">점검</th></tr></thead>
+          <tbody>{shown.map(q => {
+            const level = worst(q);
+            return <tr key={q.id} data-qid={q.id} className={q.id === openId ? 'is-selected' : ''} onClick={() => open(q.id)} tabIndex={0}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(q.id); } }}>
+              <td className="qs-q"><div>{q.id} · {q.question}</div>
+                <small>{q.abstain ? '근거 없음 · 보류가 정답' : q.evidence.length ? `${file(q.evidence[0].path)}${q.evidence.length > 1 ? ` 외 ${q.evidence.length - 1}` : ''}` : '—'}</small></td>
+              <td><span className={`qs-pill ${KIND_TONE[q.kind] ?? ''}`}>{q.kind}</span></td>
+              <td className="qs-col-use"><span className={`qs-pill ${q.use === '최종 평가용' ? 'final' : ''}`}>{q.use === '최종 평가용' ? '최종' : q.use}</span></td>
+              <td className="qs-col-ev">{q.evidence.length || '—'}</td>
+              <td><span className={`qs-st ${level ?? 'ok'}`}>{level === 'error' ? `! 오류 ${q.checks.filter(c => c.level === 'error').length}` : level === 'warn' ? `! 경고 ${q.checks.length}` : '✓ 통과'}</span></td>
+            </tr>;
+          })}</tbody>
+        </table>
+        {!shown.length && <p className="muted">조건에 맞는 질문이 없어요.</p>}
+      </Card>
     </section>
+
+    <Drawer open={!!openId && (openId === NEW || !!opened)} title={openId === NEW ? '새 질문' : openId ?? ''} contentKey={openId ?? ''} dir={dir} onClose={close}
+      onPrev={at > 0 ? () => open(shown[at - 1].id) : undefined} onNext={at >= 0 && at < shown.length - 1 ? () => open(shown[at + 1].id) : undefined}>
+      {openId === NEW
+        ? <Wizard key={`new@${data.sha}`} nextId={nextId(data.questions)} {...panelProps} />
+        : opened && <Summary key={`${opened.id}@${data.sha}`} q={opened} {...panelProps}
+            indexLabel={`${data.index.label.chunker} × ${data.index.label.embedder.split(' · ').pop()}`} />}
+    </Drawer>
   </>;
+}
+
+// ── 서랍 ─────────────────────────────────────────────────────────────────
+// 화면 나누기: 폭 Fixed(화면의 약 42%, 520~680px), 높이 Fluid(화면 전체) / 안쪽은 머리 Fixed · 본문 스크롤 Fluid · 아래 버튼 Fixed(sticky).
+// 폰(760px 이하)에서는 아래에서 올라오는 판. 움직임은 motion 스프링, "동작 줄이기"를 켠 사람에게는 앱 전체 설정(MotionConfig)이 줄여 준다.
+const EASE_IN = [0.4, 0, 1, 1] as const;
+const DRAWER_SPRING = { type: 'spring' as const, stiffness: 300, damping: 26, mass: 0.9 };
+const POP = { hide: { opacity: 0, scale: 0.6 }, show: { opacity: 1, scale: 1, transition: { type: 'spring' as const, stiffness: 420, damping: 18 } } };
+const SWAP = {
+  enter: { opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' },
+  center: { opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' },
+  exit: (dir: number) => ({ opacity: 0, y: -24 * dir, scale: 0.97, filter: 'blur(4px)', transition: { duration: 0.16, ease: EASE_IN } }),
+};
+
+function useNarrow() {
+  const query = '(max-width: 760px)';
+  const [narrow, setNarrow] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const m = window.matchMedia(query);
+    const on = () => setNarrow(m.matches);
+    m.addEventListener('change', on);
+    return () => m.removeEventListener('change', on);
+  }, []);
+  return narrow;
+}
+
+function Drawer({ open, title, contentKey, dir, onClose, onPrev, onNext, children }: {
+  open: boolean; title: string; contentKey: string; dir: number; onClose: () => void; onPrev?: () => void; onNext?: () => void; children: React.ReactNode;
+}) {
+  const narrow = useNarrow();
+  // 열려 있는 동안: 뒤 화면을 살짝 물러나게 하고(보던 자리를 기준으로), 뒤 화면 스크롤을 막는다.
+  useEffect(() => {
+    if (!open) return;
+    const root = document.documentElement;
+    root.style.setProperty('--qs-origin', `${window.scrollY + window.innerHeight / 2}px`);
+    root.classList.add('qs-drawer-open');
+    return () => root.classList.remove('qs-drawer-open');
+  }, [open]);
+
+  return createPortal(<AnimatePresence>{open && <React.Fragment key="drawer">
+    <motion.div className="qs-scrim" onClick={onClose}
+      initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { duration: 0.3 } }} exit={{ opacity: 0, transition: { duration: 0.22, ease: EASE_IN } }} />
+    <motion.aside className="qs-drawer" role="dialog" aria-modal="true" aria-label={title}
+      initial={narrow ? { y: '100%' } : { x: '108%', scale: 0.94, rotate: 1.2, opacity: 0.6 }}
+      animate={{ x: 0, y: 0, scale: 1, rotate: 0, opacity: 1, transition: DRAWER_SPRING }}
+      exit={narrow ? { y: '100%', transition: { duration: 0.28, ease: EASE_IN } } : { x: '108%', scale: 0.96, opacity: 0.6, transition: { duration: 0.3, ease: EASE_IN } }}>
+      <motion.div className="qs-drawer-head" initial="hide" animate="show" variants={{ show: { transition: { delayChildren: 0.18, staggerChildren: 0.05 } } }}>
+        <motion.h2 key={title} variants={POP}>{title}</motion.h2>
+        {(onPrev || onNext) && <>
+          <motion.button variants={POP} className="qs-ib" aria-label="이전 질문" title="이전 질문 (↑)" onClick={onPrev} disabled={!onPrev}><ArrowUp size={15} /></motion.button>
+          <motion.button variants={POP} className="qs-ib" aria-label="다음 질문" title="다음 질문 (↓)" onClick={onNext} disabled={!onNext}><ArrowDown size={15} /></motion.button>
+        </>}
+        <motion.button variants={POP} className="qs-ib" aria-label="닫기" title="닫기 (Esc)" onClick={onClose} autoFocus><X size={15} /></motion.button>
+      </motion.div>
+      <div className="qs-drawer-body">
+        <AnimatePresence mode="wait" initial={false} custom={dir}>
+          <motion.div key={contentKey} className="qs-drawer-content" custom={dir} variants={SWAP} initial="enter" animate="center" exit="exit">
+            {children}
+          </motion.div>
+        </AnimatePresence>
+      </div>
+    </motion.aside>
+  </React.Fragment>}</AnimatePresence>, document.body);
 }
 
 // ── 편집에 함께 쓰는 것 ──────────────────────────────────────────────────
@@ -354,7 +443,7 @@ function Summary({ q, seed, sha, indexLabel, onDirty, onSaved, onCancel }: {
     {seed
       ? <><div className="qs-card-head"><h2>초안 고쳐서 넣기</h2><small>고칠 곳만 눌러요</small></div>
           <p className="qs-check warn"><Sparkles size={13} />LLM이 만든 초안이에요. 질문 말투와 답만 보면 돼요. 근거는 원문과 맞는 걸 확인했어요. 초안은 개선용으로만 넣어요.</p></>
-      : q && <><div className="qs-card-head"><h2>{q.id}</h2><small>{q.use} · {q.kind} · {q.env ?? '혼합'}</small></div>
+      : q && <><small className="qs-meta">{q.use} · {q.kind} · {q.env ?? '혼합'}</small>
           {q.use === '최종 평가용' && <p className="qs-check warn"><TriangleAlert size={13} />최종 평가용 질문이에요. 평가 결과를 보고 고치면 최종 평가의 의미가 없어져요. 오타나 근거 오류만 고쳐 주세요.</p>}
           {q.checks.length === 0
             ? <p className="qs-check ok"><CircleCheck size={13} />자동 점검 통과 · {q.abstain ? '근거 없음, 보류가 정답' : `근거 ${q.evidence.length}개 모두 원문·조각에 있음`}</p>
@@ -392,6 +481,7 @@ function Summary({ q, seed, sha, indexLabel, onDirty, onSaved, onCancel }: {
           : <SumRow label={`근거 ${draft.evidence.length}개`} onEdit={() => edit('evidence')}><EvidenceView evidence={draft.evidence} saved={q?.evidence} /></SumRow>}
     </div>
 
+    {indexLabel && <p className="qs-note">저장하면 eval/questions.jsonl이 바뀌고, 점검을 통과하지 못하면 저장하지 않아요. 조각 번호는 현재 색인({indexLabel}) 기준이에요.</p>}
     {error && <p className="qs-check error" role="alert"><CircleAlert size={13} />{error}</p>}
     {seed
       ? <div className="qs-wiz-foot">
@@ -407,7 +497,6 @@ function Summary({ q, seed, sha, indexLabel, onDirty, onSaved, onCancel }: {
             <button className="qs-btn qs-btn-dark" onClick={() => void save(draft)} disabled={!dirty || busy || !draft.question.trim()}>{busy ? '저장 중…' : dirty ? '저장' : '바뀐 게 없어요'}</button>
           </span>
         </div>}
-    {indexLabel && <p className="qs-note">저장하면 eval/questions.jsonl이 바뀌고, 점검을 통과하지 못하면 저장하지 않아요. 조각 번호는 현재 색인({indexLabel}) 기준이에요.</p>}
   </>;
 }
 

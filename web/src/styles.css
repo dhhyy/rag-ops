@@ -844,3 +844,43 @@ textarea.qs-input:focus,.qs-quote-input:focus{box-shadow:0 0 0 2px #c7b6ea}
   .qs-choices{grid-template-columns:1fr 1fr}.qs-choices .qs-btn-dark{grid-column:1/-1;order:-1}
   .qs-one{padding:20px 18px}.qs-one-q{font-size:17px}.qs-hint{display:none}
   .qs-wiz{min-height:0}}
+/* 시험지 본문: 오른쪽 패널을 빼고 폭 전체. 넓은 화면에서는 초안·문서별 카드를 나란히 */
+.qs-main{display:flex;flex-direction:column;gap:14px;min-width:0}
+.qs-duo{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;align-items:start}
+.qs-meta{font-size:11px;color:var(--muted)}
+.qs-table tr.is-selected td:first-child{box-shadow:inset 3px 0 0 #9b81d3}
+.qs-table tbody tr:active td{background:#f3eefb}
+@media(max-width:1200px){.qs-duo{grid-template-columns:minmax(0,1fr)}}
+/* 서랍: 열리면 뒤 화면이 보던 자리를 기준으로 살짝 물러난다 */
+.app-shell{transition:transform .45s cubic-bezier(.22,1,.36,1),filter .45s cubic-bezier(.22,1,.36,1)}
+html.qs-drawer-open{overflow:hidden}
+html.qs-drawer-open .app-shell{transform:scale(.965) translateX(-18px);transform-origin:30% var(--qs-origin,50vh);filter:saturate(.8) brightness(.98)}
+.qs-scrim{position:fixed;inset:0;z-index:80;background:#2b243c29;backdrop-filter:blur(1px)}
+.qs-drawer{position:fixed;z-index:90;top:12px;right:12px;bottom:12px;width:clamp(520px,42vw,680px);max-width:calc(100vw - 24px);display:flex;flex-direction:column;background:#fff;border-radius:28px;box-shadow:-30px 0 80px #2b243c2e,0 0 0 1px #2b243c0a;transform-origin:100% 50%;overflow:hidden}
+.qs-drawer-head{display:flex;align-items:center;gap:8px;padding:20px 26px 14px;border-bottom:1px solid #ebe7f0}
+.qs-drawer-head h2{flex:1;margin:0;font-size:17px;font-weight:500;transform-origin:0 50%}
+.qs-ib{width:32px;height:32px;flex-shrink:0;display:grid;place-items:center;border-radius:11px;background:#f6f4f9;color:var(--muted);transition:background .2s,color .2s}
+.qs-ib:hover:not(:disabled){background:#ece8f2;color:var(--ink)}
+.qs-ib:disabled{opacity:.35;cursor:default}
+.qs-drawer-body{flex:1;overflow:auto;overscroll-behavior:contain;padding:18px 26px 0}
+.qs-drawer-content{display:flex;flex-direction:column;gap:12px;min-height:100%}
+.qs-drawer-content .qs-wiz{flex:1;min-height:0}
+.qs-drawer-content .qs-sum-val{font-size:14.5px;line-height:1.65}
+/* 아래 버튼은 서랍 바닥에 붙는다 */
+.qs-drawer-content>.qs-foot,.qs-drawer-content>.qs-wiz-foot,.qs-drawer-content .qs-wiz>.qs-wiz-foot{position:sticky;bottom:0;z-index:1;margin:auto -26px 0;padding:14px 26px 20px;background:#fff}
+.qs-drawer-content .qs-wiz-foot .qs-btn,.qs-drawer-content .qs-foot .qs-btn{padding:11px 16px}
+/* 안의 내용: 흐림에서 또렷하게, 한 줄씩 튕기듯 올라온다. 질문을 바꾸거나 단계를 넘기거나 줄을 열 때도 새로 생긴 것만 다시 올라온다 */
+@keyframes qs-rise{from{opacity:0;transform:translateY(18px) scale(.98);filter:blur(4px)}}
+.qs-drawer-content>*,.qs-drawer-content .qs-sum-rows>*,.qs-drawer-content .qs-step>*,.qs-drawer-content .qs-wiz>*{animation:qs-rise .55s cubic-bezier(.34,1.32,.5,1) both;animation-delay:calc(.1s + var(--i,0)*.05s)}
+.qs-drawer-content>*:nth-child(2),.qs-drawer-content .qs-sum-rows>*:nth-child(1),.qs-drawer-content .qs-step>*:nth-child(2){--i:1}
+.qs-drawer-content>*:nth-child(3),.qs-drawer-content .qs-sum-rows>*:nth-child(2),.qs-drawer-content .qs-step>*:nth-child(3){--i:2}
+.qs-drawer-content>*:nth-child(4),.qs-drawer-content .qs-sum-rows>*:nth-child(3),.qs-drawer-content .qs-step>*:nth-child(4){--i:3}
+.qs-drawer-content>*:nth-child(n+5),.qs-drawer-content .qs-sum-rows>*:nth-child(n+4),.qs-drawer-content .qs-step>*:nth-child(n+5){--i:4}
+.qs-drawer-content>.qs-foot,.qs-drawer-content>.qs-wiz-foot,.qs-drawer-content .qs-wiz>.qs-wiz-foot{--i:5}
+@media(max-width:760px){
+  .qs-drawer{top:auto;left:0;right:0;bottom:0;width:auto;max-width:none;height:92vh;border-radius:28px 28px 0 0;transform-origin:50% 100%}
+  .qs-drawer::before{content:'';position:absolute;top:7px;left:50%;width:38px;height:4px;margin-left:-19px;border-radius:2px;background:#e4dfec}
+  .qs-drawer-head{padding:20px 18px 12px}.qs-drawer-body{padding:14px 18px 0}
+  .qs-drawer-content>.qs-foot,.qs-drawer-content>.qs-wiz-foot,.qs-drawer-content .qs-wiz>.qs-wiz-foot{margin:auto -18px 0;padding:12px 18px 18px}
+  html.qs-drawer-open .app-shell{transform:scale(.97);filter:brightness(.97)}}
+@media(prefers-reduced-motion:reduce){.qs-drawer-content *{animation:none!important}.app-shell{transition:none}}

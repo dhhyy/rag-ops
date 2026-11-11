@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>시험지 서랍 패널 시안</title>
+<style>
+:root{--ink:#302f35;--muted:#7c7887;--faint:#a39dad;--card:#ffffffd9;--soft:#f6f4f9;--line:#ebe7f0;--accent:#9b81d3;--accent-ink:#6f53ad;--dark:#303034;--ok:#6f9f4c;--warn:#b0623a;
+  --t:1;  /* 느리게 보기: 3 */
+  --ease-out:cubic-bezier(.22,1,.36,1);--spring:cubic-bezier(.34,1.32,.5,1);--ease-in:cubic-bezier(.4,0,1,1);
+  font-family:'DM Sans',-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Segoe UI',sans-serif;color:var(--ink);font-size:13px;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(125deg,#edeaf5 0%,#efedf3 55%,#efedf1 100%);min-height:100vh}
+body.slow{--t:3}
+h1,h2,h3,p{margin:0}button,input,textarea{font:inherit;color:inherit}button{border:0;cursor:pointer;background:none}
+small{font-size:11px;color:var(--muted);line-height:1.5}
+
+.note{position:sticky;top:0;z-index:50;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 16px;background:#302f35;color:#fff;font-size:11px}
+.note b{font-weight:500;margin-right:6px}.note .k{display:inline-flex;align-items:center;gap:5px;opacity:.85}.note .k i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.note button{background:#ffffff1f;color:#fff;padding:5px 11px;border-radius:12px;font-size:11px}.note button.on{background:#fff;color:#302f35}
+.note .sp{flex:1}
+.show [data-z]{outline:2px dashed;outline-offset:3px}.show [data-z=fixed]{outline-color:#e58a52}.show [data-z=fluid]{outline-color:#5f8be8}.show [data-z=hybrid]{outline-color:#8a5fd1}
+
+/* 뒤 화면: 서랍이 열리면 살짝 물러난다 */
+.shell{display:flex;gap:34px;padding:27px 30px 24px 22px;transform-origin:30% 0;transition:transform calc(.45s*var(--t)) var(--ease-out),filter calc(.45s*var(--t)) var(--ease-out)}
+body.open .shell{transform:scale(.965) translateX(-18px);filter:saturate(.8) brightness(.98)}
+body.closing .shell{transition-timing-function:var(--ease-in);transition-duration:calc(.26s*var(--t))}
+.rail{width:58px;flex:0 0 58px;border-radius:30px;background:#ffffffd4;display:flex;flex-direction:column;align-items:center;gap:14px;padding:18px 0;align-self:flex-start;position:sticky;top:64px}
+.rail i{width:34px;height:34px;border-radius:50%;background:var(--soft);display:block}.rail i.on{background:var(--dark)}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;gap:14px}
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.head h1{font-size:21px;font-weight:500;letter-spacing:-.7px}.head p{color:var(--muted);font-size:12px;margin-top:4px}
+.tabs{display:inline-flex;padding:3px;border-radius:14px;background:#ffffffb3}
+.tabs span{padding:6px 14px;border-radius:11px;font-size:12px;color:var(--muted)}.tabs .on{background:#fff;color:var(--ink);box-shadow:0 1px 3px #0001}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 14px;border-radius:16px;font-size:12px;background:#fff}
+.btn.dark{background:var(--dark);color:#fff}.btn.ghost{background:transparent;color:var(--muted)}.btn:disabled{opacity:.4;cursor:default}
+.card{background:var(--card);border-radius:20px;padding:17px 19px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.card-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap}.card-head h2{font-size:14px;font-weight:500}
+.pill{display:inline-block;padding:2px 8px;border-radius:9px;background:#f3f1f6;color:var(--muted);font-size:10px;white-space:nowrap}
+.pill.direct{background:#eef3d0;color:#6c7420}.pill.para{background:#e3eafd;color:#4d63a8}.pill.none{background:#fde7d9;color:#b0623a}
+
+.tiles{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
+.tile{background:var(--card);border-radius:18px;padding:13px 15px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.tile b{font-size:18px;font-weight:500}
+.duo{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
+.compact{flex-direction:row;align-items:center;gap:14px;flex-wrap:wrap}.compact .big{font-size:26px;font-weight:500}
+.rows{display:flex;flex-direction:column}
+.row{display:grid;grid-template-columns:minmax(0,1fr) 80px 70px 70px;gap:10px;align-items:center;padding:11px 10px;border-top:1px solid var(--line);font-size:12px;cursor:pointer;border-radius:10px;transition:background .15s}
+.row:hover{background:#faf8fc}
+.row.sel{background:#f3eefb;border-top-color:transparent;box-shadow:inset 3px 0 0 var(--accent)}
+.row:active{transform:scale(.99)}
+.row{transition:background .2s,transform .15s,box-shadow .25s}
+.row .q{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .ok{color:var(--ok);font-size:11px}
+
+/* ── 서랍 (Hybrid: 폭 440px Fixed, 높이는 화면 전체 Fluid / 안쪽: 머리 Fixed · 본문 스크롤 Fluid · 아래 버튼 Fixed) ── */
+.scrim{position:fixed;inset:0;z-index:55;background:#2b243c29;backdrop-filter:blur(1px);opacity:0;pointer-events:none;transition:opacity calc(.3s*var(--t)) var(--ease-out)}
+body.open .scrim{opacity:1;pointer-events:auto}
+body.closing .scrim{transition-duration:calc(.22s*var(--t));transition-timing-function:var(--ease-in)}
+.drawer{position:fixed;z-index:60;top:12px;right:12px;bottom:12px;width:clamp(520px,42vw,680px);max-width:calc(100vw - 24px);display:flex;flex-direction:column;background:#fff;border-radius:28px;box-shadow:-30px 0 80px #2b243c2e,0 0 0 1px #2b243c0a;
+  transform:translateX(calc(100% + 40px)) scale(.94) rotate(1.2deg);transform-origin:100% 50%;opacity:.6;
+  transition:transform calc(.62s*var(--t)) var(--spring),opacity calc(.3s*var(--t)) var(--ease-out),border-radius calc(.62s*var(--t)) var(--ease-out);will-change:transform}
+body.open .drawer{transform:none;opacity:1}
+body.closing .drawer{transition:transform calc(.3s*var(--t)) var(--ease-in),opacity calc(.3s*var(--t)) var(--ease-in)}
+.d-head{display:flex;align-items:center;gap:8px;padding:20px 26px 14px;border-bottom:1px solid var(--line)}
+.d-head h2{font-size:17px;font-weight:500;flex:1}
+.ib{width:30px;height:30px;border-radius:10px;display:grid;place-items:center;color:var(--muted);background:var(--soft);font-size:14px}
+.ib:hover{background:#ece8f2;color:var(--ink);transform:scale(1.08)}
+.ib{transition:transform .2s var(--spring),background .2s}
+.d-head .ib,.d-head h2{opacity:0;transform:scale(.6)}
+body.open .d-head .ib,body.open .d-head h2{opacity:1;transform:none;transition:opacity calc(.3s*var(--t)) var(--ease-out),transform calc(.45s*var(--t)) var(--spring);transition-delay:calc((.18s + var(--j,0)*.05s)*var(--t))}
+.d-head h2{transform-origin:0 50%}.ib:disabled{opacity:.35}
+.d-body{flex:1;overflow:auto;padding:18px 26px;display:flex;flex-direction:column;gap:2px;overscroll-behavior:contain}
+.d-foot{display:flex;gap:8px;padding:14px 26px 20px;border-top:1px solid var(--line)}
+.d-foot .btn{padding:13px}
+.d-foot{opacity:0;transform:translateY(16px)}
+body.open .d-foot{opacity:1;transform:none;transition:opacity calc(.35s*var(--t)) var(--ease-out),transform calc(.5s*var(--t)) var(--spring);transition-delay:calc(.34s*var(--t))}.d-foot .btn.dark{flex:1}
+
+/* 안의 내용: 열릴 때 한 줄씩 살짝 올라오며 나타남, 질문을 바꿀 때는 옆으로 밀림 */
+.d-body>*{opacity:0;transform:translateY(18px) scale(.98);filter:blur(4px)}
+body.open .d-body>*{opacity:1;transform:none;filter:none;transition:opacity calc(.4s*var(--t)) var(--ease-out),transform calc(.55s*var(--t)) var(--spring),filter calc(.4s*var(--t)) var(--ease-out);transition-delay:calc((.2s + var(--i,0)*.06s)*var(--t))}
+.d-body.swap-out>*{opacity:0!important;transform:translateY(calc(var(--dir,1)*-24px)) scale(.97)!important;filter:blur(4px)!important;transition:opacity calc(.16s*var(--t)) var(--ease-in),transform calc(.16s*var(--t)) var(--ease-in),filter calc(.16s*var(--t)) var(--ease-in)!important;transition-delay:0s!important}
+.d-body.swap-in>*{opacity:0!important;transform:translateY(calc(var(--dir,1)*24px)) scale(.97)!important;filter:blur(4px)!important;transition:none!important}
+
+.chk{font-size:11px;padding:8px 11px;border-radius:11px;background:#eef5e6;color:#4f7a33;margin-bottom:6px}
+.sumrow{display:flex;flex-direction:column;gap:5px;padding:11px 0;border-top:1px solid var(--line)}
+.sumrow.first{border-top:0}
+.sumrow .top{display:flex;justify-content:space-between;align-items:center}
+.sumrow .val{font-size:14.5px;line-height:1.65}
+.edit{font-size:11px;color:var(--accent-ink);padding:3px 9px;border-radius:9px;background:#f3eefb}
+.ev{font-size:12px;line-height:1.6;padding:8px 10px;border-radius:10px;background:var(--soft)}.ev small{display:block;font-size:10px}
+
+@media(max-width:1200px){.tiles{grid-template-columns:repeat(3,minmax(0,1fr))}.duo{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:760px){.shell{padding:15px 15px 20px 10px;gap:13px}.rail{width:44px;flex-basis:44px}.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .row{grid-template-columns:minmax(0,1fr) 70px}.row .u,.row .e{display:none}
+  /* 폰: 아래에서 올라오는 판 */
+  .drawer{top:auto;left:0;right:0;bottom:0;width:auto;max-width:none;height:92vh;border-radius:28px 28px 0 0;transform:translateY(100%);transform-origin:50% 100%}
+  .drawer::before{content:'';position:absolute;top:7px;left:50%;width:38px;height:4px;margin-left:-19px;border-radius:2px;background:#e4dfec}}
+@media(prefers-reduced-motion:reduce){.drawer,.scrim,.shell,.d-body>*,.d-foot,.d-head .ib,.d-head h2{transition-duration:.01s!important;transition-delay:0s!important}}
+</style>
+</head>
+<body>
+<div class="note"><b>시험지 · 서랍 패널 (시안)</b>
+  <span>질문 줄을 눌러 보세요 · 닫기: X / 바깥 누르기 / Esc · 다음 질문: ↑↓</span>
+  <span class="sp"></span>
+  <button id="slow">느리게 보기</button>
+  <span class="k"><i style="background:#e58a52"></i>Fixed</span><span class="k"><i style="background:#5f8be8"></i>Fluid</span><span class="k"><i style="background:#8a5fd1"></i>Hybrid</span>
+  <button onclick="document.body.classList.toggle('show')">화면 나누기 보기</button></div>
+
+<div class="shell">
+  <nav class="rail"><i></i><i></i><i></i><i class="on"></i><i></i></nav>
+  <main class="main">
+    <div class="head" data-z="fixed"><div><h1>Evaluations</h1><p>평가에 쓰는 질문과 정답 근거 · eval/questions.jsonl @ 46ce49a8e5c1</p></div>
+      <span class="tabs"><span>평가 기록</span><span class="on">시험지</span></span></div>
+    <section class="tiles" data-z="fixed">
+      <div class="tile"><small>질문 수 · 목표 60</small><b>13 / 60</b></div><div class="tile"><small>질문 종류</small><b>5 · 5 · 3</b></div>
+      <div class="tile"><small>용도</small><b>10 · 3</b></div><div class="tile"><small>근거가 닿은 조각</small><b>22 / 76</b></div><div class="tile"><small>자동 점검</small><b style="color:var(--ok)">문제 없음</b></div>
+    </section>
+    <!-- 오른쪽 패널이 빠져서 본문은 화면 폭 전체(Fluid). 넓은 화면에서는 초안·문서별 카드를 나란히 -->
+    <section class="duo" data-z="fluid">
+      <div class="card compact"><div><div class="big">16</div><small>고를 초안</small></div><div style="flex:1;min-width:160px"><b style="font-weight:500">LLM 초안이 16개 있어요</b><br><small>넣음 0 · 버림 0 · $0.0011</small></div><button class="btn dark">하나씩 고르기 →</button></div>
+      <div class="card"><div class="card-head"><h2>문서별로 고른가</h2><small>부족한 문서 8개</small></div><small>README.md 0문제 · fortigate-https-host-routing.md 1문제 · … (지금과 같음)</small></div>
+    </section>
+    <section class="card" data-z="fluid">
+      <div class="card-head"><h2>질문 13개</h2><button class="btn dark" id="new">＋ 새 질문</button></div>
+      <div class="rows" id="rows"></div>
+    </section>
+  </main>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="d-title" data-z="hybrid">
+  <div class="d-head" data-z="fixed"><h2 id="d-title">q01</h2>
+    <button class="ib" id="prev" style="--j:1" aria-label="이전 질문">↑</button><button class="ib" id="next" style="--j:2" aria-label="다음 질문">↓</button><button class="ib" id="close" style="--j:3" aria-label="닫기">✕</button></div>
+  <div class="d-body" id="body" data-z="fluid"></div>
+  <div class="d-foot" data-z="fixed"><button class="btn ghost">질문 지우기</button><button class="btn dark" disabled>바뀐 게 없어요</button></div>
+</aside>
+
+<script>
+const qs = [
+  ['q01','FortiGate가 HTTPS 요청의 Host를 보고 내부 서버를 고르려면 무엇이 필요한가?','직접','개선용'],
+  ['q02','SSH 접속 시 두 개발 서버를 외부에서 어떻게 구분하는가?','직접','개선용'],
+  ['q03','인증서 갱신에서 standalone 방식과 webroot 방식의 가장 큰 차이는?','직접','개선용'],
+  ['q04','와일드카드 인증서는 어떤 검증 방식으로 발급·갱신해야 하는가?','직접','최종'],
+  ['q05','Nginx의 proxy_pass http://grafana:3000이 호스트 공개 포트 3002와 다른데 잘못된 설정인가?','직접','개선용'],
+  ['q06','사무실 PC에서 서버의 사설 주소로 곧장 붙을 수 없는 까닭은?','표현 바꿈','개선용'],
+  ['q07','개발 서버로 가는 443 전달 규칙을 하나 더 만들면 왜 문제가 되나?','표현 바꿈','개선용'],
+  ['q11','지금 운영 서버 인증서의 만료일은 언제인가?','답 없음','개선용'],
+];
+const tone = { '직접': 'direct', '표현 바꿈': 'para', '답 없음': 'none' };
+let at = -1;
+document.getElementById('rows').innerHTML = qs.map(([id, q, k, u], i) =>
+  `<div class="row" data-i="${i}" tabindex="0"><span class="q">${id} · ${q}</span><span><span class="pill ${tone[k]}">${k}</span></span><span class="u"><span class="pill">${u}</span></span><span class="e ok">✓ 통과</span></div>`).join('');
+
+function fill(i) {
+  const [id, q, k, u] = qs[i];
+  const tt = document.getElementById('d-title'); tt.textContent = id; tt.animate([{ transform: 'scale(.8)', opacity: .3 }, { transform: 'scale(1.06)', opacity: 1 }, { transform: 'scale(1)' }], { duration: 380 * T(), easing: 'cubic-bezier(.34,1.32,.5,1)' });
+  const parts = [
+    `<p class="chk">✓ 자동 점검 통과 · 근거 2개 모두 원문·조각에 있음</p>`,
+    `<div class="sumrow first"><div class="top"><small>질문</small><button class="edit">고치기</button></div><span class="val">${q}</span></div>`,
+    `<div class="sumrow"><div class="top"><small>정답</small><button class="edit">고치기</button></div><span class="val">${k === '답 없음' ? '문서에 나와 있지 않습니다.' : '(정답 내용)'}</span></div>`,
+    `<div class="sumrow"><div class="top"><small>종류 · 용도 · 환경</small><button class="edit">바꾸기</button></div><span class="val">${k} · ${u} · 혼합</span></div>`,
+    k === '답 없음' ? `<div class="sumrow"><div class="top"><small>근거</small></div><span class="val" style="color:var(--muted)">없음 — 보류가 정답</span></div>`
+      : `<div class="sumrow"><div class="top"><small>근거 2개</small><button class="edit">고치기</button></div><span class="ev">원문에서 고른 문장 하나<small>network-infrastructure-article.md · ✓ 조각 #18</small></span><span class="ev">원문에서 고른 문장 둘<small>fortigate-ssh-port-forwarding.md · ✓ 조각 #41</small></span></div>`,
+  ];
+  const body = document.getElementById('body');
+  body.innerHTML = parts.join('');
+  [...body.children].forEach((el, n) => el.style.setProperty('--i', n));
+  document.getElementById('prev').disabled = i === 0;
+  document.getElementById('next').disabled = i === qs.length - 1;
+  document.querySelectorAll('.row').forEach(r => r.classList.toggle('sel', +r.dataset.i === i));
+}
+
+const B = document.body, T = () => (B.classList.contains('slow') ? 3 : 1);
+let closeTimer;
+function open(i) {
+  clearTimeout(closeTimer); B.classList.remove('closing');
+  if (B.classList.contains('open')) return swap(i);
+  at = i; fill(i);
+  requestAnimationFrame(() => { B.classList.add('open'); document.getElementById('close').focus({ preventScroll: true }); });
+}
+function close() {
+  if (!B.classList.contains('open')) return;
+  B.classList.add('closing'); B.classList.remove('open');
+  closeTimer = setTimeout(() => B.classList.remove('closing'), 300 * T());
+  document.querySelector(`.row[data-i="${at}"]`)?.focus({ preventScroll: true });   // 닫으면 보던 줄로 돌아감
+}
+// 질문을 바꿀 때: 내용만 옆으로 밀려 나가고 새 내용이 반대쪽에서 들어온다. 서랍은 그대로.
+function swap(i) {
+  if (i === at || i < 0 || i >= qs.length) return;
+  const body = document.getElementById('body');
+  body.style.setProperty('--dir', i > at ? 1 : -1);
+  body.classList.add('swap-out');
+  setTimeout(() => {
+    at = i; fill(i); body.classList.remove('swap-out'); body.classList.add('swap-in'); body.scrollTop = 0;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      body.classList.remove('swap-in');
+      [...body.children].forEach(el => el.style.setProperty('--i', 0));
+    }));
+  }, 160 * T());
+}
+document.getElementById('rows').addEventListener('click', e => { const r = e.target.closest('.row'); if (r) open(+r.dataset.i); });
+document.getElementById('rows').addEventListener('keydown', e => { const r = e.target.closest('.row'); if (r && e.key === 'Enter') open(+r.dataset.i); });
+document.getElementById('scrim').onclick = close;
+document.getElementById('close').onclick = close;
+document.getElementById('prev').onclick = () => swap(at - 1);
+document.getElementById('next').onclick = () => swap(at + 1);
+document.getElementById('new').onclick = () => open(0);
+document.addEventListener('keydown', e => {
+  if (!B.classList.contains('open')) return;
+  if (e.key === 'Escape') close();
+  else if (e.key === 'ArrowDown') { e.preventDefault(); swap(at + 1); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); swap(at - 1); }
+});
+document.getElementById('slow').onclick = e => { B.classList.toggle('slow'); e.target.classList.toggle('on'); };
+</script>
+</body>
+</html>
