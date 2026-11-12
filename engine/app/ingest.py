@@ -230,10 +230,11 @@ class IngestError(Exception):
 # 문서 1개를 읽기 → 자르기 → 토큰 검사 → 임베딩 → 저장까지 한다. CLI와 API가 같은 함수를 부른다.
 def ingest_file(path: Path, *, env_label: str | None = None, doc_type: str | None = None,
                 verification: str = "미확인", checked_at: str | None = None,
-                external_ok: bool = False, on_step: OnStep | None = None) -> dict:
+                external_ok: bool = False, on_step: OnStep | None = None, project_id: int | None = None) -> dict:
     """결과를 dict로 돌려준다: status(inserted/replaced/skipped), document_id, 출처, 조각·토큰 수.
 
     on_step을 주면 6단계(STAGES)에 들어설 때마다 부른다. CLI는 주지 않는다.
+    project_id를 주면 그 프로젝트를 문서의 원본으로 연결한다 (건너뛴 문서도 연결은 맞춘다).
     """
     def step(name: str, done: int | None = None, total: int | None = None) -> None:
         if on_step:
@@ -269,6 +270,9 @@ def ingest_file(path: Path, *, env_label: str | None = None, doc_type: str | Non
         if same and same[1]:
             conn.execute("UPDATE documents SET content=%s WHERE id=%s", (raw, same[0]))
         base = base_index(conn)
+        if same and project_id:
+            from projects import link_origin
+            link_origin(conn, project_id, same[0])
     if same:
         return {**result, "status": "skipped", "document_id": same[0], "chunks": None, "tokens": None}
 
@@ -280,6 +284,9 @@ def ingest_file(path: Path, *, env_label: str | None = None, doc_type: str | Non
     with connect(env) as conn:
         doc_id, created = upsert_document(conn, doc)
         store(conn, base["id"], doc_id, doc["content_hash"], rows)
+        if project_id:
+            from projects import link_origin
+            link_origin(conn, project_id, doc_id)
     return {**result, "status": "inserted" if created else "replaced", "document_id": doc_id,
             "index_id": base["id"], "chunks": len(rows), "tokens": tokens}
 

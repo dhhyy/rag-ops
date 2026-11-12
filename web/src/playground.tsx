@@ -6,13 +6,14 @@ import { AnimatePresence, motion } from 'motion/react';
 import { ArrowUp, ArrowUpRight, Check, CircleAlert, LoaderCircle, Sparkles, Square } from 'lucide-react';
 import { Card, ease, RAG_API, readError } from './ui';
 import { useSetup, type Setup } from './setup';
+import { loadScope, saveScope, ScopePicker, useProjects } from './projects';
 
 type Hit = {
   chunk_id: number; score: number; vector_score: number; vector_rank: number | null; keyword_rank?: number | null; keyword_score?: number | null; chunk_index: number; heading_path: string; content: string;
   document_id: number; title: string | null; source_repo: string; source_path: string; source_commit: string;
   env: string | null; doc_type: string | null; verification: string | null; checked_at: string | null;
 };
-type Start = { price_checked: string; top_k: number; index_id: number; embedder: string; external: boolean; reranker: string | null; keyword?: string | null; candidates: number | null };
+type Start = { price_checked: string; project?: { id: number; name: string } | null; top_k: number; index_id: number; embedder: string; external: boolean; reranker: string | null; keyword?: string | null; candidates: number | null };
 type Answer = {
   state: 'writing' | 'ok' | 'error'; generator?: string; text?: string; message?: string;
   sources?: number[]; skipped?: number[]; input_tokens?: number; output_tokens?: number; cached_tokens?: number; cost_usd?: number | null; ms?: number; status?: string;
@@ -53,7 +54,7 @@ function useSearch() {
   const [run, setRun] = useState<Run | null>(null);
   const abort = useRef<AbortController | null>(null);
 
-  async function ask(question: string, rerank: 'setting' | 'off') {
+  async function ask(question: string, rerank: 'setting' | 'off', projectId: number | null) {
     abort.current?.abort();
     const ctrl = new AbortController();
     abort.current = ctrl;
@@ -63,7 +64,7 @@ function useSearch() {
     const patch = (p: Partial<Run>) => setRun(r => (r && r.startedAt === startedAt ? { ...r, ...p } : r));
     try {
       const res = await fetch(`${RAG_API}/search`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, rerank }), signal: ctrl.signal,
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, rerank, project_id: projectId }), signal: ctrl.signal,
       });
       if (!res.ok || !res.body) throw new Error(await readError(res));
       const reader = res.body.getReader();
@@ -172,7 +173,7 @@ function Progress({ run, now, stop }: { run: Run; now: number; stop: () => void 
   type Step = { key: string; title: string; note: string; state: 'done' | 'run' | 'wait'; bar?: number };
   const steps: Step[] = [
     { key: 'embed', title: '질문 임베딩', note: run.embedMs != null ? `${s?.embedder.split(' · ').slice(-1)[0] ?? ''} · ${secs(run.embedMs)}` : s?.external ? '외부 모델로 보내는 중' : '벡터로 바꾸는 중', state: run.embedMs != null ? 'done' : 'run' },
-    { key: 'db', title: '후보 찾기', note: run.dbMs != null ? `${s?.keyword ? '벡터 + 키워드' : '벡터 검색'} · ${run.candidates}개 · ${secs(run.dbMs)}` : s?.keyword ? '벡터 + 키워드 검색' : '벡터 검색', state: run.dbMs != null ? 'done' : run.embedMs != null ? 'run' : 'wait' },
+    { key: 'db', title: '후보 찾기', note: `${s?.project ? `${s.project.name} 안에서 · ` : ''}${run.dbMs != null ? `${s?.keyword ? '벡터 + 키워드' : '벡터 검색'} · ${run.candidates}개 · ${secs(run.dbMs)}` : s?.keyword ? '벡터 + 키워드 검색' : '벡터 검색'}`, state: run.dbMs != null ? 'done' : run.embedMs != null ? 'run' : 'wait' },
   ];
   if (rerankOn) steps.push({ key: 'rerank', title: `리랭크 ${done} / ${total}`, note: run.dbMs == null ? `후보 ${total}개 · 약 ${short(total * SEC_PER_CHUNK)}` : `${short(rerankSince)} 지남 · 약 ${short(left)} 남음`, state: run.dbMs != null ? 'run' : 'wait', bar: total ? done / total : 0 });
   steps.push({ key: 'sort', title: '정리', note: `상위 ${s?.top_k ?? ''}개`, state: 'wait' });
@@ -203,7 +204,7 @@ function Results({ run, openKnowledge }: { run: Run; openKnowledge: OpenDoc }) {
 
   return <div className={`pg-results ${final ? '' : 'is-solo'}`}>
     <Card className={`pg-list ${final ? '' : 'is-pending'}`}>
-      <div className="pg-list-head"><h2>근거 후보{final ? ` ${hits.length}개` : ''}</h2>
+      <div className="pg-list-head"><h2>근거 후보{final ? ` ${hits.length}개` : ''}{run.start?.project && <span className="muted"> · {run.start.project.name}</span>}</h2>
         <small>{final
           ? `${reranked ? `후보 ${run.candidates}개 중 리랭크 점수 상위 ${hits.length}개` : hybrid ? `벡터·키워드 순위를 합친 상위 ${hits.length}개` : `벡터 유사도 상위 ${hits.length}개`}${lat ? ` · ${secs(lat.embed + lat.db + (lat.keyword ?? 0))}${reranked ? ` + 리랭크 ${secs(lat.rerank)}` : ''}` : ''}`
           : run.phase === 'running' ? '리랭크가 끝나면 순서가 정해져요. 지금은 벡터 검색 순서예요.' : '멈춘 검색이에요. 벡터 검색 순서까지만 나왔어요.'}</small></div>
@@ -246,6 +247,10 @@ export function Playground({ openPipeline, openKnowledge, initialQuestion, consu
   const { run, ask, stop } = useSearch();
   const [input, setInput] = useState('');
   const [mode, setMode] = useState<'setting' | 'off'>('setting');
+  const { projects } = useProjects();
+  const [scope, setScope] = useState<number | null>(loadScope);
+  // 기억해 둔 범위의 프로젝트가 사라졌으면 전체로 돌린다
+  useEffect(() => { if (projects && scope && !projects.some(p => p.id === scope)) { setScope(null); saveScope(null); } }, [projects, scope]);
   const [recent, setRecent] = useState<string[]>(loadRecent);
   const [now, setNow] = useState(Date.now());
   const box = useRef<HTMLTextAreaElement>(null);
@@ -269,7 +274,7 @@ export function Playground({ openPipeline, openKnowledge, initialQuestion, consu
     const next = [question, ...recent.filter(x => x !== question)].slice(0, 5);
     setRecent(next);
     try { localStorage.setItem(RECENT, JSON.stringify(next)); } catch { /* storage unavailable */ }
-    void ask(question, rerankSetting ? mode : 'off');
+    void ask(question, rerankSetting ? mode : 'off', scope);
   }
 
   useEffect(() => {
@@ -285,6 +290,7 @@ export function Playground({ openPipeline, openKnowledge, initialQuestion, consu
 
     <Card className="pg-ask">
       <form className="pg-ask-row" onSubmit={e => { e.preventDefault(); submit(); }}>
+        <ScopePicker projects={projects} value={scope} disabled={running} onChange={id => { setScope(id); saveScope(id); box.current?.focus(); }} />
         <textarea ref={box} rows={1} aria-label="질문" placeholder="문서에 대해 물어보세요" maxLength={2000} value={input}
           onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }} />
         <button className="pg-send" disabled={!input.trim() || running} aria-label="검색">{running ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={18} />}</button>

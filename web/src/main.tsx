@@ -6,7 +6,7 @@ import {
   ChevronDown, CircleAlert, Clock3, Database, FileText, Folder, LoaderCircle,
   GitBranch, Home, Layers3, Maximize2, MessageSquare, Play,
   Plus, Search, Settings2, ShieldCheck, SlidersHorizontal, TextSearch,
-  Sparkles, Zap, ChartNoAxesCombined,
+  Sparkles, Zap, ChartNoAxesCombined, Link2,
   type LucideIcon,
 } from 'lucide-react';
 import './styles.css';
@@ -18,6 +18,7 @@ import { UsagePage } from './usage';
 import { Home as HomePage } from './home';
 import { SetupBar, StagePanel, useCatalog, useSetup, type BuildResponse, type IndexInfo, type PanelStage } from './setup';
 import { SetupFlow, stepOf } from './setupflow';
+import { LinkModal, NewProjectFlow, ProjectCards, ProjectHead, useProjects, type ProjectRef } from './projects';
 
 type Page = 'home' | 'knowledge' | 'pipeline' | 'playground' | 'compare' | 'evaluations' | 'runs' | 'usage' | 'settings';
 type Collection = { id: number; name: string; documents: number; color: string };
@@ -86,7 +87,7 @@ function App() {
         {page === 'home' && <HomePage openPipeline={() => navigate('pipeline')} openSetup={openSetup} openEvaluations={() => navigate('evaluations')} openUsage={() => navigate('usage')}
           openKnowledge={() => navigate('knowledge')} openPlayground={q => { setAskFromHome(q ?? null); navigate('playground'); }} />}
         {page === 'knowledge' && <Knowledge view={knowledgeView} target={docTarget} clearTarget={() => setDocTarget(null)} openPipeline={openIngest} />}
-        {page === 'pipeline' && <Pipeline enabled={enabled} flip={flip} callIngest={callIngest} consumeIngest={() => setCallIngest(false)} callSetup={callSetup} consumeSetup={() => setCallSetup(false)} openKnowledge={() => { navigate('knowledge'); setKnowledgeView('blocked'); }} />}
+        {page === 'pipeline' && <Pipeline enabled={enabled} flip={flip} callIngest={callIngest} consumeIngest={() => setCallIngest(false)} callSetup={callSetup} consumeSetup={() => setCallSetup(false)} openKnowledge={() => { navigate('knowledge'); setKnowledgeView('blocked'); }} openProjects={() => navigate('knowledge')} />}
         {page === 'playground' && <Playground initialQuestion={askFromHome} consume={() => setAskFromHome(null)} openPipeline={openSetup} openKnowledge={t => { navigate('knowledge'); setDocTarget(t); }} />}
         {page === 'compare' && <Compare />}
         {page === 'evaluations' && <Evaluations openPipeline={openSetup} openCompare={() => navigate('compare')} />}
@@ -108,19 +109,18 @@ function App() {
 type StoredDocument = {
   id: number; source_repo: string; source_path: string; source_commit: string; title: string;
   env: string | null; doc_type: string | null; verification: string; checked_at: string | null;
-  external_ok: boolean; ingested_at: string; chunks: number;
+  external_ok: boolean; ingested_at: string; chunks: number; projects: ProjectRef[];
 };
 const verificationTone: Record<string, string> = { '확인': 'lime', '추정': 'blue', '미확인': 'neutral', '폐기': 'peach' };
-const repoColors = ['lime', 'blue', 'purple', 'peach'];
 
 // Every document stored in the DB (GET /documents). Reloads each time the page opens.
 function useDocuments() {
   const [docs, setDocs] = useState<StoredDocument[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    fetch(`${RAG_API}/documents`).then(async r => (r.ok ? r.json() : Promise.reject(await readError(r))))
-      .then(setDocs).catch(e => setError(String(e)));
-  }, []);
+  const reload = () => fetch(`${RAG_API}/documents`).then(async r => (r.ok ? r.json() : Promise.reject(await readError(r))))
+    .then(setDocs).catch(e => setError(String(e)));
+  useEffect(() => { void reload(); }, []);
+  const setLinks = (id: number, links: ProjectRef[]) => setDocs(list => list?.map(d => (d.id === id ? { ...d, projects: links } : d)) ?? null);
   // Allow or block sending one document to external APIs. Shows the new value at once and puts it back if the engine refuses.
   async function setExternal(id: number, value: boolean): Promise<string | null> {
     setDocs(list => list?.map(d => (d.id === id ? { ...d, external_ok: value } : d)) ?? null);
@@ -130,7 +130,7 @@ function useDocuments() {
       return e instanceof Error ? e.message : String(e);
     }
   }
-  return { docs, error, setExternal };
+  return { docs, error, setExternal, setLinks, reload };
 }
 
 function DocumentModal({ doc, target, close }: { doc: StoredDocument; target?: DocTarget | null; close: () => void }) {
@@ -138,6 +138,7 @@ function DocumentModal({ doc, target, close }: { doc: StoredDocument; target?: D
   return <Modal title={doc.title} close={close}>
     <DetailRows rows={[
       ['Source', `${doc.source_repo}/${doc.source_path}`],
+      ['Projects', doc.projects.length ? doc.projects.map(p => `${p.name}${p.origin ? ' (원본)' : ''}`).join(', ') : '—'],
       ['Commit', <>{doc.source_commit}{doc.source_commit.endsWith('-dirty') && <em className="detail-hint">-dirty: the file had uncommitted edits</em>}</>],
       ['Environment', doc.env ?? '—'],
       ['Document type', doc.doc_type ?? '—'],
@@ -150,12 +151,17 @@ function DocumentModal({ doc, target, close }: { doc: StoredDocument; target?: D
   </Modal>;
 }
 
-// Knowledge base: the documents the engine has stored, grouped by the git repository they came from.
+// Knowledge base: the documents the engine has stored, grouped by project.
+// 프로젝트 카드를 누르면 그 프로젝트(원본 + 연결)의 문서만 보이고, 머리 띠에서 [다시 받기]를 할 수 있다.
 // view 'blocked': opened from a stage panel to allow documents for an external model, so start on the blocked ones.
 function Knowledge({ view, target, clearTarget, openPipeline }: { view: 'all' | 'blocked'; target: DocTarget | null; clearTarget: () => void; openPipeline: () => void }) {
-  const { docs, error, setExternal } = useDocuments();
+  const { docs, error, setExternal, setLinks, reload } = useDocuments();
+  const { projects, error: projectError, reload: reloadProjects } = useProjects();
   const [filter, setFilter] = useState('');
-  const [repo, setRepo] = useState<string | null>(null);
+  const [pid, setPid] = useState<number | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [linking, setLinking] = useState<StoredDocument | null>(null);
+  const [created, setCreated] = useState<string | null>(null);
   const [open, setOpen] = useState<StoredDocument | null>(null);
   const [onlyBlocked, setOnlyBlocked] = useState(view === 'blocked');
   const [toggleError, setToggleError] = useState<string | null>(null);
@@ -166,12 +172,9 @@ function Knowledge({ view, target, clearTarget, openPipeline }: { view: 'all' | 
     if (doc) setOpen(doc); else clearTarget();
   }, [docs, target]);   // eslint-disable-line react-hooks/exhaustive-deps
   const blockedCount = docs?.filter(d => !d.external_ok).length ?? 0;
-  const repos = docs ? [...new Set(docs.map(d => d.source_repo))].map(name => {
-    const list = docs.filter(d => d.source_repo === name);
-    return { name, documents: list.length, chunks: list.reduce((n, d) => n + d.chunks, 0) };
-  }) : [];
+  const project = projects?.find(p => p.id === pid) ?? null;
   const query = filter.trim().toLowerCase();
-  const shown = (docs ?? []).filter(d => (!repo || d.source_repo === repo) && (!onlyBlocked || !d.external_ok)
+  const shown = (docs ?? []).filter(d => (!pid || d.projects.some(p => p.id === pid)) && (!onlyBlocked || !d.external_ok)
     && (!query || d.title.toLowerCase().includes(query) || d.source_path.toLowerCase().includes(query)));
   const totalChunks = docs?.reduce((n, d) => n + d.chunks, 0) ?? 0;
 
@@ -180,18 +183,17 @@ function Knowledge({ view, target, clearTarget, openPipeline }: { view: 'all' | 
       <button className="primary-button" onClick={openPipeline} title="Pipelines 화면의 경로 입력칸으로 가요">문서 넣기<ArrowRight size={15} /></button>
     </Heading>
 
-    <div className="section-heading"><h2>Repositories</h2><span className="muted">{repos.length} total</span></div>
-    {repos.length ? <div className="collections-grid">{repos.map((r, i) => <Card key={r.name} delay={i * 0.07} className={`collection-card ${repo === r.name ? 'is-active' : ''}`}>
-      <button onClick={() => setRepo(cur => (cur === r.name ? null : r.name))} aria-pressed={repo === r.name}>
-        <ColorIcon icon={Folder} color={repoColors[i % repoColors.length]} />
-        <AnimatePresence>{repo === r.name && <motion.span className="collection-check" initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0 }} transition={spring}><Check size={13} /></motion.span>}</AnimatePresence>
-        <div><h3>{r.name}</h3><small>{r.documents} documents · {r.chunks} chunks</small></div>
-      </button>
-    </Card>)}</div>
-    : <Card className="knowledge-empty"><div className="empty-state compact"><ColorIcon icon={Database} color="neutral" /><h3>{error ? 'Engine is not reachable' : docs ? 'No documents yet' : 'Loading…'}</h3><p>{error ?? 'Ingest a document or folder from the RAG pipeline page.'}</p></div></Card>}
+    <div className="section-heading"><h2>Projects</h2><span className="muted">{projects ? `${projects.length} total` : ''}</span></div>
+    {projects ? <ProjectCards projects={projects} selected={pid} select={setPid} onNew={() => setCreating(true)} />
+    : <Card className="knowledge-empty"><div className="empty-state compact"><ColorIcon icon={Database} color="neutral" /><h3>{projectError || error ? 'Engine is not reachable' : 'Loading…'}</h3><p>{projectError ?? error ?? ''}</p></div></Card>}
+    <AnimatePresence initial={false}>{created && <motion.p className="pj-note is-ok pj-created" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>
+      <Check size={13} /><span>{created}</span><button className="text-button" onClick={openPipeline}>진행 보기 <ArrowRight size={12} /></button><button className="text-button" onClick={() => setCreated(null)}>닫기</button></motion.p>}</AnimatePresence>
+    <AnimatePresence initial={false} mode="wait">{project && <motion.div key={project.id} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.2 }}>
+      <ProjectHead project={project} openPipeline={openPipeline} onPulled={() => { void reloadProjects(); void reload(); }} />
+    </motion.div>}</AnimatePresence>
 
     <div className="section-heading document-heading">
-      <h2>Documents{repo && <span className="muted"> · {repo}</span>}</h2>
+      <h2>Documents{project && <span className="muted"> · {project.name}</span>}</h2>
       <div className="document-tools">
         <button className={`eval-filter ${onlyBlocked ? 'is-active' : ''}`} aria-pressed={onlyBlocked} onClick={() => setOnlyBlocked(v => !v)}>External not allowed {blockedCount}</button>
         <label className="search-field"><Search size={16} /><input aria-label="Filter documents" placeholder="Search title or path" value={filter} onChange={e => setFilter(e.target.value)} /></label>
@@ -203,13 +205,15 @@ function Knowledge({ view, target, clearTarget, openPipeline }: { view: 'all' | 
     {toggleError && <p className="source-error queue-problems">{toggleError}</p>}
     <Card className="table-card documents-table" delay={0.2}>
       <table>
-        <thead><tr><th>Title</th><th>Environment</th><th>Type</th><th>Verification</th><th title="May this document be sent to external APIs?">External</th><th>Chunks</th><th>Ingested</th><th /></tr></thead>
+        <thead><tr><th>Title</th><th>Environment</th><th>Type</th><th>Verification</th><th title="May this document be sent to external APIs?">External</th><th title="원본 프로젝트와 연결한 프로젝트">Projects</th><th>Chunks</th><th>Ingested</th><th /></tr></thead>
         <tbody>{shown.map((d, i) => <motion.tr key={d.id} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 14) * 0.03, duration: 0.3 }} onClick={() => setOpen(d)}>
           <td><span className="file-label"><FileText size={17} /><span className="doc-name"><b>{d.title}</b><small>{d.source_repo}/{d.source_path}</small></span></span></td>
           <td>{d.env ?? '—'}</td>
           <td>{d.doc_type ?? '—'}</td>
           <td><span className={`pill ${verificationTone[d.verification] ?? 'neutral'}`}>{d.verification}</span></td>
           <td onClick={e => e.stopPropagation()}><span className="external-cell"><Toggle checked={d.external_ok} label={`Allow sending ${d.title} to external APIs`} onChange={async () => setToggleError(await setExternal(d.id, !d.external_ok))} /><small>{d.external_ok ? 'Allowed' : 'Off'}</small></span></td>
+          <td onClick={e => e.stopPropagation()}><span className="pj-cell">{d.projects.map(p => <span key={p.id} className={`pj-tag ${p.origin ? '' : 'is-link'}`} title={p.origin ? '원본 프로젝트' : '연결한 프로젝트'}>{p.origin ? '' : '+ '}{p.name}</span>)}
+            {projects && projects.length > 1 && <IconButton icon={Link2} label={`${d.title}을 다른 프로젝트에 연결`} className="pj-link-btn" onClick={() => setLinking(d)} />}</span></td>
           <td className="num">{d.chunks}</td>
           <td className="num">{shortTime(d.ingested_at)}</td>
           <td><IconButton icon={ArrowUpRight} label={`Open ${d.title}`} onClick={() => setOpen(d)} /></td>
@@ -217,8 +221,12 @@ function Knowledge({ view, target, clearTarget, openPipeline }: { view: 'all' | 
       </table>
       {docs && !shown.length && <div className="empty-state compact"><Search size={24} /><p>{!docs.length ? 'No documents stored yet.' : onlyBlocked && !blockedCount ? 'Every document is allowed for external APIs.' : `No documents match “${filter}”.`}</p></div>}
     </Card>
-    <p className="footnote">Stored in PostgreSQL · grouped by the git repository each document came from.</p>
+    <p className="footnote">Stored in PostgreSQL · 문서는 한 번만 저장하고, 프로젝트에는 연결만 늘려요 (원본 하나 + 사람이 붙인 연결).</p>
 
+    {linking && projects && <LinkModal title={linking.title} documentId={linking.id} links={linking.projects} projects={projects} close={() => setLinking(null)}
+      saved={links => { setLinks(linking.id, links); setLinking(null); void reloadProjects(); }} />}
+    <NewProjectFlow open={creating} taken={projects?.map(p => p.name) ?? []} onClose={() => setCreating(false)}
+      onCreated={(p, r) => { setCreating(false); setPid(p.id); setCreated(`프로젝트 ${p.name}을 만들었어요 · 문서 ${r.jobs.length}개를 넣는 중${r.skipped.length ? ` · 뺀 문서 ${r.skipped.length}개` : ''}`); void reloadProjects(); }} />
     {open && <DocumentModal doc={open} target={target?.documentId === open.id ? target : null} close={() => { setOpen(null); clearTarget(); }} />}
   </>;
 }
@@ -691,8 +699,8 @@ function QueueStrip({ jobs, selected, select }: { jobs: Job[]; selected: number 
   </div>;
 }
 
-function Pipeline({ enabled, flip, callIngest, consumeIngest, callSetup, consumeSetup, openKnowledge }: {
-  enabled: boolean[]; flip: (i: number) => void; callIngest: boolean; consumeIngest: () => void; callSetup: boolean; consumeSetup: () => void; openKnowledge: () => void;
+function Pipeline({ enabled, flip, callIngest, consumeIngest, callSetup, consumeSetup, openKnowledge, openProjects }: {
+  enabled: boolean[]; flip: (i: number) => void; callIngest: boolean; consumeIngest: () => void; callSetup: boolean; consumeSetup: () => void; openKnowledge: () => void; openProjects: () => void;
 }) {
   const { jobs, job, select, moments, offline, start, adopt } = useIngestQueue();
   const s = useSetup();
@@ -703,6 +711,19 @@ function Pipeline({ enabled, flip, callIngest, consumeIngest, callSetup, consume
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // 적은 경로가 어느 프로젝트로 들어가는지. 어느 프로젝트 폴더에도 없으면 넣을 수 없다 (엔진도 같은 규칙으로 거절한다).
+  const [owner, setOwner] = useState<{ path: string; project: { id: number; name: string } | null } | null>(null);
+  useEffect(() => {
+    const p = path.trim();
+    if (!p) { setOwner(null); return; }
+    let live = true;
+    const t = setTimeout(() => {
+      api<{ project: { id: number; name: string } | null }>(`/projects/match?path=${encodeURIComponent(p)}`)
+        .then(r => { if (live) setOwner({ path: p, project: r.project }); }).catch(() => { if (live) setOwner(null); });
+    }, 300);
+    return () => { live = false; clearTimeout(t); };
+  }, [path]);
+  const ownerKnown = owner?.path === path.trim();
   const [chunksOf, setChunksOf] = useState<{ doc: number; index?: number } | null>(null);
   const [panel, setPanel] = useState<{ group: GroupId; node: number } | null>(null);
   // 설정 서랍: 열려 있으면 시작할 단계 번호, 닫혀 있으면 null. 다른 화면의 [설정 바꾸기]로 왔으면 첫 단계부터 연다.
@@ -820,10 +841,14 @@ function Pipeline({ enabled, flip, callIngest, consumeIngest, callSetup, consume
         <input ref={sourceInput} className="source-input" aria-label="Document or folder path" placeholder="/path/to/docs-repo — a folder or one .md file" value={path} onChange={e => setPath(e.target.value)} spellCheck={false} />
         <select className="chip-select" aria-label="Environment" value={env} onChange={e => setEnv(e.target.value)}>{ENV_OPTIONS.map(o => <option key={o}>{o}</option>)}</select>
         <select className="chip-select" aria-label="Document type" value={docType} onChange={e => setDocType(e.target.value)}>{DOC_TYPE_OPTIONS.map(o => <option key={o}>{o}</option>)}</select>
-        <button className="primary-button" disabled={busy || !path.trim()}>
+        <button className="primary-button" disabled={busy || !path.trim() || (ownerKnown && !owner?.project)}>
           {busy ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}{busy ? (building ? 'Building…' : 'Ingesting…') : 'Run ingest'}
         </button>
       </form>
+      <AnimatePresence initial={false}>{ownerKnown && <motion.p key={owner!.project ? 'in' : 'out'} className={`pj-owner ${owner!.project ? '' : 'is-out'}`} initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>
+        {owner!.project ? <><ArrowRight size={12} />프로젝트 <b>{owner!.project.name}</b>에 넣어요</>
+          : <><CircleAlert size={12} />어느 프로젝트 폴더에도 없어요. 프로젝트를 먼저 만들어 주세요 <button type="button" className="text-button" onClick={openProjects}>Knowledge 열기 <ArrowUpRight size={11} /></button></>}
+      </motion.p>}</AnimatePresence>
       <AnimatePresence>{note && !error && <motion.p className="source-note" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>{note}</motion.p>}</AnimatePresence>
       <AnimatePresence>{error && <motion.p className="source-error" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>{error}</motion.p>}</AnimatePresence>
     </Card>

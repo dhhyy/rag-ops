@@ -79,7 +79,7 @@ def run_job(job_id: int) -> None:
             result = ingest_file(Path(path), env_label=params.get("env"), doc_type=params.get("doc_type"),
                                  verification=params.get("verification") or "미확인",
                                  checked_at=params.get("checked_at"), external_ok=bool(params.get("external_ok")),
-                                 on_step=on_step)
+                                 on_step=on_step, project_id=int(params["project_id"]) if params.get("project_id") else None)
         update_job(job_id, status="done", result=Jsonb(result), finished_at=NOW)
         if kind == "build" and params.get("apply"):
             apply_when_built(int(params["index_id"]), params.get("batch", ""))

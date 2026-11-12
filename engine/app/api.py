@@ -32,6 +32,7 @@ import components as comp
 import drafts
 import evaluate
 import indexes
+import projects
 import questions
 from ingest import STAGES, IngestError, connect, ingest_file, load_env
 from jobs import JOB_COLUMNS, fetch_job
@@ -135,16 +136,20 @@ def create_document(req: IngestRequest) -> dict:
         raise HTTPException(422, str(e))
 
 
-# 가져온 문서 목록. 출처·메타데이터와 조각 수를 최근에 가져온 순서로 보여 준다.
+# 가져온 문서 목록. 출처·메타데이터와 조각 수, 연결된 프로젝트(원본 먼저)를 최근에 가져온 순서로 보여 준다.
 @app.get("/documents")
 def list_documents() -> list[dict]:
     with connect(load_env()) as conn:
         cur = conn.execute(
             """SELECT d.id, d.source_repo, d.source_path, d.source_commit, d.title, d.env, d.doc_type,
-                      d.verification, d.checked_at, d.external_ok, d.ingested_at, count(c.id) AS chunks
-               FROM documents d
-               LEFT JOIN chunks c ON c.document_id = d.id AND c.index_id = (SELECT id FROM indexes WHERE is_base)
-               GROUP BY d.id ORDER BY d.ingested_at DESC"""
+                      d.verification, d.checked_at, d.external_ok, d.ingested_at,
+                      (SELECT count(*) FROM chunks c WHERE c.document_id = d.id
+                         AND c.index_id = (SELECT id FROM indexes WHERE is_base)) AS chunks,
+                      coalesce((SELECT json_agg(json_build_object('id', p.id, 'name', p.name, 'origin', pd.is_origin)
+                                                ORDER BY pd.is_origin DESC, p.name)
+                                FROM project_documents pd JOIN projects p ON p.id = pd.project_id
+                                WHERE pd.document_id = d.id), '[]') AS projects
+               FROM documents d ORDER BY d.ingested_at DESC"""
         )
         cols = [c.name for c in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -164,40 +169,54 @@ def enqueue(job_ids: list[int]) -> None:
                             WHERE id = ANY(%s) AND status='queued'""", (job_ids,))
         raise HTTPException(503, f"대기열(Redis)에 연결할 수 없습니다: {type(e).__name__}")
 
-# 가져오기 작업을 만든다. 파일이면 1개, 폴더면 안의 .md마다 1개씩. 경로 검사는 바로 하고, 통과한 문서만 대기열에 넣는다.
-@app.post("/jobs", status_code=202)
-def create_jobs(req: IngestRequest) -> dict:
-    roots = allowed_roots()
-    target = Path(req.path).expanduser().resolve()
-    try:
-        if target.is_dir():
-            if not any(target.is_relative_to(root.resolve()) for root in roots):
-                raise ValueError("허용된 폴더(INGEST_ROOTS) 밖의 경로입니다")
-            files, skipped = expand_folder(target, roots)
-            if not files and not skipped:
-                raise ValueError("폴더 안에 Markdown(.md) 파일이 없습니다")
-        else:
-            files, skipped = [resolve_allowed(req.path, roots)], []
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-
-    base_params = req.model_dump(mode="json", exclude={"path"}) | {"kind": "ingest"}
+# 문서마다 가져오기 작업을 만든다. 파일마다 그 파일이 들어 있는 Git 프로젝트를 찾아 원본으로 연결한다.
+# 어느 프로젝트 폴더에도 없는 파일은 넣지 않는다 (Knowledge에서 프로젝트를 먼저 만든다).
+def queue_files(files: list[Path], skipped: list[dict], base_params: dict, given_external: bool | None) -> list[dict]:
     ok_roots = external_ok_roots()
     created = []
     with connect(load_env()) as conn:
         for path in files:
+            owner = projects.project_for_path(conn, path)
+            if owner is None:
+                skipped.append({"path": str(path), "reason": "어느 프로젝트 폴더에도 없습니다. Knowledge에서 프로젝트를 먼저 만드세요"})
+                continue
             # 같은 파일을 가져오는 작업이 이미 대기·진행 중이면 빼 둔다 (저장 단계에서 서로 부딪히지 않게).
             busy = conn.execute("SELECT id FROM ingest_jobs WHERE path=%s AND status IN ('queued', 'running')",
                                 (str(path),)).fetchone()
             if busy:
                 skipped.append({"path": str(path), "reason": f"같은 문서를 가져오는 작업이 진행 중입니다 (job {busy[0]})"})
                 continue
-            params = Jsonb(base_params | {"external_ok": default_external(path, req.external_ok, ok_roots)})
+            params = Jsonb(base_params | {"external_ok": default_external(path, given_external, ok_roots),
+                                          "project_id": owner[0], "project": owner[1]})
             job_id = conn.execute("INSERT INTO ingest_jobs (path, params) VALUES (%s, %s) RETURNING id",
                                   (str(path), params)).fetchone()[0]
             created.append({"job_id": job_id, "path": str(path)})
-
     enqueue([j["job_id"] for j in created])
+    return created
+
+
+# 파일 또는 폴더 경로를 가져올 파일 목록으로 바꾼다. 허용 폴더 밖이거나 .md가 없으면 ValueError.
+def expand_target(raw: str, roots: list[Path]) -> tuple[Path, list[Path], list[dict]]:
+    target = Path(raw).expanduser().resolve()
+    if target.is_dir():
+        if not any(target.is_relative_to(root.resolve()) for root in roots):
+            raise ValueError("허용된 폴더(INGEST_ROOTS) 밖의 경로입니다")
+        files, skipped = expand_folder(target, roots)
+        if not files and not skipped:
+            raise ValueError("폴더 안에 Markdown(.md) 파일이 없습니다")
+        return target, files, skipped
+    return target, [resolve_allowed(raw, roots)], []
+
+
+# 가져오기 작업을 만든다. 파일이면 1개, 폴더면 안의 .md마다 1개씩. 경로 검사는 바로 하고, 통과한 문서만 대기열에 넣는다.
+@app.post("/jobs", status_code=202)
+def create_jobs(req: IngestRequest) -> dict:
+    try:
+        target, files, skipped = expand_target(req.path, allowed_roots())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    base_params = req.model_dump(mode="json", exclude={"path", "external_ok"}) | {"kind": "ingest"}
+    created = queue_files(files, skipped, base_params, req.external_ok)
     if not created and len(files) == 1 and not target.is_dir():
         raise HTTPException(409, skipped[0]["reason"])
     return {"jobs": created, "skipped": skipped, "stages": STAGES}
@@ -281,6 +300,7 @@ class SearchRequest(BaseModel):
     question: str
     rerank: Literal["setting", "off"] = "setting"   # off: 이번 질문만 리랭크 없이
     answer: Literal["setting", "off"] = "setting"   # off: 이번 질문만 답변 없이 (검색만)
+    project_id: int | None = None                    # 검색 범위. 없으면 전체 문서
 
 
 # 동기 제너레이터를 한 단계씩 스레드에서 돌린다. 화면이 연결을 끊어 응답이 취소되면,
@@ -311,6 +331,9 @@ def search_stream(req: SearchRequest) -> StreamingResponse:
     env = load_env()
     with connect(env) as conn:
         setup = load_setup(conn)
+        scope = projects.get_project(conn, req.project_id) if req.project_id else None
+    if req.project_id and scope is None:
+        raise HTTPException(404, "검색 범위로 고른 프로젝트가 없습니다")
     query = setup["query"] if req.rerank == "setting" else {**setup["query"], "reranker": None}
     index, k = setup["index"], setup["query"]["top_k"]
     if query["reranker"]:
@@ -326,7 +349,7 @@ def search_stream(req: SearchRequest) -> StreamingResponse:
                  "reranker": comp.describe("reranker", query["reranker"]) if query["reranker"] else None,
                  "keyword": comp.describe("keyword", query["keyword"]) if query["keyword"] else None,
                  "generator": comp.describe("generator", query["generator"]) if query["generator"] and req.answer == "setting" else None,
-                 "top_k": k}
+                 "top_k": k, "project": {"id": scope["id"], "name": scope["name"]} if scope else None}
 
     def stream():
         t_start = time.perf_counter()
@@ -336,12 +359,13 @@ def search_stream(req: SearchRequest) -> StreamingResponse:
         priced = False
         try:
             yield line({"type": "start", "price_checked": comp.PRICE_CHECKED, "top_k": k, "index_id": index["id"],
+                        "project": setup_rec["project"],
                         "embedder": setup_rec["embedder"], "external": comp.is_external("embedder", index["embedder"]),
                         "reranker": setup_rec["reranker"], "keyword": setup_rec["keyword"],
                         "candidates": int(query["reranker"]["params"]["candidates"]) if query["reranker"] else None})
             final: list[dict] = []
             try:
-                for kind, value in retrieve_steps(env, index, query, question, k):
+                for kind, value in retrieve_steps(env, index, query, question, k, req.project_id):
                     if kind == "embedded":
                         rec["embed_tokens"] = value[1]
                         if value[2] is not None:
@@ -638,6 +662,108 @@ def update_document(doc_id: int, req: DocumentUpdate) -> dict:
     if row is None:
         raise HTTPException(404, f"document {doc_id} 없음")
     return {"id": row[0], "external_ok": row[1]}
+
+
+class DocumentLinks(BaseModel):
+    project_ids: list[int]
+
+
+# 문서를 연결할 프로젝트를 사람이 고른다. 원본 프로젝트 연결은 그대로 남는다. 조각·벡터는 다시 만들지 않는다.
+@app.put("/documents/{doc_id}/projects")
+def link_document(doc_id: int, req: DocumentLinks) -> list[dict]:
+    with connect(load_env()) as conn:
+        try:
+            return projects.set_links(conn, doc_id, req.project_ids)
+        except LookupError as e:
+            raise HTTPException(404, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+
+# ---------- 프로젝트 ----------
+
+def count_md(folder: Path) -> int:
+    return len(expand_folder(folder, allowed_roots())[0])
+
+
+@app.get("/projects")
+def list_projects() -> list[dict]:
+    with connect(load_env()) as conn:
+        return projects.list_projects(conn)
+
+
+class FolderCheck(BaseModel):
+    path: str
+
+
+# 새 프로젝트 서랍에서 폴더를 적는 동안 검사한다: 허용 폴더 안인지, git 저장소인지, 다른 프로젝트와 겹치는지.
+@app.post("/projects/check")
+def check_project_folder(req: FolderCheck) -> dict:
+    with connect(load_env()) as conn:
+        try:
+            return {"ok": True, **projects.check_folder(conn, req.path, allowed_roots(), count_md)}
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+
+
+# 경로 입력칸(Pipelines)에 적은 경로가 어느 프로젝트로 들어가는지.
+@app.get("/projects/match")
+def match_project(path: str) -> dict:
+    target = Path(path).expanduser().resolve()
+    with connect(load_env()) as conn:
+        owner = projects.project_for_path(conn, target)
+    return {"project": {"id": owner[0], "name": owner[1]} if owner else None}
+
+
+class ProjectCreate(BaseModel):
+    name: str
+    kind: Literal["git", "managed"] = "git"
+    path: str = ""
+    description: str = ""
+    env: Literal["운영", "개발", "샘플", "혼합"] | None = None
+    doc_type: Literal["설정", "실행 결과", "해설", "장애 기록"] | None = None
+
+
+# 프로젝트의 폴더 문서를 모두 가져오기 작업으로 넣는다. 내용이 같은 문서는 작업 안에서 건너뛴다.
+def pull_project(project: dict) -> dict:
+    folder = projects.project_path(project["source"])
+    if folder is None:
+        raise HTTPException(409, "이 프로젝트에는 가져올 폴더가 없습니다")
+    try:
+        _, files, skipped = expand_target(str(folder), allowed_roots())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    defaults = project["defaults"] or {}
+    base = {"kind": "ingest", "env": defaults.get("env"), "doc_type": defaults.get("doc_type"), "verification": "미확인"}
+    created = queue_files(files, skipped, base, None)
+    return {"jobs": created, "skipped": skipped, "stages": STAGES}
+
+
+# 프로젝트를 만든다. 지금은 Git · 로컬 폴더만. 만들면 바로 폴더 문서를 기본 색인에 넣기 시작한다.
+@app.post("/projects", status_code=201)
+def create_project(req: ProjectCreate) -> dict:
+    if req.kind != "git":
+        raise HTTPException(501, "직접 관리 프로젝트는 다음 단계에서 만들 수 있어요")
+    with connect(load_env()) as conn:
+        try:
+            info = projects.check_folder(conn, req.path, allowed_roots(), count_md)
+            defaults = {k: v for k, v in {"env": req.env, "doc_type": req.doc_type}.items() if v}
+            pid = projects.create_project(conn, req.name, "git", {"from": "local", "path": info["path"]},
+                                          defaults, req.description)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        project = projects.get_project(conn, pid)
+    return {"project": project, **pull_project(project)}
+
+
+# [다시 받기]: 프로젝트 폴더를 다시 넣는다. 바뀐 문서만 다시 자르고 임베딩한다 (기본 색인).
+@app.post("/projects/{project_id}/pull", status_code=202)
+def pull(project_id: int) -> dict:
+    with connect(load_env()) as conn:
+        project = projects.get_project(conn, project_id)
+    if project is None:
+        raise HTTPException(404, f"project {project_id} 없음")
+    return pull_project(project)
 
 
 # ---------- 평가 ----------

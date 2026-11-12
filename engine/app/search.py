@@ -24,6 +24,7 @@ from ingest import IngestError, connect, load_env
 from indexes import get_index
 
 # 한 색인 안에서 코사인 거리(<=>)가 가까운 순으로 상위 k개 조각. 출처·환경·검증 상태를 함께 붙이려고 documents와 조인한다.
+# project가 있으면 그 프로젝트에 연결된 문서(원본·연결 모두)의 조각만 찾는다. None이면 전체.
 SQL = """
 SELECT c.id, 1 - (c.embedding <=> %(q)s::vector) AS score,
        c.chunk_index, c.heading_path, c.content,
@@ -31,6 +32,8 @@ SELECT c.id, 1 - (c.embedding <=> %(q)s::vector) AS score,
        d.id, d.title, d.checked_at, c.embed_text
 FROM chunks c JOIN documents d ON d.id = c.document_id
 WHERE c.index_id = %(index)s
+  AND (%(project)s::bigint IS NULL OR EXISTS (
+       SELECT 1 FROM project_documents pd WHERE pd.document_id = d.id AND pd.project_id = %(project)s::bigint))
 ORDER BY c.embedding <=> %(q)s::vector
 LIMIT %(k)s
 """
@@ -70,7 +73,7 @@ def search(env: dict[str, str], index: dict, question: str, k: int) -> tuple[lis
         raise IngestError(str(e)) from None
     t1 = time.perf_counter()
     with connect(env) as conn:
-        rows = conn.execute(SQL, {"q": json.dumps(vec), "k": k, "index": index["id"]}).fetchall()
+        rows = conn.execute(SQL, {"q": json.dumps(vec), "k": k, "index": index["id"], "project": None}).fetchall()
     t2 = time.perf_counter()
     return rows, t1 - t0, t2 - t1, vec
 
@@ -79,7 +82,8 @@ def search(env: dict[str, str], index: dict, question: str, k: int) -> tuple[lis
 #   ("embedded", (초, 토큰, 금액)) → ("candidates", 후보 hits, 초) → ("reranked", 끝난 수, 전체 수)… → ("done", 결과 dict)
 # Playground는 이것을 그대로 화면에 흘려보내고, 평가·CLI는 retrieve()로 마지막 결과만 쓴다.
 # 리랭크를 작은 묶음으로 나눠 보내므로, 받는 쪽이 중간에 멈추면 다음 묶음은 보내지 않는다.
-def retrieve_steps(env: dict[str, str], index: dict, query: dict, question: str, k: int):
+# project_id: 검색 범위 (프로젝트 하나, None이면 전체).
+def retrieve_steps(env: dict[str, str], index: dict, query: dict, question: str, k: int, project_id: int | None = None):
     reranker, kw_set = query.get("reranker"), query.get("keyword")
     rr = comp.make_reranker(reranker, env) if reranker else None
     kw = comp.make_keyword(kw_set, env) if kw_set else None
@@ -99,8 +103,10 @@ def retrieve_steps(env: dict[str, str], index: dict, query: dict, question: str,
     yield "embedded", (t_embed, tokens, comp.cost_usd(getattr(embedder, "model", ""), tokens) if tokens else None)
     t1 = time.perf_counter()
     with tracer.start_as_current_span("rag.vector_search") as span, connect(env) as conn:
-        rows = conn.execute(SQL, {"q": json.dumps(vec), "k": n, "index": index["id"]}).fetchall()
+        rows = conn.execute(SQL, {"q": json.dumps(vec), "k": n, "index": index["id"], "project": project_id}).fetchall()
         span.set_attribute("rag.index_id", index["id"])
+        if project_id:
+            span.set_attribute("rag.project_id", project_id)
         span.set_attribute("rag.candidates", len(rows))
     t_db = time.perf_counter() - t1
     hits = [{"row": r, "score": float(r[1]), "vector_score": float(r[1]), "vector_rank": i} for i, r in enumerate(rows, 1)]
@@ -108,7 +114,7 @@ def retrieve_steps(env: dict[str, str], index: dict, query: dict, question: str,
     if kw:
         t3 = time.perf_counter()
         with tracer.start_as_current_span("rag.keyword_search") as span:
-            hits = fuse(env, index, vec, hits, keyword_search.search(env, index["id"], question, kw.candidates), kw.mode)
+            hits = fuse(env, index, vec, hits, keyword_search.search(env, index["id"], question, kw.candidates, project_id), kw.mode)
             span.set_attribute("rag.mode", kw.mode)
             span.set_attribute("rag.candidates", len(hits))
         t_kw = time.perf_counter() - t3
@@ -145,7 +151,7 @@ def fuse(env: dict[str, str], index: dict, vec: list[float], hits: list[dict], k
     missing = [cid for cid, _ in kw_hits if cid not in by_id]
     if missing:
         with connect(env) as conn:
-            for r in conn.execute(SQL_IDS, {"q": json.dumps(vec), "ids": missing, "index": index["id"]}).fetchall():
+            for r in conn.execute(SQL_IDS, {"q": json.dumps(vec), "ids": missing}).fetchall():
                 by_id[r[0]] = {"row": r, "score": 0.0, "vector_score": float(r[1]), "vector_rank": None}
     for h in by_id.values():
         h["keyword_rank"], h["keyword_score"] = None, None
@@ -160,8 +166,8 @@ def fuse(env: dict[str, str], index: dict, vec: list[float], hits: list[dict], k
 
 
 # 검색 설정까지 적용한 검색. hits는 후보 전체(리랭크했으면 리랭크 순)이고 부르는 쪽이 앞에서 k개를 쓴다.
-def retrieve(env: dict[str, str], index: dict, query: dict, question: str, k: int) -> dict:
-    for kind, value in retrieve_steps(env, index, query, question, k):
+def retrieve(env: dict[str, str], index: dict, query: dict, question: str, k: int, project_id: int | None = None) -> dict:
+    for kind, value in retrieve_steps(env, index, query, question, k, project_id):
         if kind == "done":
             return value
     raise IngestError("검색이 끝나지 않았습니다")

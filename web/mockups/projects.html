@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>프로젝트 시안</title>
+<style>
+:root{--ink:#302f35;--muted:#7c7887;--faint:#a39dad;--soft:#f6f4f9;--line:#ebe7f0;--accent:#9b81d3;--accent-ink:#6f53ad;--dark:#303034;--ok:#5f8f3c;--ok-bg:#eef5e6;--warn:#b0623a;--warn-bg:#fbefe7;--git:#3c6fb0;--git-bg:#e6eef9;--own:#8a5a1f;--own-bg:#f8eedf;
+  font-family:'DM Sans',-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Segoe UI',sans-serif;color:var(--ink);font-size:13px;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:linear-gradient(125deg,#edeaf5 0%,#efedf3 55%,#efedf1 100%);min-height:100vh;overflow-x:hidden}
+h1,h2,h3,p{margin:0}button,input,select{font:inherit;color:inherit}button{border:0;cursor:pointer;background:none}
+small{font-size:11px;color:var(--muted);line-height:1.5}
+.note{position:sticky;top:0;z-index:20;display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:9px 16px;background:#302f35;color:#fff;font-size:11px}
+.note b{font-weight:500;margin-right:6px}.note .sp{flex:1}
+.note button{background:#ffffff1f;color:#fff;padding:5px 11px;border-radius:12px;font-size:11px}.note button.on{background:#fff;color:#302f35}
+.note .k{display:inline-flex;align-items:center;gap:5px;opacity:.85}.note .k i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.show [data-z]{outline:2px dashed;outline-offset:3px}.show [data-z=fixed]{outline-color:#e58a52}.show [data-z=fluid]{outline-color:#5f8be8}.show [data-z=hybrid]{outline-color:#8a5fd1}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 15px;border-radius:16px;font-size:12px;background:#fff;white-space:nowrap}
+.btn.dark{background:var(--dark);color:#fff}.btn.soft{background:var(--soft)}.btn.ghost{background:transparent;color:var(--muted)}
+.tag{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:8px;font-size:10.5px;white-space:nowrap}
+.tag.git{background:var(--git-bg);color:var(--git)}.tag.own{background:var(--own-bg);color:var(--own)}.tag.mute{background:var(--soft);color:var(--muted)}.tag.ok{background:var(--ok-bg);color:var(--ok)}.tag.warn{background:var(--warn-bg);color:var(--warn)}
+.view{display:none}.view.on{display:block}
+.page{padding:28px 32px 60px;max-width:1240px}
+.page h1{font-size:22px;font-weight:400}.page .sub{margin-top:4px;color:var(--muted);font-size:12.5px}
+.top{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}.top .t{flex:1;min-width:200px}
+.explain{margin:28px 0 0;max-width:820px;font-size:12px;color:var(--muted);line-height:1.8;background:#ffffff8c;border-radius:16px;padding:14px 16px}
+.explain b{color:var(--ink);font-weight:500}
+
+/* 1. 프로젝트 목록: 카드 격자 (Fluid) */
+.grid{margin-top:20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.pcard{background:#fff;border-radius:22px;padding:18px;display:flex;flex-direction:column;gap:10px;text-align:left;transition:box-shadow .2s}
+.pcard:hover{box-shadow:0 0 0 1.5px #d8cdf0}
+.pcard h3{font-size:15px;font-weight:500}.pcard .row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.pcard .src{font-size:11.5px;color:var(--muted);font-family:ui-monospace,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pcard .stats{display:flex;gap:16px;padding-top:10px;border-top:1px solid var(--line)}.pcard .stats div{display:flex;flex-direction:column}
+.pcard .stats b{font-size:16px;font-weight:500}
+.pcard.new{border:1.5px dashed #d8d1e3;background:transparent;align-items:center;justify-content:center;color:var(--accent-ink);min-height:170px}
+.pcard.new span{font-size:26px;line-height:1}
+
+/* 2. 새 프로젝트 서랍 (Fixed 폭) */
+.drawer{margin:20px 0 0 auto;width:clamp(520px,42vw,600px);background:#fff;border-radius:28px;box-shadow:0 30px 80px #2a223b26;display:flex;flex-direction:column;overflow:hidden;min-height:620px}
+.dhead{display:flex;align-items:center;gap:12px;padding:18px 22px 14px;border-bottom:1px solid var(--line)}
+.dhead h2{font-size:15px;font-weight:500;flex:1}
+.ib{width:32px;height:32px;border-radius:11px;background:var(--soft);display:grid;place-items:center;color:var(--muted)}
+.steps{display:flex;gap:5px;align-items:center;padding:14px 22px 0}
+.steps i{height:5px;width:5px;border-radius:3px;background:#e2dcea;transition:all .3s}.steps i.done{background:#c7b6ea}.steps i.on{width:20px;background:var(--accent)}
+.steps span{margin-left:auto;font-size:11px;color:var(--faint)}
+.dbody{flex:1;overflow:auto;padding:16px 22px 22px}
+.q{font-size:20px;font-weight:500;letter-spacing:-.4px;line-height:1.35}.qsub{margin-top:6px;font-size:12.5px;color:var(--muted);line-height:1.6}
+.opts{margin-top:18px;display:flex;flex-direction:column;gap:9px}
+.opt{display:flex;gap:12px;align-items:flex-start;width:100%;text-align:left;padding:14px 15px;border-radius:18px;border:1.5px solid var(--line);background:#fff;transition:all .2s}
+.opt:hover{border-color:#d8cdf0}.opt.sel{border-color:var(--accent);background:#fbf9fe}
+.opt .r{flex-shrink:0;width:20px;height:20px;border-radius:50%;border:1.5px solid #d8d1e3;margin-top:1px;display:grid;place-items:center}
+.opt.sel .r{border-color:var(--accent);background:var(--accent)}.opt.sel .r::after{content:'';width:7px;height:7px;border-radius:50%;background:#fff}
+.opt .ob{flex:1;display:flex;flex-direction:column;gap:5px;min-width:0}.opt .oh{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.opt .oh b{font-weight:500;font-size:14px}
+.opt ul{margin:2px 0 0;padding-left:16px;font-size:11.5px;color:var(--muted);line-height:1.6}
+.field{margin-top:16px;display:flex;flex-direction:column;gap:6px}.field label{font-size:12px;color:var(--muted)}
+.input{width:100%;padding:11px 13px;border-radius:13px;border:1.5px solid var(--line);background:#fff;font-size:13px}.input:focus{outline:none;border-color:var(--accent)}
+.input.mono{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.seg{display:inline-flex;background:var(--soft);border-radius:12px;padding:3px;gap:2px;flex-wrap:wrap}
+.seg button{padding:6px 12px;border-radius:9px;font-size:12px;color:var(--muted)}.seg button.on{background:#fff;color:var(--ink);box-shadow:0 1px 3px #0000000f}
+.hint{margin-top:12px;padding:11px 13px;border-radius:14px;background:var(--soft);font-size:12px;line-height:1.6;color:#5b5666}
+.hint.ok{background:var(--ok-bg);color:var(--ok)}.hint.warn{background:var(--warn-bg);color:var(--warn)}
+.drop{margin-top:16px;border:1.5px dashed #d0c6e2;border-radius:20px;padding:28px 16px;text-align:center;display:flex;flex-direction:column;gap:6px;align-items:center;background:#fcfbfe}
+.drop b{font-weight:500;font-size:14px}
+.files{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+.file{display:flex;gap:10px;align-items:center;padding:9px 12px;border-radius:12px;background:var(--soft);font-size:12px}.file span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dfoot{border-top:1px solid var(--line);padding:12px 22px 16px;display:grid;grid-template-columns:auto 1fr;gap:10px;background:#fff}.dfoot .dark{padding:13px}
+.stepnav{margin-top:12px;display:flex;gap:6px;flex-wrap:wrap}.stepnav .btn.on{background:var(--dark);color:#fff}
+
+/* 3. 프로젝트 안 */
+.phead{margin-top:18px;background:#fff;border-radius:22px;padding:16px 18px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.phead .info{flex:1;min-width:220px;display:flex;flex-direction:column;gap:5px}.phead .info b{font-weight:500;font-size:14px}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+.table{margin-top:12px;background:#fff;border-radius:22px;overflow:hidden}
+.tr{display:grid;grid-template-columns:minmax(0,1fr) 120px 110px 120px 40px;gap:12px;align-items:center;padding:12px 18px;border-bottom:1px solid var(--line);font-size:12.5px}
+.tr:last-child{border-bottom:0}.tr.th{font-size:11px;color:var(--faint);padding:10px 18px}
+.tr .doc{display:flex;flex-direction:column;gap:2px;min-width:0}.tr .doc b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tr .doc small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dots{width:30px;height:30px;border-radius:10px;display:grid;place-items:center;color:var(--muted)}.dots:hover{background:var(--soft)}
+.menu{position:absolute;right:14px;top:36px;background:#fff;border-radius:14px;box-shadow:0 12px 32px #2a223b2a;padding:6px;display:flex;flex-direction:column;min-width:190px;z-index:3}
+.menu button{text-align:left;padding:9px 11px;border-radius:9px;font-size:12px}.menu button:hover{background:var(--soft)}.menu button.del{color:var(--warn)}
+.link-pop{margin-top:12px;background:#fff;border-radius:22px;padding:16px 18px;display:flex;flex-direction:column;gap:10px;max-width:460px;margin-left:auto}
+.link-pop h3{font-size:14px;font-weight:500}
+.chk{display:flex;gap:10px;align-items:center;padding:10px 12px;border-radius:12px;background:var(--soft);font-size:12.5px}
+.chk i{width:18px;height:18px;border-radius:6px;border:1.5px solid #d0c6e2;display:grid;place-items:center;font-style:normal;font-size:11px;color:#fff;background:#fff}
+.chk.on i{background:var(--accent);border-color:var(--accent)}.chk span{flex:1}
+.tabs2{margin-top:18px;display:flex;gap:6px}
+
+/* 4. Playground 범위 */
+.pg{margin-top:20px;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:14px}
+.ask{background:#fff;border-radius:24px;padding:16px;display:flex;flex-direction:column;gap:12px}
+.askrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.scope{position:relative}
+.scope>button{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:13px;background:var(--soft);font-size:12px}
+.scope>button b{font-weight:500}
+.scope .list{position:absolute;left:0;top:42px;width:280px;background:#fff;border-radius:16px;box-shadow:0 14px 36px #2a223b2e;padding:6px;z-index:4;display:flex;flex-direction:column}
+.scope .list button{display:flex;gap:10px;align-items:center;padding:10px 11px;border-radius:10px;text-align:left;font-size:12.5px}
+.scope .list button:hover,.scope .list button.on{background:var(--soft)}.scope .list button span{flex:1}
+.scope .list hr{border:0;border-top:1px solid var(--line);margin:4px 6px}
+.qbox{flex:1;min-width:200px;padding:11px 14px;border-radius:14px;border:1.5px solid var(--line);font-size:13px}
+.hits{display:flex;flex-direction:column;gap:8px}
+.hit{padding:12px 14px;border-radius:16px;background:var(--soft);display:flex;flex-direction:column;gap:5px}
+.hit .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.hit b{font-weight:500}
+.side{background:#fff;border-radius:24px;padding:16px;display:flex;flex-direction:column;gap:10px;align-self:start}
+.side h3{font-size:13px;font-weight:500}
+
+/* 5. 평가 */
+.ev{margin-top:20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.ecard{background:#fff;border-radius:22px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.ecard h3{font-size:14px;font-weight:500;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.metric{display:grid;grid-template-columns:1fr auto;gap:4px 10px;font-size:12px}.metric b{font-weight:500;text-align:right}
+.bar2{grid-column:1/-1;height:5px;border-radius:3px;background:var(--soft);overflow:hidden}.bar2 i{display:block;height:100%;background:var(--accent);border-radius:3px}
+.ecard.all{border:1.5px solid #e6dcf6}
+
+@media(max-width:760px){
+  .page{padding:20px 16px 48px}
+  .drawer{width:100%;min-height:0;border-radius:24px}
+  .tr{grid-template-columns:minmax(0,1fr) 40px;row-gap:4px}.tr>.c2,.tr>.c3,.tr>.c4{display:none}.tr.th{display:none}
+  .pg{grid-template-columns:1fr}
+  .link-pop{max-width:none}
+}
+</style>
+</head>
+<body>
+<div class="note">
+  <b>프로젝트 시안</b>
+  <button data-v="list" class="on">① 목록</button>
+  <button data-v="new">② 새 프로젝트</button>
+  <button data-v="git">③ Git 프로젝트 안</button>
+  <button data-v="own">④ 직접 관리 프로젝트 안</button>
+  <button data-v="pg">⑤ Playground 범위</button>
+  <button data-v="ev">⑥ 평가</button>
+  <span class="sp"></span>
+  <span class="k"><i style="background:#e58a52"></i>Fixed</span><span class="k"><i style="background:#5f8be8"></i>Fluid</span><span class="k"><i style="background:#8a5fd1"></i>Hybrid</span>
+  <button id="zone">영역 보기</button>
+</div>
+
+<!-- ① 목록 -->
+<section class="view on" id="v-list"><div class="page">
+  <div class="top" data-z="fixed">
+    <div class="t"><h1>Projects</h1><p class="sub">문서를 프로젝트로 묶어요. 프로젝트마다 문서를 가져오는 방식이 하나로 정해져요.</p></div>
+    <button class="btn dark" onclick="go('new')">＋ 새 프로젝트</button>
+  </div>
+  <div class="grid" data-z="fluid">
+    <button class="pcard" onclick="go('git')">
+      <div class="row"><span class="tag git">⎇ Git</span><span class="tag mute">로컬 폴더</span></div>
+      <h3>publish</h3>
+      <div class="src">~/docs/publish · main @ 4f2c1a9</div>
+      <div class="stats"><div><b>9</b><small>문서</small></div><div><b>76</b><small>조각</small></div><div><b>10</b><small>평가 질문</small></div></div>
+    </button>
+    <button class="pcard" onclick="go('git')">
+      <div class="row"><span class="tag git">⎇ Git</span><span class="tag mute">GitHub</span><span class="tag warn">새 커밋 3개</span></div>
+      <h3>k8s-handbook</h3>
+      <div class="src">github.com/example/k8s-handbook · main @ 91be07d</div>
+      <div class="stats"><div><b>24</b><small>문서</small></div><div><b>212</b><small>조각</small></div><div><b>—</b><small>평가 질문</small></div></div>
+    </button>
+    <button class="pcard" onclick="go('own')">
+      <div class="row"><span class="tag own">▤ 직접 관리</span></div>
+      <h3>운영 메모</h3>
+      <div class="src">업로드 문서 · 마지막 11-12</div>
+      <div class="stats"><div><b>5</b><small>문서</small></div><div><b>31</b><small>조각</small></div><div><b>6</b><small>평가 질문</small></div></div>
+    </button>
+    <button class="pcard new" onclick="go('new')"><span>＋</span>새 프로젝트</button>
+  </div>
+  <div class="explain">
+    <b>화면 나누기</b> · 제목 줄은 <b>Fixed</b>(높이 고정), 카드 격자는 <b>Fluid</b>(폭에 따라 3·2·1열).<br>
+    카드 맨 위 꼬리표로 소스 종류(<b>Git</b> / <b>직접 관리</b>)를 바로 구분해요. GitHub 프로젝트는 원본에 새 커밋이 있으면 <b>"새 커밋 N개"</b>가 떠요.
+  </div>
+</div></section>
+
+<!-- ② 새 프로젝트 -->
+<section class="view" id="v-new"><div class="page">
+  <div class="top"><div class="t"><h1>Projects</h1><p class="sub">오른쪽 서랍에서 한 단계씩 물어요. (설정 바꾸기 서랍과 같은 방식)</p></div></div>
+  <div class="stepnav">
+    <button class="btn soft" data-s="0">1 이름</button><button class="btn soft" data-s="1">2 소스 종류</button>
+    <button class="btn soft" data-s="2">3a Git 연결</button><button class="btn soft" data-s="3">3b 파일 올리기</button>
+    <button class="btn soft" data-s="4">4 기본값</button><button class="btn soft" data-s="5">5 확인</button>
+  </div>
+  <div class="drawer" data-z="fixed">
+    <div class="dhead"><h2>새 프로젝트</h2><button class="ib">✕</button></div>
+    <div class="steps" id="dots"></div>
+    <div class="dbody" data-z="fluid" id="sbody"></div>
+    <div class="dfoot" data-z="fixed"><button class="btn soft" id="prev">이전</button><button class="btn dark" id="next">다음</button></div>
+  </div>
+</div></section>
+
+<!-- ③ Git 프로젝트 안 -->
+<section class="view" id="v-git"><div class="page">
+  <div class="top"><div class="t"><small>Projects ›</small><h1>k8s-handbook</h1></div></div>
+  <div class="phead" data-z="hybrid">
+    <span class="tag git">⎇ Git · GitHub</span>
+    <div class="info"><b>github.com/example/k8s-handbook</b><small>브랜치 <span class="mono">main</span> · 받은 커밋 <span class="mono">91be07d</span> (11-10) · 문서 폴더 <span class="mono">docs/</span></small></div>
+    <span class="tag warn">원본에 새 커밋 3개 · 바뀐 문서 2개</span>
+    <button class="btn dark">다시 받기</button>
+  </div>
+  <div class="hint">이 프로젝트는 <b>Git이 원본</b>이에요. 파일을 여기서 올리거나 고칠 수 없어요. 원본 저장소에서 고치고 [다시 받기]를 누르면 바뀐 문서만 다시 넣어요.</div>
+  <div class="table" data-z="fluid" style="position:relative">
+    <div class="tr th"><span>문서</span><span class="c2">판</span><span class="c3">외부 전송</span><span class="c4">함께 쓰는 곳</span><span></span></div>
+    <div class="tr"><div class="doc"><b>Pod 재시작 정책</b><small class="mono">docs/workloads/restart-policy.md</small></div><span class="c2 mono">91be07d</span><span class="c3"><span class="tag ok">허용</span></span><span class="c4"><small>—</small></span><button class="dots">⋯</button></div>
+    <div class="tr"><div class="doc"><b>Ingress TLS 설정</b><small class="mono">docs/network/ingress-tls.md</small></div><span class="c2 mono">91be07d</span><span class="c3"><span class="tag ok">허용</span></span><span class="c4"><span class="tag mute">+ 운영 메모</span></span><button class="dots" onclick="toggleMenu()">⋯</button>
+      <div class="menu" id="menu" hidden><button onclick="showLink()">다른 프로젝트에도 연결…</button><button>조각 보기</button><button>외부 전송 끄기</button></div></div>
+    <div class="tr"><div class="doc"><b>노드 드레인 순서</b><small class="mono">docs/ops/drain.md</small></div><span class="c2"><span class="tag warn">원본이 바뀜</span></span><span class="c3"><span class="tag ok">허용</span></span><span class="c4"><small>—</small></span><button class="dots">⋯</button></div>
+  </div>
+  <div class="link-pop" id="linkpop" hidden data-z="fixed">
+    <h3>「Ingress TLS 설정」을 연결할 프로젝트</h3>
+    <small>문서는 한 번만 저장돼요. 연결만 늘어나서 다시 임베딩하지 않아요. 원본(이 Git 프로젝트)에서 바뀌면 연결된 곳에도 같이 바뀌어요.</small>
+    <div class="chk on"><i>✓</i><span>k8s-handbook</span><small>원본</small></div>
+    <div class="chk on"><i>✓</i><span>운영 메모</span><small>연결됨</small></div>
+    <div class="chk"><i></i><span>publish</span></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn soft" onclick="showLink()">닫기</button><button class="btn dark">저장</button></div>
+  </div>
+  <div class="explain">
+    <b>화면 나누기</b> · 프로젝트 머리 띠는 <b>Hybrid</b>(정보는 늘고 줄며, 버튼은 고정), 문서 표는 <b>Fluid</b>, 연결 창은 <b>Fixed</b> 폭.<br>
+    <b>판</b> 칸에 커밋이 보여요. <b>함께 쓰는 곳</b> 칸은 이 문서를 다른 프로젝트에도 연결했는지 알려 줘요. 연결은 사람이 ⋯ 메뉴에서만 해요.
+  </div>
+</div></section>
+
+<!-- ④ 직접 관리 프로젝트 안 -->
+<section class="view" id="v-own"><div class="page">
+  <div class="top"><div class="t"><small>Projects ›</small><h1>운영 메모</h1></div></div>
+  <div class="phead" data-z="hybrid">
+    <span class="tag own">▤ 직접 관리</span>
+    <div class="info"><b>문서 5개 · 원문은 우리 DB에 저장</b><small>마지막으로 올린 날 11-12 · 기본 환경 운영 · 외부 전송 기본 불가</small></div>
+    <button class="btn dark">＋ 파일 올리기</button>
+  </div>
+  <div class="hint">같은 이름의 파일을 다시 올리면 <b>새 판</b>이 돼요. 내용이 같으면(해시 같음) 판을 늘리지 않고 "바뀐 것 없음"이라고 알려 줘요.</div>
+  <div class="table" data-z="fluid">
+    <div class="tr th"><span>문서</span><span class="c2">판</span><span class="c3">외부 전송</span><span class="c4">함께 쓰는 곳</span><span></span></div>
+    <div class="tr"><div class="doc"><b>백업 점검 절차</b><small>backup-check.md · 올린 사람 나</small></div><span class="c2">3판 · 11-12</span><span class="c3"><span class="tag mute">불가</span></span><span class="c4"><small>—</small></span><button class="dots">⋯</button></div>
+    <div class="tr"><div class="doc"><b>장애 대응 연락 순서</b><small>oncall.md</small></div><span class="c2">1판 · 11-08</span><span class="c3"><span class="tag mute">불가</span></span><span class="c4"><small>—</small></span><button class="dots">⋯</button></div>
+    <div class="tr"><div class="doc"><b>Ingress TLS 설정</b><small>k8s-handbook에서 연결 · 여기서 고칠 수 없음</small></div><span class="c2 mono">91be07d</span><span class="c3"><span class="tag ok">허용</span></span><span class="c4"><span class="tag git">원본 k8s-handbook</span></span><button class="dots">⋯</button></div>
+    <div class="tr"><div class="doc"><b>서버 점검표 (PDF)</b><small>checklist.pdf · 12쪽 · 나중 단계</small></div><span class="c2">1판 · 11-12</span><span class="c3"><span class="tag mute">불가</span></span><span class="c4"><small>—</small></span><button class="dots">⋯</button></div>
+  </div>
+  <div class="explain">
+    <b>판</b> 칸이 커밋 대신 <b>판 번호 · 올린 날</b>이에요. 판을 누르면 이전 판 목록과 바뀐 줄을 볼 수 있어요.<br>
+    다른 프로젝트에서 연결한 문서는 원본 꼬리표가 붙고, 여기서는 고칠 수 없어요(연결 해제만 가능).
+  </div>
+</div></section>
+
+<!-- ⑤ Playground 범위 -->
+<section class="view" id="v-pg"><div class="page">
+  <div class="top"><div class="t"><h1>Playground</h1><p class="sub">질문칸 왼쪽에서 찾을 범위를 골라요.</p></div></div>
+  <div class="pg">
+    <div class="ask" data-z="fluid">
+      <div class="askrow" data-z="hybrid">
+        <div class="scope">
+          <button onclick="toggleScope()" data-z="fixed">범위 <b id="scopeName">k8s-handbook</b> ▾</button>
+          <div class="list" id="scopeList" hidden>
+            <button onclick="pick(this,'전체')"><span>전체</span><small>38문서</small></button>
+            <hr>
+            <button onclick="pick(this,'publish')"><span>publish</span><span class="tag git">Git</span></button>
+            <button class="on" onclick="pick(this,'k8s-handbook')"><span>k8s-handbook</span><span class="tag git">Git</span></button>
+            <button onclick="pick(this,'운영 메모')"><span>운영 메모</span><span class="tag own">직접</span></button>
+          </div>
+        </div>
+        <input class="qbox" value="Ingress 인증서는 어디서 갱신하나요?">
+        <button class="btn dark">찾기</button>
+      </div>
+      <div class="hits">
+        <div class="hit"><div class="row"><b>#1 Ingress TLS 설정 › 인증서 갱신</b><span class="tag git">k8s-handbook</span><span class="tag mute">+ 운영 메모</span></div><small>cert-manager가 만료 30일 전에 자동으로 갱신해요. 수동 갱신은…</small></div>
+        <div class="hit"><div class="row"><b>#2 Ingress TLS 설정 › Secret 이름</b><span class="tag git">k8s-handbook</span></div><small>Secret은 네임스페이스마다 따로 둬요…</small></div>
+      </div>
+    </div>
+    <div class="side" data-z="fixed">
+      <h3>범위가 하는 일</h3>
+      <small>검색할 때 고른 프로젝트에 연결된 문서만 찾아요. 색인은 하나라 범위를 바꿔도 다시 임베딩하지 않아요.</small>
+      <small><b>전체</b>로 찾을 때 여러 프로젝트에 연결된 문서는 한 번만 나와요. 결과에 어느 프로젝트 문서인지 꼬리표가 붙어요.</small>
+      <small>고른 범위는 다음에 열 때도 기억해요.</small>
+    </div>
+  </div>
+  <div class="explain"><b>화면 나누기</b> · 질문 줄은 <b>Hybrid</b>: 범위 버튼·찾기 버튼은 Fixed, 질문칸은 Fluid. 오른쪽 설명은 Fixed 300px, 375px에선 아래로 내려가요.</div>
+</div></section>
+
+<!-- ⑥ 평가 -->
+<section class="view" id="v-ev"><div class="page">
+  <div class="top"><div class="t"><h1>Evaluations</h1><p class="sub">질문지는 프로젝트마다 따로예요. 같은 설정으로 프로젝트별로 점수가 나와요.</p></div><button class="btn dark">현재 설정으로 모두 평가</button></div>
+  <div class="ev" data-z="fluid">
+    <div class="ecard"><h3>publish <span class="tag git">Git</span></h3><small>질문 10개 · 범위 = publish</small>
+      <div class="metric"><span>recall@3</span><b>100%</b><div class="bar2"><i style="width:100%"></i></div><span>MRR</span><b>0.80</b><div class="bar2"><i style="width:80%"></i></div></div></div>
+    <div class="ecard"><h3>운영 메모 <span class="tag own">직접</span></h3><small>질문 6개 · 범위 = 운영 메모</small>
+      <div class="metric"><span>recall@3</span><b>83%</b><div class="bar2"><i style="width:83%"></i></div><span>MRR</span><b>0.71</b><div class="bar2"><i style="width:71%"></i></div></div></div>
+    <div class="ecard"><h3>k8s-handbook <span class="tag git">Git</span></h3><small>질문지 없음</small><button class="btn soft">질문지 만들기</button></div>
+    <div class="ecard all"><h3>전체 범위로 다시 <span class="tag mute">혼동 검사</span></h3><small>위 질문 16개를 범위 없이 돌려요. 다른 프로젝트 문서를 1위로 가져온 질문을 셉니다.</small>
+      <div class="metric"><span>프로젝트 혼동</span><b>2 / 16</b><div class="bar2"><i style="width:12.5%;background:var(--warn)"></i></div></div></div>
+  </div>
+  <div class="explain">숫자는 모양을 보이려는 <b>예시 값</b>이에요. 실제 측정값이 아니에요.<br>
+    <b>전체 범위로 다시</b> 카드는 CLAUDE.md의 "환경 혼동" 지표처럼, 범위를 안 줬을 때 엉뚱한 프로젝트 문서를 가져오는지 재요.</div>
+</div></section>
+
+<script>
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+function go(v){$$('.view').forEach(e=>e.classList.toggle('on',e.id==='v-'+v));$$('.note [data-v]').forEach(b=>b.classList.toggle('on',b.dataset.v===v));scrollTo(0,0)}
+$$('.note [data-v]').forEach(b=>b.onclick=()=>go(b.dataset.v));
+$('#zone').onclick=()=>{document.body.classList.toggle('show');$('#zone').classList.toggle('on')};
+function toggleMenu(){$('#menu').hidden=!$('#menu').hidden}
+function showLink(){$('#menu').hidden=true;$('#linkpop').hidden=!$('#linkpop').hidden}
+function toggleScope(){$('#scopeList').hidden=!$('#scopeList').hidden}
+function pick(b,n){$$('#scopeList button').forEach(x=>x.classList.remove('on'));b.classList.add('on');$('#scopeName').textContent=n;$('#scopeList').hidden=true}
+
+/* 새 프로젝트 단계 */
+let kind='git',gitFrom='local',step=0;
+const S=[
+ ()=>`<p class="q">프로젝트 이름을 정해 주세요</p><p class="qsub">Playground 범위와 평가 카드에 이 이름이 보여요.</p>
+  <div class="field"><label>이름</label><input class="input" value="k8s-handbook"></div>
+  <div class="field"><label>설명 (선택)</label><input class="input" placeholder="무슨 문서를 모으는지 한 줄로"></div>`,
+ ()=>`<p class="q">문서를 어떻게 관리하나요?</p><p class="qsub">한 번 정하면 바꿀 수 없어요. 섞어 쓰고 싶으면 프로젝트를 둘로 나누고 문서를 연결하세요.</p>
+  <div class="opts">
+   <button class="opt ${kind==='git'?'sel':''}" onclick="kind='git';draw()"><span class="r"></span><span class="ob"><span class="oh"><b>Git으로 관리</b><span class="tag git">⎇ Git</span></span><small>원본은 git 저장소예요. 우리는 읽기만 해요.</small>
+    <ul><li>판 = 커밋</li><li>원본에서 고치고 [다시 받기]로 반영</li><li>여기서 파일을 올리거나 고칠 수 없음</li></ul></span></button>
+   <button class="opt ${kind==='own'?'sel':''}" onclick="kind='own';draw()"><span class="r"></span><span class="ob"><span class="oh"><b>직접 관리</b><span class="tag own">▤ 직접</span></span><small>파일을 올리면 원문을 우리 DB에 저장해요.</small>
+    <ul><li>판 = 올릴 때마다 1판, 2판… (내용 해시로 판단)</li><li>md부터, PDF는 다음 단계</li><li>git이 없어도 돼요</li></ul></span></button>
+  </div>`,
+ ()=>`<p class="q">어느 저장소에서 가져올까요?</p>
+  <div class="field"><div class="seg"><button class="${gitFrom==='local'?'on':''}" onclick="gitFrom='local';draw()">이 컴퓨터의 git 폴더</button><button class="${gitFrom==='gh'?'on':''}" onclick="gitFrom='gh';draw()">GitHub</button></div></div>
+  ${gitFrom==='local'?`
+   <div class="field"><label>폴더</label><input class="input mono" value="~/docs/k8s-handbook"></div>
+   <div class="hint ok">✓ git 저장소예요 · 브랜치 main · .md 24개</div>
+   <div class="hint">서버가 읽을 수 있게 허용된 위치(INGEST_ROOTS) 안이어야 해요.</div>`:`
+   <div class="field"><label>저장소 주소</label><input class="input mono" value="https://github.com/example/k8s-handbook"></div>
+   <div class="field"><label>브랜치</label><input class="input mono" value="main"></div>
+   <div class="hint ok">✓ 공개 저장소예요 · 최근 커밋 91be07d · .md 24개</div>
+   <div class="hint">비공개 저장소는 .env에 넣은 GitHub 토큰으로 받아요. 토큰 값은 화면에 보이지 않아요.</div>`}
+  <div class="field"><label>문서 폴더 (선택)</label><input class="input mono" value="docs/"><small>비우면 저장소 전체의 .md를 넣어요.</small></div>`,
+ ()=>`<p class="q">처음 넣을 파일을 올려 주세요</p><p class="qsub">지금 안 올려도 돼요. 나중에 프로젝트 안에서 올릴 수 있어요.</p>
+  <div class="drop"><b>여기로 끌어 놓거나 눌러서 고르기</b><small>.md 여러 개 · 폴더째 가능 · PDF는 다음 단계</small></div>
+  <div class="files"><div class="file"><span>backup-check.md</span><small>4 KB</small></div><div class="file"><span>oncall.md</span><small>2 KB</small></div></div>`,
+ ()=>`<p class="q">이 프로젝트 문서의 기본값</p><p class="qsub">문서마다 나중에 바꿀 수 있어요.</p>
+  <div class="field"><label>환경</label><div class="seg"><button>혼합</button><button class="on">운영</button><button>개발</button><button>샘플</button></div></div>
+  <div class="field"><label>자료 성격</label><div class="seg"><button class="on">해설</button><button>설정</button><button>실행 결과</button><button>장애 기록</button></div></div>
+  <div class="field"><label>외부 전송 (OpenAI 등)</label><div class="seg"><button class="on">불가</button><button>허용</button></div><small>기본은 불가예요. 외부 임베딩·LLM을 쓰려면 허용해야 해요.</small></div>
+  <div class="hint">검증 상태는 항상 "미확인"으로 들어가요.</div>`,
+ ()=>`<p class="q">이렇게 만들까요?</p>
+  <div class="opts">
+   <div class="file"><span>이름</span><b>k8s-handbook</b></div>
+   <div class="file"><span>관리 방식</span><b>${kind==='git'?'Git · '+(gitFrom==='gh'?'GitHub':'로컬 폴더'):'직접 관리'}</b></div>
+   <div class="file"><span>${kind==='git'?'가져올 문서':'올린 파일'}</span><b>${kind==='git'?'.md 24개':'2개'}</b></div>
+   <div class="file"><span>기본값</span><b>운영 · 해설 · 외부 불가</b></div>
+  </div>
+  <div class="hint">만들면 기본 색인(★ bge-m3 로컬)에 넣기 시작해요. 문서마다 작업이 생기고, 진행은 작업 대기열에서 보여요.</div>`
+];
+function order(){return kind==='git'?[0,1,2,4,5]:[0,1,3,4,5]}
+function draw(){const o=order();if(!o.includes(step))step=o[Math.min(o.length-1,1)];const i=o.indexOf(step);
+ $('#sbody').innerHTML=S[step]();
+ $('#dots').innerHTML=o.map((_,k)=>`<i class="${k<i?'done':k===i?'on':''}"></i>`).join('')+`<span>${i+1} / ${o.length}</span>`;
+ $('#prev').style.visibility=i?'visible':'hidden';$('#next').textContent=i===o.length-1?'프로젝트 만들기':'다음';
+ $$('.stepnav [data-s]').forEach(b=>b.classList.toggle('on',+b.dataset.s===step))}
+$('#next').onclick=()=>{const o=order(),i=o.indexOf(step);if(i<o.length-1){step=o[i+1];draw()}};
+$('#prev').onclick=()=>{const o=order(),i=o.indexOf(step);if(i>0){step=o[i-1];draw()}};
+$$('.stepnav [data-s]').forEach(b=>b.onclick=()=>{const s=+b.dataset.s;if(s===2)kind='git';if(s===3)kind='own';step=s;draw()});
+draw();
+</script>
+</body>
+</html>

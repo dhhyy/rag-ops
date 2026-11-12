@@ -45,10 +45,13 @@ class Bm25:
         self.idf = {t: math.log(1 + (n - f + 0.5) / (f + 0.5)) for t, f in df.items()}
 
     # 질문 낱말로 점수를 매겨 상위 n개 (조각 id, 점수). 질문 낱말이 하나도 없는 조각은 넣지 않는다.
-    def top(self, query: list[str], n: int) -> list[tuple[int, float]]:
+    # allowed: 검색 범위 안의 조각 id. 주면 그 조각만 점수를 매긴다 (상위 n개를 자르기 전에 걸러야 범위 안 결과가 빠지지 않는다).
+    def top(self, query: list[str], n: int, allowed: set[int] | None = None) -> list[tuple[int, float]]:
         terms = [t for t in dict.fromkeys(query) if t in self.idf]
         scored = []
         for i, tf in enumerate(self.tf):
+            if allowed is not None and self.ids[i] not in allowed:
+                continue
             s = 0.0
             for t in terms:
                 f = tf.get(t)
@@ -75,5 +78,13 @@ def table(env: dict[str, str], index_id: int) -> Bm25:
     return bm
 
 
-def search(env: dict[str, str], index_id: int, question: str, n: int) -> list[tuple[int, float]]:
-    return table(env, index_id).top(tokens(question), n)
+# 범위(project_id)를 주면 그 프로젝트에 연결된 문서의 조각만. idf·평균 길이는 색인 전체 기준 그대로 둔다
+# (범위를 바꿔도 같은 조각의 점수가 같게).
+def search(env: dict[str, str], index_id: int, question: str, n: int, project_id: int | None = None) -> list[tuple[int, float]]:
+    allowed = None
+    if project_id:
+        with connect(env) as conn:
+            allowed = {r[0] for r in conn.execute(
+                """SELECT c.id FROM chunks c JOIN project_documents pd ON pd.document_id = c.document_id
+                   WHERE c.index_id=%s AND pd.project_id=%s""", (index_id, project_id)).fetchall()}
+    return table(env, index_id).top(tokens(question), n, allowed)
