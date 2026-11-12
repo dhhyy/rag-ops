@@ -948,6 +948,8 @@ class EvalRequest(BaseModel):
     index_ids: list[int] = []      # 예전 방식: 색인만 바꿔 평가
     sides: list[EvalSide] = []     # 비교 화면의 A·B: 색인과 리랭크를 함께 정한다
     answers: bool = False          # 답변까지 쓰게 하고 인용·보류를 채점한다 (외부 LLM 호출, 질문마다 한 번)
+    project_id: int | None = None  # 이 프로젝트 질문만 채점한다. 비우면 시험지 전체
+    scope: Literal["project", "all"] = "project"   # project: 그 프로젝트 안에서만 찾기, all: 전체에서 찾고 혼동을 센다
 
 
 # 평가 작업을 대기열에 넣는다. 색인을 여러 개 주면 색인마다 하나씩, 준 순서대로 넣는다 (worker가 하나라 차례로 돈다).
@@ -966,19 +968,27 @@ def create_eval(req: EvalRequest) -> dict:
         for side in sides:
             if side.index_id is not None and conn.execute("SELECT 1 FROM chunks WHERE index_id=%s LIMIT 1", (side.index_id,)).fetchone() is None:
                 raise HTTPException(409, f"색인 #{side.index_id}이 아직 만들어지지 않았습니다. 먼저 만드세요")
+        pname = None
+        if req.project_id is not None:
+            row = conn.execute("SELECT name FROM projects WHERE id=%s", (req.project_id,)).fetchone()
+            if row is None:
+                raise HTTPException(404, f"project {req.project_id} 없음")
+            pname = row[0]
         batch = uuid.uuid4().hex
         job_ids = []
         for side, rr, kwd in zip(sides, rerankers, keywords):
             params = {"kind": "eval", "label": req.label[:60], "batch": batch}
             if req.answers:
                 params["answers"] = True
+            if pname:
+                params |= {"project_id": req.project_id, "scope": req.scope}
             if side.index_id is not None:
                 params["index_id"] = side.index_id
             if side.reranker is not None:
                 params["reranker"] = rr or "off"
             if side.keyword is not None:
                 params["keyword"] = kwd or "off"
-            name = (f"eval: {req.label or 'current setup'}" + (f" · index {side.index_id}" if side.index_id is not None else "")
+            name = (f"eval: {req.label or 'current setup'}" + (f" · {pname} ({'범위 안' if req.scope == 'project' else '전체에서'})" if pname else "") + (f" · index {side.index_id}" if side.index_id is not None else "")
                     + (f" · rerank {'off' if rr is None else rr['params']['candidates']}" if side.reranker is not None else "")
                     + (f" · keyword {'off' if kwd is None else kwd['params']['mode']}" if side.keyword is not None else ""))
             job_ids.append(conn.execute("INSERT INTO ingest_jobs (path, params) VALUES (%s, %s) RETURNING id",

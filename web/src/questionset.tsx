@@ -5,22 +5,22 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
-import { ArrowDown, ArrowLeft, ArrowUp, CircleAlert, CircleCheck, LoaderCircle, Plus, RefreshCw, Search, Sparkles, TriangleAlert, X } from 'lucide-react';
+import { ChevronDown, ArrowDown, ArrowLeft, ArrowUp, CircleAlert, CircleCheck, LoaderCircle, Plus, RefreshCw, Search, Sparkles, TriangleAlert, X } from 'lucide-react';
 import { api, Card, Heading } from './ui';
 
 type Level = 'error' | 'warn';
 type Check = { level: Level; code: string; message: string; evidence: number | null };
 type Evidence = { path: string; heading?: string; quote?: string; in_document: boolean | null; chunk_ids: number[]; elsewhere: string[] };
 type Question = {
-  id: string; kind: string; question: string; answer?: string; env?: string; abstain: boolean; use: string;
+  id: string; kind: string; question: string; answer?: string; env?: string; abstain: boolean; use: string; project?: string | null;
   evidence: Evidence[]; checks: Check[];
 };
-type DocCover = { path: string; title: string; chunks: number; covered: number; questions: number; empty_chunks: number };
+type DocCover = { path: string; title: string; projects?: string[]; chunks: number; covered: number; questions: number; empty_chunks: number };
 type QuestionSetData = {
-  sha: string; path: string;
+  sha: string; path: string; project_names: string[];
   target: { questions: number; kinds: Record<string, number>; uses: Record<string, number>; per_document: number; coverage: number };
   index: { id: number; chunks: number; label: { chunker: string; embedder: string } };
-  summary: { questions: number; kinds: Record<string, number>; uses: Record<string, number>; evidence: number; covered_chunks: number; errors: number; warnings: number; flagged: number };
+  summary: { questions: number; kinds: Record<string, number>; uses: Record<string, number>; projects?: Record<string, number>; evidence: number; covered_chunks: number; errors: number; warnings: number; flagged: number };
   last_eval: { id: number; sha: string | null; created_at: string; same_set: boolean } | null;
   documents: DocCover[]; questions: Question[];
 };
@@ -41,6 +41,8 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
+  // 프로젝트로 거르기: 'all' 전체, '' 프로젝트 없는 질문, 이름이면 그 프로젝트 질문
+  const [projectFilter, setProjectFilter] = useState<string>('all');
   const [openId, setOpenId] = useState<string | null>(null);   // 서랍에 열린 질문 (NEW = 새 질문)
   const [dir, setDir] = useState(1);   // 서랍 안에서 다음(1)·이전(-1) 질문으로 넘어간 방향
   const [reviewing, setReviewing] = useState(false);   // 초안 하나씩 고르기 화면
@@ -61,9 +63,10 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
   const shown = useMemo(() => {
     const words = query.trim().toLowerCase();
     return (data?.questions ?? []).filter(q =>
-      (filter === 'all' || (filter === 'final' ? q.use === '최종 평가용' : filter === 'flagged' ? q.checks.length > 0 : q.kind === filter))
+      (projectFilter === 'all' || (q.project ?? '') === projectFilter)
+      && (filter === 'all' || (filter === 'final' ? q.use === '최종 평가용' : filter === 'flagged' ? q.checks.length > 0 : q.kind === filter))
       && (!words || `${q.id} ${q.question} ${q.answer ?? ''} ${q.evidence.map(e => `${e.path} ${e.quote ?? ''}`).join(' ')}`.toLowerCase().includes(words)));
-  }, [data, filter, query]);
+  }, [data, filter, query, projectFilter]);
   // 열린 질문이 지워졌으면 서랍을 닫는다.
   useEffect(() => { if (data && openId && openId !== NEW && !data.questions.some(q => q.id === openId)) setOpenId(null); }, [data]);
   const opened = data?.questions.find(q => q.id === openId) ?? null;
@@ -134,7 +137,7 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
     ['all', '전체', s.questions], ['직접', '직접', s.kinds['직접'] ?? 0], ['표현 바꿈', '표현 바꿈', s.kinds['표현 바꿈'] ?? 0],
     ['답 없음', '답 없음', s.kinds['답 없음'] ?? 0], ['final', '최종 평가용', s.uses['최종 평가용'] ?? 0], ['flagged', '문제 있음', s.flagged],
   ];
-  const panelProps = { sha: data.sha, onDirty: (d: boolean) => { dirty.current = d; }, onSaved: applySaved };
+  const panelProps = { sha: data.sha, projects: data.project_names, onDirty: (d: boolean) => { dirty.current = d; }, onSaved: applySaved };
 
   return <>
     {head}
@@ -185,6 +188,12 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
           <button className="qs-btn qs-btn-dark" onClick={() => open(NEW)}><Plus size={13} />새 질문</button></span></div>
         <div className="qs-filters">
           {counts.map(([f, label, n]) => <button key={f} className={`qs-chip ${filter === f ? 'is-on' : ''}`} aria-pressed={filter === f} onClick={() => setFilter(f)}>{label} {n}</button>)}
+          {(data.project_names.length > 1 || (s.projects?.[''] ?? 0) > 0) && <label className="qs-proj-select"><span>프로젝트</span>
+            <select value={projectFilter} onChange={e => setProjectFilter(e.target.value)} aria-label="프로젝트로 거르기">
+              <option value="all">전체</option>
+              {data.project_names.map(n => <option key={n} value={n}>{n} {s.projects?.[n] ?? 0}</option>)}
+              {(s.projects?.[''] ?? 0) > 0 && <option value="">프로젝트 없음 {s.projects?.['']}</option>}
+            </select><ChevronDown size={12} /></label>}
           <label className="qs-search"><Search size={13} /><input aria-label="질문·근거 검색" placeholder="질문·근거 검색" value={query} onChange={e => setQuery(e.target.value)} /></label>
         </div>
         <table className="qs-table">
@@ -194,7 +203,7 @@ export function QuestionSet({ tabs }: { tabs: React.ReactNode }) {
             return <tr key={q.id} data-qid={q.id} className={q.id === openId ? 'is-selected' : ''} onClick={() => open(q.id)} tabIndex={0}
               onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(q.id); } }}>
               <td className="qs-q"><div>{q.id} · {q.question}</div>
-                <small>{q.abstain ? '근거 없음 · 보류가 정답' : q.evidence.length ? `${file(q.evidence[0].path)}${q.evidence.length > 1 ? ` 외 ${q.evidence.length - 1}` : ''}` : '—'}</small></td>
+                <small>{q.project ? `${q.project} · ` : '프로젝트 없음 · '}{q.abstain ? '근거 없음 · 보류가 정답' : q.evidence.length ? `${file(q.evidence[0].path)}${q.evidence.length > 1 ? ` 외 ${q.evidence.length - 1}` : ''}` : '—'}</small></td>
               <td><span className={`qs-pill ${KIND_TONE[q.kind] ?? ''}`}>{q.kind}</span></td>
               <td className="qs-col-use"><span className={`qs-pill ${q.use === '최종 평가용' ? 'final' : ''}`}>{q.use === '최종 평가용' ? '최종' : q.use}</span></td>
               <td className="qs-col-ev">{q.evidence.length || '—'}</td>
@@ -281,7 +290,12 @@ export function Drawer({ open, title, contentKey, dir, onClose, onPrev, onNext, 
 
 // ── 편집에 함께 쓰는 것 ──────────────────────────────────────────────────
 type EvDraft = { path: string; heading: string; quote: string };
-type Draft = { question: string; answer: string; kind: string; use: string; env: string; evidence: EvDraft[] };
+type Draft = { question: string; answer: string; kind: string; use: string; env: string; project: string; evidence: EvDraft[] };
+// 프로젝트 고르기. '근거로'를 고르면(빈 값) 저장할 때 근거 문서의 원본 프로젝트로 정해요.
+const AUTO_PROJECT = '근거로 정하기';
+const projectOptions = (names: string[], cur: string) => [...names, ...(cur && !names.includes(cur) ? [cur] : []), AUTO_PROJECT];
+const projectValue = (p: string) => p || AUTO_PROJECT;
+const projectPick = (v: string) => (v === AUTO_PROJECT ? '' : v);
 type Hit = { path: string; title: string; quote: string; heading: string; in_chunk: boolean };
 type Saved = (data: QuestionSetData, id: string | null) => void;
 const ENVS = ['혼합', '운영', '개발', '샘플'];
@@ -293,9 +307,9 @@ const KINDS: [string, string][] = [
 
 function toDraft(q: Question | null): Draft {
   return q
-    ? { question: q.question, answer: q.answer ?? '', kind: q.kind, use: q.use, env: q.env ?? '혼합',
+    ? { question: q.question, answer: q.answer ?? '', kind: q.kind, use: q.use, env: q.env ?? '혼합', project: q.project ?? '',
         evidence: q.evidence.map(e => ({ path: e.path, heading: e.heading ?? '', quote: e.quote ?? '' })) }
-    : { question: '', answer: '', kind: '', use: '개선용', env: '혼합', evidence: [] };
+    : { question: '', answer: '', kind: '', use: '개선용', env: '혼합', project: '', evidence: [] };
 }
 
 function Seg({ value, options, onChange, label }: { value: string; options: string[]; onChange: (v: string) => void; label: string }) {
@@ -353,8 +367,8 @@ function EvidenceEdit({ evidence, onChange }: { evidence: EvDraft[]; onChange: (
 
 // ── 새 질문: 한 화면에 하나씩 묻는다 (종류 → 질문 → 정답 → 근거 → 확인) ─────────────
 type Step = 'kind' | 'question' | 'answer' | 'evidence' | 'check';
-function Wizard({ sha, nextId, onDirty, onSaved }: { sha: string; nextId: string; onDirty: (d: boolean) => void; onSaved: Saved }) {
-  const [draft, setDraft] = useState<Draft>(() => toDraft(null));
+function Wizard({ sha, nextId, projects, onDirty, onSaved }: { sha: string; nextId: string; projects: string[]; onDirty: (d: boolean) => void; onSaved: Saved }) {
+  const [draft, setDraft] = useState<Draft>(() => ({ ...toDraft(null), project: projects.length === 1 ? projects[0] : '' }));
   const [at, setAt] = useState(0);
   const { busy, error, setError, save } = useSave(null, sha, undefined, onSaved);
   const abstain = draft.kind === '답 없음';
@@ -408,8 +422,11 @@ function Wizard({ sha, nextId, onDirty, onSaved }: { sha: string; nextId: string
           <SumRow label="용도 · 환경"><span className="qs-sum-segs">
             <Seg label="용도" value={draft.use} options={['개선용', '최종 평가용']} onChange={use => set({ use })} />
             <Seg label="환경" value={draft.env} options={ENVS} onChange={env => set({ env })} /></span></SumRow>
+          <SumRow label="프로젝트"><span className="qs-sum-segs">
+            <Seg label="프로젝트" value={projectValue(draft.project)} options={projectOptions(projects, draft.project)} onChange={v => set({ project: projectPick(v) })} /></span></SumRow>
         </div>
         {draft.use === '최종 평가용' && <p className="qs-check warn"><TriangleAlert size={13} />최종 평가용은 결과를 본 뒤에는 고치지 않는 질문이에요. 사람이 직접 쓴 질문만 넣어 주세요.</p>}
+        {abstain && !draft.project && <p className="qs-check warn"><TriangleAlert size={13} />답 없는 질문은 근거가 없어 프로젝트를 정할 수 없어요. 프로젝트를 골라야 프로젝트 평가에 들어가요.</p>}
         <p className="qs-note">저장하면 자동 점검을 하고, 통과하면 {nextId}가 돼요.</p>
       </>}
     </div>
@@ -437,8 +454,8 @@ function InlineEdit({ label, onCancel, onDone, children }: { label: string; onCa
 // ── 기존 질문(또는 초안 고쳐서 넣기): 요약을 보여 주고, 고칠 줄만 연다 ─────────────
 type Part = 'question' | 'answer' | 'meta' | 'evidence';
 type Seed = { draftId: number; draft: Draft };
-function Summary({ q, seed, sha, indexLabel, onDirty, onSaved, onCancel }: {
-  q: Question | null; seed?: Seed; sha: string; indexLabel?: string; onDirty: (d: boolean) => void; onSaved: Saved; onCancel?: () => void;
+function Summary({ q, seed, sha, projects, indexLabel, onDirty, onSaved, onCancel }: {
+  q: Question | null; seed?: Seed; sha: string; projects: string[]; indexLabel?: string; onDirty: (d: boolean) => void; onSaved: Saved; onCancel?: () => void;
 }) {
   const original = useMemo(() => seed?.draft ?? toDraft(q), [q, seed]);
   const [draft, setDraft] = useState<Draft>(original);
@@ -463,7 +480,7 @@ function Summary({ q, seed, sha, indexLabel, onDirty, onSaved, onCancel }: {
     {seed
       ? <><div className="qs-card-head"><h2>초안 고쳐서 넣기</h2><small>고칠 곳만 눌러요</small></div>
           <p className="qs-check warn"><Sparkles size={13} />LLM이 만든 초안이에요. 질문 말투와 답만 보면 돼요. 근거는 원문과 맞는 걸 확인했어요. 초안은 개선용으로만 넣어요.</p></>
-      : q && <><small className="qs-meta">{q.use} · {q.kind} · {q.env ?? '혼합'}</small>
+      : q && <><small className="qs-meta">{q.use} · {q.kind} · {q.env ?? '혼합'} · {q.project ?? '프로젝트 없음'}</small>
           {q.use === '최종 평가용' && <p className="qs-check warn"><TriangleAlert size={13} />최종 평가용 질문이에요. 평가 결과를 보고 고치면 최종 평가의 의미가 없어져요. 오타나 근거 오류만 고쳐 주세요.</p>}
           {q.checks.length === 0
             ? <p className="qs-check ok"><CircleCheck size={13} />자동 점검 통과 · {q.abstain ? '근거 없음, 보류가 정답' : `근거 ${q.evidence.length}개 모두 원문·조각에 있음`}</p>
@@ -487,13 +504,14 @@ function Summary({ q, seed, sha, indexLabel, onDirty, onSaved, onCancel }: {
             <textarea autoFocus className="qs-field-big qs-field-sm" aria-label="정답" value={draft.answer} onChange={e => set({ answer: e.target.value })} /></InlineEdit>
         : <SumRow label="정답" onEdit={() => edit('answer')}><span className="qs-sum-val">{draft.answer || '—'}</span></SumRow>}
       {open === 'meta'
-        ? <InlineEdit label="종류 · 용도 · 환경" onCancel={cancel} onDone={() => setOpen(null)}>
+        ? <InlineEdit label="종류 · 용도 · 환경 · 프로젝트" onCancel={cancel} onDone={() => setOpen(null)}>
             <Seg label="종류" value={draft.kind} options={KINDS.map(([k]) => k)} onChange={kind => set({ kind })} />
             <Seg label="용도" value={draft.use} options={seed ? ['개선용'] : ['개선용', '최종 평가용']} onChange={use => set({ use })} />
             <Seg label="환경" value={draft.env} options={ENVS.includes(draft.env) ? ENVS : [...ENVS, draft.env]} onChange={env => set({ env })} />
+            <Seg label="프로젝트" value={projectValue(draft.project)} options={projectOptions(projects, draft.project)} onChange={v => set({ project: projectPick(v) })} />
             {abstain && draft.evidence.length > 0 && <small className="qs-warn">답 없는 질문으로 저장하면 근거 {draft.evidence.length}개는 빠져요.</small>}
           </InlineEdit>
-        : <SumRow label="종류 · 용도 · 환경" action="바꾸기" onEdit={() => edit('meta')}><span className="qs-sum-val">{draft.kind} · {draft.use} · {draft.env}</span></SumRow>}
+        : <SumRow label="종류 · 용도 · 환경 · 프로젝트" action="바꾸기" onEdit={() => edit('meta')}><span className="qs-sum-val">{draft.kind} · {draft.use} · {draft.env} · {draft.project || (seed ? '근거로 정하기' : '없음')}</span></SumRow>}
       {abstain
         ? <SumRow label="근거"><span className="qs-sum-val muted">없음 — 문서에 답이 없어서 보류가 정답</span></SumRow>
         : open === 'evidence'
@@ -568,7 +586,7 @@ type DraftJob = { id: number; status: string; progress_done: number | null; prog
 
 // 같은 문장이 다른 문서에도 있으면 그 문서도 근거로 함께 넣는다 (그래야 어느 문서를 꺼내도 정답으로 채점된다).
 function draftToEditor(d: DraftItem): Draft {
-  return { question: d.question, answer: d.answer ?? '', kind: d.kind, use: '개선용', env: '혼합',
+  return { question: d.question, answer: d.answer ?? '', kind: d.kind, use: '개선용', env: '혼합', project: '',
     evidence: [{ path: d.path, heading: d.heading ?? '', quote: d.quote }, ...d.elsewhere.map(p => ({ path: p, heading: '', quote: d.quote }))] };
 }
 
@@ -751,7 +769,7 @@ function Review({ data, onChange, onClose }: { data: QuestionSetData; onChange: 
     {!list ? <p className="muted">불러오는 중…</p>
       : editing
         ? <article className="qs-one qs-one-edit">
-            <Summary key={editing.d.id} q={null} seed={{ draftId: editing.d.id, draft: toEditor(editing) }} sha={data.sha}
+            <Summary key={editing.d.id} q={null} seed={{ draftId: editing.d.id, draft: toEditor(editing) }} sha={data.sha} projects={data.project_names}
               onDirty={v => { editDirty.current = v; }}
               onSaved={(next, id) => { onChange(next); setMade(m => ({ ...m, accepted: m.accepted + 1, cards: m.cards + 1 }));
                 setLast({ draftIds: [editing.d.id], text: `${id}로 넣었어요` }); setEditing(null); editDirty.current = false; void load(); }}

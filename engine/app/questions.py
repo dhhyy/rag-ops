@@ -6,6 +6,9 @@
 꺼낸 조각이 근거 문서이고, 근거 문장(quote)을 글자 그대로 포함하면 정답.
 - error: 이대로면 채점이 틀어진다 (근거 문서가 없음, quote가 원문에 없음, quote가 조각 경계에 걸림 등)
 - warn:  채점은 되지만 손볼 만하다 (같은 문장이 근거 밖 문서에도 있음, quote 없음, 비슷한 질문)
+
+질문마다 project(프로젝트 이름)를 붙인다. 프로젝트 평가는 그 프로젝트 질문만 골라 돌린다.
+project가 없는 질문은 전체 평가에만 들어간다.
 """
 from __future__ import annotations
 
@@ -57,8 +60,13 @@ def check(index_id: int | None = None, questions: list[dict] | None = None, sha:
         questions, sha = load_questions()
     with connect(load_env()) as conn:
         index = get_index(conn, index_id) if index_id else load_setup(conn)["index"]
-        docs = {path: {"id": did, "title": title, "text": norm(content) if content else None}
-                for did, path, title, content in conn.execute("SELECT id, source_path, title, content FROM documents")}
+        docs = {path: {"id": did, "title": title, "text": norm(content) if content else None, "projects": projects or []}
+                for did, path, title, content, projects in conn.execute(
+                    """SELECT d.id, d.source_path, d.title, d.content,
+                              array_agg(p.name ORDER BY p.name) FILTER (WHERE p.id IS NOT NULL)
+                       FROM documents d LEFT JOIN project_documents pd ON pd.document_id = d.id
+                       LEFT JOIN projects p ON p.id = pd.project_id GROUP BY d.id""")}
+        project_names = [r[0] for r in conn.execute("SELECT name FROM projects ORDER BY created_at, id")]
         chunks = [{"id": cid, "path": path, "index": idx, "text": norm(content), "body": len(content.split("\n", 1)[-1].strip())}
                   for cid, path, idx, content in conn.execute(
                       """SELECT c.id, d.source_path, c.chunk_index, c.content FROM chunks c JOIN documents d ON d.id = c.document_id
@@ -85,6 +93,11 @@ def check(index_id: int | None = None, questions: list[dict] | None = None, sha:
             add("error", "format", f"종류가 {KINDS} 중 하나가 아니에요: {q.get('kind')!r}")
         if q.get("use") not in USES:
             add("error", "format", f"용도가 {USES} 중 하나가 아니에요: {q.get('use')!r}")
+        project = q.get("project")
+        if project and project not in project_names:
+            add("error", "unknown_project", f"없는 프로젝트예요: {project}")
+        elif not project:
+            add("warn", "no_project", "프로젝트가 없어 전체 평가에만 들어가요")
         evidence = q.get("evidence") or []
         if q.get("abstain") and evidence:
             add("error", "abstain_with_evidence", "답 없는 질문인데 근거가 있어요")
@@ -99,6 +112,8 @@ def check(index_id: int | None = None, questions: list[dict] | None = None, sha:
             doc = docs.get(path)
             if doc is None:
                 add("error", "doc_missing", f"근거 문서가 DB에 없어요: {path}", i)
+            elif project in project_names and project not in doc["projects"]:
+                add("error", "doc_not_in_project", f"근거 문서가 프로젝트 {project}에 없어요 ({path.split('/')[-1]})", i)
             elif not quote:
                 add("warn", "no_quote", "근거 문장(quote)이 없어 제목으로만 채점해요", i)
             else:
@@ -124,18 +139,19 @@ def check(index_id: int | None = None, questions: list[dict] | None = None, sha:
 
     # 문서별: 조각 수, 근거가 닿은 조각 수, 질문 수. 질문이 적은 문서가 위로.
     q_per_doc = Counter(p for q in questions for p in {e.get("path") for e in q.get("evidence") or []})
-    documents = sorted(({"path": p, "title": d["title"], "chunks": len(by_doc.get(p, [])),
+    documents = sorted(({"path": p, "title": d["title"], "projects": d["projects"], "chunks": len(by_doc.get(p, [])),
                          "covered": sum(c["id"] in covered for c in by_doc.get(p, [])), "questions": q_per_doc.get(p, 0),
                          "empty_chunks": sum(c["body"] < 20 for c in by_doc.get(p, []))}
                         for p, d in docs.items()), key=lambda d: (d["questions"], d["path"]))
     levels = Counter(c["level"] for q in out for c in q["checks"])
     return {
-        "sha": sha, "path": "eval/questions.jsonl", "target": TARGET,
+        "sha": sha, "path": "eval/questions.jsonl", "target": TARGET, "project_names": project_names,
         "index": {"id": index["id"], "chunks": len(chunks), "label": {"chunker": comp.describe("chunker", index["chunker"]),
                                                                       "embedder": comp.describe("embedder", index["embedder"])}},
         "summary": {
             "questions": len(questions), "kinds": {k: sum(q.get("kind") == k for q in questions) for k in KINDS},
             "uses": {u: sum(q.get("use") == u for q in questions) for u in USES},
+            "projects": dict(Counter(q.get("project") or "" for q in questions)),
             "evidence": sum(len(q.get("evidence") or []) for q in questions),
             "covered_chunks": len(covered), "errors": levels.get("error", 0), "warnings": levels.get("warn", 0),
             "flagged": sum(bool(q["checks"]) for q in out),
@@ -149,7 +165,7 @@ def check(index_id: int | None = None, questions: list[dict] | None = None, sha:
 # 파일 하나를 통째로 다시 쓴다. 엔진 안에서 동시에 두 번 쓰지 않게 잠그고,
 # 읽을 때의 해시(sha)가 지금 파일과 다르면 (그사이 다른 곳에서 고쳤으면) 덮어쓰지 않는다.
 _lock = threading.Lock()
-FIELDS = ("id", "kind", "question", "answer", "evidence", "env", "abstain", "use")   # 파일에 쓰는 순서 (지금 파일과 같게)
+FIELDS = ("id", "kind", "question", "answer", "evidence", "env", "abstain", "use", "project")   # 파일에 쓰는 순서
 
 
 def _chunk_headings(conn) -> dict[str, list[tuple[str, str]]]:
@@ -178,9 +194,19 @@ def _clean(raw: dict, qid: str, old: dict | None) -> dict:
     q = {"id": qid, "kind": kind, "question": str(raw.get("question", "")).strip(), "answer": str(raw.get("answer") or "").strip(),
          "evidence": evidence, "env": str(raw.get("env") or (old or {}).get("env") or "혼합").strip(),
          "abstain": kind == "답 없음",            # 답 없는 질문 = 문서에 답이 없어 보류가 정답
-         "use": str(raw.get("use", "")).strip()}
+         "use": str(raw.get("use", "")).strip(),
+         # 화면이 project를 보내지 않으면 원래 값을 그대로 둔다. 빈 값을 보내면 뗀다.
+         "project": (str(raw["project"] or "").strip() if "project" in raw else str((old or {}).get("project") or "")) or None}
     if not q["question"]:
         raise QuestionError(422, "질문을 적어 주세요")
+    if not q["project"] and evidence:
+        # 프로젝트를 고르지 않았으면 근거 문서가 들어온(원본) 프로젝트로 정한다. 여러 곳이면 비워 둔다.
+        with connect(load_env()) as conn:
+            names = {r[0] for r in conn.execute(
+                """SELECT DISTINCT p.name FROM documents d JOIN project_documents pd ON pd.document_id = d.id AND pd.is_origin
+                   JOIN projects p ON p.id = pd.project_id WHERE d.source_path = ANY(%s)""", ([e["path"] for e in evidence],))}
+        if len(names) == 1:
+            q["project"] = names.pop()
     return {k: q[k] for k in FIELDS}
 
 

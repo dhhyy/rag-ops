@@ -95,20 +95,23 @@ def load_questions() -> tuple[list[dict], str]:
 # 색인 안의 조각 전체와 벡터. 지도 좌표와 정답 판정에 쓴다.
 def load_chunks(conn, index_id: int) -> tuple[list[dict], np.ndarray]:
     rows = conn.execute("""
-        SELECT c.id, d.source_path, d.title, c.chunk_index, c.heading_path, c.content, c.embedding::text
+        SELECT c.id, d.source_path, d.title, c.chunk_index, c.heading_path, c.content, c.embedding::text,
+               coalesce((SELECT array_agg(p.name ORDER BY p.name) FROM project_documents pd JOIN projects p ON p.id = pd.project_id
+                         WHERE pd.document_id = d.id), '{}')
         FROM chunks c JOIN documents d ON d.id = c.document_id
         WHERE c.index_id = %s ORDER BY d.source_path, c.chunk_index""", (index_id,)).fetchall()
     chunks, vecs = [], []
-    for cid, path, title, idx, heading_path, content, emb in rows:
+    for cid, path, title, idx, heading_path, content, emb, projects in rows:
         chunks.append({"id": cid, "path": path, "title": title, "index": idx, "heading": heading_path.split(" > ")[-1],
-                       "heading_path": heading_path, "snippet": content[:240], "_norm": norm(content)})
+                       "heading_path": heading_path, "snippet": content[:240], "projects": list(projects), "_norm": norm(content)})
         vecs.append(json.loads(emb))
     return chunks, np.array(vecs, dtype=np.float64)
 
 
 # 근거 하나에 맞는 조각인지. quote가 있으면 문장 포함, 없으면 마지막 제목 비교.
-def matches(chunk: dict, evidence: dict) -> bool:
-    if chunk["path"] != evidence["path"]:
+# project를 주면 그 프로젝트에 든 문서의 조각만 맞는다 (다른 프로젝트에 같은 경로의 문서가 있어도 섞이지 않게).
+def matches(chunk: dict, evidence: dict, project: str | None = None) -> bool:
+    if chunk["path"] != evidence["path"] or (project and project not in chunk.get("projects", ())):
         return False
     if evidence.get("quote"):
         return norm(evidence["quote"]) in chunk["_norm"]
@@ -166,10 +169,22 @@ def summarize(results: list[dict]) -> dict:
 # reranker를 주면 검색 설정의 리랭크만 그것으로 바꾼다. "off"면 끈다 (None이면 설정 그대로).
 def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | None = None,
              index_id: int | None = None, reranker: dict | str | None = None, keyword: dict | str | None = None,
-             answers: bool = False) -> dict:
+             answers: bool = False, project_id: int | None = None, scope: str = "project") -> dict:
+    """project_id를 주면 그 프로젝트 질문만 채점한다.
+    scope="project": 그 프로젝트 문서 안에서만 찾는다 (Playground 범위와 같음).
+    scope="all": 전체에서 찾고, 다른 프로젝트 조각이 끼어든 정도(혼동)를 함께 센다."""
     env = load_env()
     questions, questions_sha = load_questions()
     with connect(env) as conn:
+        project = None
+        if project_id is not None:
+            row = conn.execute("SELECT id, name FROM projects WHERE id=%s", (project_id,)).fetchone()
+            if row is None:
+                raise IngestError(f"프로젝트 #{project_id}가 없습니다")
+            project = {"id": row[0], "name": row[1], "scope": "all" if scope == "all" else "project"}
+            questions = [q for q in questions if q.get("project") == project["name"]]
+            if not questions:
+                raise IngestError(f"프로젝트 {project['name']}에 평가 질문이 없습니다. 시험지에서 질문에 프로젝트를 붙여 주세요")
         setup = load_setup(conn, setup_name)
         if index_id is not None:
             setup["index"] = get_index(conn, index_id)
@@ -179,6 +194,10 @@ def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | N
             setup["query"] = query_defaults({**setup["query"], "keyword": None if keyword == "off" else keyword})
         index = setup["index"]
         chunks, chunk_vecs = load_chunks(conn, index["id"])
+    if project and project["scope"] == "project":
+        # 범위 안에서만 찾으므로 지도와 정답 후보도 그 프로젝트 조각만
+        keep = [i for i, c in enumerate(chunks) if project["name"] in c["projects"]]
+        chunks, chunk_vecs = [chunks[i] for i in keep], chunk_vecs[keep]
     generator = (setup["query"].get("generator") or comp.normalize("generator", DEFAULT_GENERATOR)) if answers else None
     if generator:
         ok, reason = comp.GENERATORS[generator["id"]].availability(env)
@@ -192,21 +211,25 @@ def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | N
     for i, q in enumerate(questions):
         if on_step:
             on_step("평가", i, len(questions))
-        out = retrieve(env, index, setup["query"], q["question"], TOP_K)
+        out = retrieve(env, index, setup["query"], q["question"], TOP_K,
+                       project_id=project["id"] if project and project["scope"] == "project" else None)
         vec, lat = out["vec"], out["latency"]
         qvecs.append(vec)
         evidence = q.get("evidence", [])
-        gold_ids = [c["id"] for c in chunks if any(matches(c, e) for e in evidence)]
-        missing = [e for e in evidence if not any(matches(c, e) for c in chunks)]
+        qp = q.get("project")
+        gold_ids = [c["id"] for c in chunks if any(matches(c, e, qp) for e in evidence)]
+        missing = [e for e in evidence if not any(matches(c, e, qp) for c in chunks)]
         ranked = [{"chunk_id": h["row"][0], "score": round(h["score"], 4),
                    "vector_score": round(h["vector_score"], 4), "vector_rank": h["vector_rank"],
                    "keyword_rank": h.get("keyword_rank"),
-                   "correct": any(matches(by_id[h["row"][0]], e) for e in evidence)} for h in out["hits"]]
+                   # 질문의 프로젝트 밖 조각이면 False (혼동). 질문에 프로젝트가 없으면 None
+                   "in_project": (qp in by_id[h["row"][0]]["projects"]) if qp else None,
+                   "correct": any(matches(by_id[h["row"][0]], e, qp) for e in evidence)} for h in out["hits"]]
         retrieved = ranked[:TOP_K]
         rank = next((n for n, h in enumerate(retrieved, 1) if h["correct"]), None)
         # 리랭크 전(벡터 검색) 순위. 리랭크가 꺼져 있으면 rank와 같다. 후보 N개 안에 없으면 None.
         rank_vector = min((h["vector_rank"] for h in ranked if h["correct"] and h["vector_rank"]), default=None)
-        results.append({**{k: q.get(k) for k in ("id", "kind", "question", "answer", "env", "abstain", "use")},
+        results.append({**{k: q.get(k) for k in ("id", "kind", "question", "answer", "env", "abstain", "use", "project")},
                         "evidence": [{**e, "match_by": "quote" if e.get("quote") else "heading"} for e in evidence],
                         "gold_chunk_ids": gold_ids, "missing_evidence": len(missing) > 0,
                         "rank": rank, "rank_vector": rank_vector, "top1_score": retrieved[0]["score"] if retrieved else None,
@@ -246,10 +269,22 @@ def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | N
                     "top1_scores": [r["top1_score"] for r in results if r["abstain"]]},
         "latency_ms": {"mean": round(statistics.fmean(totals), 1), "p95": _p95(totals)},
     }
+    # 혼동: 질문의 프로젝트 밖 조각이 상위 결과에 들어온 정도. 범위를 걸고 찾았으면 0이라 세지 않는다.
+    tagged = [r for r in results if r.get("project") and r["retrieved"]]
+    if tagged and not (project and project["scope"] == "project"):
+        hits = [h for r in tagged for h in r["retrieved"]]
+        summary["confusion"] = {"questions": len(tagged),
+                                "top1_foreign": sum(r["retrieved"][0]["in_project"] is False for r in tagged),
+                                "foreign_rate": round(sum(h["in_project"] is False for h in hits) / len(hits), 4)}
+    if not project:
+        names = list(dict.fromkeys(r.get("project") or "" for r in results))
+        if len(names) > 1 or names != [""]:
+            summary["by_project"] = {n: summarize([r for r in results if (r.get("project") or "") == n]) for n in names
+                                     if not all(r["abstain"] for r in results if (r.get("project") or "") == n)}
     if generator:
         summary["answer"] = summarize_answers(results)
     snapshot = {
-        "name": setup["name"], "query": setup["query"],
+        "name": setup["name"], "query": setup["query"], "project": project,
         "index": {"id": index["id"], "key": index["key"], "chunker": index["chunker"], "embedder": index["embedder"],
                   "dims": index["dims"], "is_base": index["is_base"],
                   "label": {"chunker": comp.describe("chunker", index["chunker"]),
@@ -261,6 +296,7 @@ def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | N
     }
     meta = {"top_k": TOP_K, "recall_at": list(RECALL_AT), "code_commit": code_commit(),
             "questions_file": "eval/questions.jsonl", "questions_sha256": questions_sha,
+            "project": project, "question_count": len(questions),
             "documents": len({c["path"] for c in chunks}), "chunks": len(chunks),
             "projection": {"method": "pca", "fit_on": "chunks", "explained": explained},
             "external_query_calls": len(questions) if comp.is_external("embedder", index["embedder"]) else 0}
@@ -270,7 +306,8 @@ def run_eval(label: str = "", setup_name: str | None = None, on_step: OnStep | N
                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
             (label, Jsonb(snapshot), index["id"], questions_sha, Jsonb(summary),
              Jsonb({"meta": meta, "questions": results, "chunks": chunks}))).fetchone()[0]
-    return {"status": "evaluated", "eval_run_id": run_id, "summary": summary["all"], "title": f"Evaluation #{run_id}"}
+    return {"status": "evaluated", "eval_run_id": run_id, "summary": summary["all"],
+            "title": f"Evaluation #{run_id}" + (f" · {project['name']}" if project else "")}
 
 
 # 저장된 평가 결과 하나를 화면·파일에 쓰는 모양으로 읽는다.
@@ -289,7 +326,8 @@ def list_runs(limit: int = 50) -> list[dict]:
         rows = conn.execute("""SELECT id, label, setup, summary, created_at, detail->'meta'->>'questions_sha256'
                                FROM eval_runs ORDER BY id DESC LIMIT %s""", (limit,)).fetchall()
     return [{"run_id": r[0], "label": r[1], "setup": r[2], "summary": r[3]["all"], "latency_ms": r[3]["latency_ms"], "answer": r[3].get("answer"),
-             "created_at": r[4].isoformat(), "questions_sha256": r[5]} for r in rows]
+             "created_at": r[4].isoformat(), "questions_sha256": r[5], "project": r[2].get("project"),
+             "confusion": r[3].get("confusion")} for r in rows]
 
 
 def export_run(run_id: int, out_dir: Path) -> Path:

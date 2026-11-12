@@ -1073,3 +1073,31 @@ html.qs-drawer-open .app-shell{transform:scale(.965) translateX(-18px);transform
 .pj-count{display:inline-grid;place-items:center;min-width:17px;height:17px;padding:0 5px;border-radius:9px;background:#fdeee4;color:#a35f3b;font-size:10px}
 .pj-field-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 @media (max-width:520px){.pj-field-row{grid-template-columns:1fr}}
+/* Evaluations: 프로젝트별 평가 카드 (격자 Fluid, 카드 Fixed) */
+.pe{margin-bottom:16px}
+.pe-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.pe-head h2{font-size:13px;font-weight:500}
+.pe-scope button span{white-space:nowrap}
+.pe-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.pe-card{display:flex;flex-direction:column;gap:9px;padding:16px;border-radius:18px;background:#ffffffd9;min-width:0}
+.pe-card.is-all{border:1.5px solid #e6dcf6}
+.pe-card>small{font-size:10.5px;color:#9a91a5;line-height:1.6}
+.pe-title{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pe-title b{font-size:13px;font-weight:500;overflow-wrap:anywhere}
+.pe-metrics{display:grid;grid-template-columns:1fr auto;gap:3px 10px;align-items:center;padding:8px 10px;border-radius:12px;background:#faf8fc;text-align:left;font-size:11.5px;color:#6f6879;cursor:pointer;border:0;width:100%}
+.pe-metrics:hover{background:#f4effc}
+.pe-metrics b{font-weight:500;color:#2f2a38;text-align:right;font-variant-numeric:tabular-nums}
+.pe-bar{grid-column:1/-1;height:4px;border-radius:3px;background:#efeaf5;overflow:hidden;margin-bottom:3px}
+.pe-bar i{display:block;height:100%;background:#9b84d3;border-radius:3px}
+.pe-bar.is-warn i{background:#e7a27a}
+.pe-when{grid-column:1/-1;font-size:10px;color:#a69cb0;margin-top:2px}
+.pe-empty{margin:0;font-size:11px;color:#9a91a5;line-height:1.6}
+.pe-btn{align-self:flex-start;display:inline-flex;align-items:center;gap:6px;padding:8px 13px;border-radius:12px;border:1px solid #e3dceb;background:#fff;font-size:11.5px;color:#2f2a38;cursor:pointer}
+.pe-btn.is-dark{background:#2f2a38;color:#fff;border-color:#2f2a38}
+.pe-btn:disabled{opacity:.5;cursor:default}
+.pe-confusion{color:#a35f3b}
+.qs-proj-select{display:inline-flex;align-items:center;gap:4px;position:relative;padding:5px 26px 5px 10px;border-radius:12px;background:#f3f1f6;font-size:11px;color:#8f879a}
+.qs-proj-select select{appearance:none;border:0;background:transparent;font-size:11px;color:#2f2a38;outline:none;cursor:pointer}
+.qs-proj-select svg{position:absolute;right:8px;pointer-events:none}
+.pe-scope button.is-on{background:#fff;box-shadow:0 1px 4px #4b375a14}
+.pe-confusion.is-zero{color:#8f879a}

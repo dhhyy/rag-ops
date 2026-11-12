@@ -3,17 +3,23 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { ArrowLeftRight, ChartNoAxesCombined, Check, ChevronDown, CircleAlert, Clock3, Layers3, LoaderCircle, Play } from 'lucide-react';
 import { QuestionSet } from './questionset';
+import { KindTag, useProjects, type Project } from './projects';
 import { api, Card, ColorIcon, ease, Heading, MetricCard, pct, shortTime, useSize } from './ui';
 import { SetupChips, useSetup, type StageSetting } from './setup';
 
 export type Snapshot = {
   name: string | null; query: { top_k: number; reranker?: StageSetting | null; keyword?: StageSetting | null }; reranker_label?: string | null; keyword_label?: string | null;
   index: { id: number; key: string; chunker: StageSetting; embedder: StageSetting; dims: number; is_base: boolean; label: { chunker: string; embedder: string }; external: boolean };
+  project?: EvalProject | null;
 };
+// 프로젝트 평가: 그 프로젝트 질문만 채점. scope project = 그 프로젝트 안에서만 찾기, all = 전체에서 찾기(혼동을 셈)
+export type EvalProject = { id: number; name: string; scope: 'project' | 'all' };
+// 질문의 프로젝트 밖 조각이 상위에 들어온 정도. 범위를 걸지 않은 평가에만 있다.
+export type Confusion = { questions: number; top1_foreign: number; foreign_rate: number };
 export type EvalSummary = { questions: number; 'recall@1': number | null; 'recall@3': number | null; 'recall@5': number | null; mrr: number | null };
 export type EvalHit = { chunk_id: number; score: number; correct: boolean; vector_score?: number; vector_rank?: number };
 export type EvalQuestion = {
-  id: string; kind: string; question: string; answer: string; env: string; abstain: boolean; use: string;
+  id: string; kind: string; question: string; answer: string; env: string; abstain: boolean; use: string; project?: string | null;
   evidence: { path: string; heading: string; quote?: string; match_by: 'quote' | 'heading' }[]; gold_chunk_ids: number[]; missing_evidence: boolean;
   rank: number | null; rank_vector?: number | null; top1_score: number | null; retrieved: EvalHit[];
   latency_ms: { embed: number; db: number; rerank?: number; total: number }; x: number; y: number;
@@ -37,14 +43,17 @@ export type EvalMeta = {
 };
 export type EvalRun = {
   meta: EvalMeta; questions: EvalQuestion[]; chunks: EvalChunk[];
-  summary: { all: EvalSummary; by_kind: Record<string, EvalSummary>; abstain: { questions: number; top1_scores: number[] }; latency_ms: { mean: number; p95: number }; answer?: AnswerSummary | null };
+  summary: { all: EvalSummary; by_kind: Record<string, EvalSummary>; abstain: { questions: number; top1_scores: number[] }; latency_ms: { mean: number; p95: number }; answer?: AnswerSummary | null;
+    confusion?: Confusion; by_project?: Record<string, EvalSummary> };
 };
-export type EvalEntry = { run_id: number; label: string; setup: Snapshot; summary: EvalSummary; latency_ms: { mean: number; p95: number }; created_at: string; questions_sha256: string };
+export type EvalEntry = { run_id: number; label: string; setup: Snapshot; summary: EvalSummary; latency_ms: { mean: number; p95: number }; created_at: string; questions_sha256: string;
+  project?: EvalProject | null; confusion?: Confusion | null };
 export type EvalJob = { id: number; status: 'queued' | 'running' | 'done' | 'failed'; progress_done: number | null; progress_total: number | null; error: string | null; result: { eval_run_id?: number } | null };
 
 const SHOWN_HITS = 5;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
-const runName = (e: EvalEntry) => `#${e.run_id}${e.label ? ` ${e.label}` : ''} · ${e.setup.index.label.chunker} × ${e.setup.index.label.embedder}${e.setup.keyword_label ? ` + 키워드 ${e.setup.keyword_label.split(' · ')[1] ?? ''}` : ''}${e.setup.reranker_label ? ` + rerank ${e.setup.reranker_label}` : ''} · R@1 ${pct(e.summary['recall@1'])}`;
+const scopeName = (p: EvalProject) => `${p.name}${p.scope === 'all' ? ' · 전체에서' : ''}`;
+const runName = (e: EvalEntry) => `#${e.run_id}${e.project ? ` [${scopeName(e.project)}]` : ''}${e.label ? ` ${e.label}` : ''} · ${e.setup.index.label.chunker} × ${e.setup.index.label.embedder}${e.setup.keyword_label ? ` + 키워드 ${e.setup.keyword_label.split(' · ')[1] ?? ''}` : ''}${e.setup.reranker_label ? ` + rerank ${e.setup.reranker_label}` : ''} · R@1 ${pct(e.summary['recall@1'])}`;
 
 // Where a question landed: first place, top 5, lower, not found, or a question with no answer.
 function evalOutcome(q: EvalQuestion): { label: string; tone: 'lime' | 'blue' | 'peach' | 'neutral'; color: string } {
@@ -99,10 +108,10 @@ function useEvalJob(onDone: (runId: number | undefined) => void) {
     return () => clearInterval(timer);
   }, [active, job?.id]);
 
-  async function start(label: string, answers: boolean) {
+  async function start(label: string, answers: boolean, project?: { id: number; scope: 'project' | 'all' }) {
     setError('');
     try {
-      const { job_id } = await api<{ job_id: number }>('/evals', { method: 'POST', body: { label, answers } });
+      const { job_id } = await api<{ job_id: number }>('/evals', { method: 'POST', body: { label, answers, ...(project ? { project_id: project.id, scope: project.scope } : {}) } });
       setJob({ id: job_id, status: 'queued', progress_done: null, progress_total: null, error: null, result: null });
     } catch (e) { setError(message(e)); }
   }
@@ -289,12 +298,67 @@ export function Evaluations({ openPipeline, openCompare }: { openPipeline: () =>
     {([['runs', '평가 기록'], ['questions', '시험지']] as const).map(([id, label]) =>
       <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? 'is-on' : ''} onClick={() => pick(id)}>{label}</button>)}
   </span>;
-  return tab === 'questions' ? <QuestionSet tabs={tabs} /> : <EvalRuns openPipeline={openPipeline} openCompare={openCompare} tabs={tabs} />;
+  return tab === 'questions' ? <QuestionSet tabs={tabs} /> : <EvalRuns openPipeline={openPipeline} openCompare={openCompare} openQuestions={() => pick('questions')} tabs={tabs} />;
 }
 
-function EvalRuns({ openPipeline, openCompare, tabs }: { openPipeline: () => void; openCompare: () => void; tabs: React.ReactNode }) {
+// 프로젝트별 평가 카드 (화면 나누기: 격자 = Fluid, 카드 안 = Fixed). 카드마다 그 프로젝트 질문만으로 돌리고,
+// 마지막 카드는 범위 없이 전체 질문을 돌려 다른 프로젝트 문서가 끼어드는지(혼동)를 본다.
+function ProjectEvalCards({ projects, counts, list, scope, setScope, busy, start, show, openQuestions }: {
+  projects: Project[]; counts: Record<string, number>; list: EvalEntry[]; scope: 'project' | 'all'; setScope: (s: 'project' | 'all') => void;
+  busy: boolean; start: (p: Project | null) => void; show: (runId: number) => void; openQuestions: () => void;
+}) {
+  const whole = list.find(e => !e.project);
+  const untagged = counts[''] ?? 0;
+  const bar = (v: number | null | undefined) => <span className="pe-bar"><i style={{ width: `${(v ?? 0) * 100}%` }} /></span>;
+  return <section className="pe">
+    <div className="pe-head"><h2>프로젝트별</h2>
+      <span className="segmented pe-scope" role="radiogroup" aria-label="찾는 범위">
+        <button role="radio" aria-checked={scope === 'project'} className={scope === 'project' ? 'is-on' : ''} onClick={() => setScope('project')}><span>그 프로젝트 안에서 찾기</span></button>
+        <button role="radio" aria-checked={scope === 'all'} className={scope === 'all' ? 'is-on' : ''} onClick={() => setScope('all')}><span>전체에서 찾기</span></button>
+      </span></div>
+    <div className="pe-grid">
+      {projects.map(p => {
+        const n = counts[p.name] ?? 0;
+        const last = list.find(e => e.project?.id === p.id && e.project.scope === scope);
+        return <div key={p.id} className="pe-card">
+          <div className="pe-title"><b>{p.name}</b><KindTag project={p} /></div>
+          <small>질문 {n}개 · {scope === 'project' ? `범위 = ${p.name}` : '범위 없음 (혼동 검사)'}</small>
+          {!n ? <><p className="pe-empty">이 프로젝트 질문이 없어요. 시험지에서 질문에 프로젝트를 붙여 주세요.</p>
+              <button className="pe-btn" onClick={openQuestions}>시험지 열기</button></>
+            : <>
+              {last ? <button className="pe-metrics" onClick={() => show(last.run_id)} title={`#${last.run_id} 기록 보기`}>
+                  <span>recall@1</span><b>{pct(last.summary['recall@1'])}</b>{bar(last.summary['recall@1'])}
+                  <span>recall@3</span><b>{pct(last.summary['recall@3'])}</b>{bar(last.summary['recall@3'])}
+                  <span>MRR</span><b>{last.summary.mrr?.toFixed(2) ?? '—'}</b>{bar(last.summary.mrr)}
+                  {last.confusion && <><span>1위가 다른 프로젝트</span><b>{last.confusion.top1_foreign} / {last.confusion.questions}</b></>}
+                  <small className="pe-when">#{last.run_id} · {shortTime(last.created_at)}{last.label ? ` · ${last.label}` : ''}</small>
+                </button>
+                : <p className="pe-empty">아직 이 범위로 돌린 적이 없어요.</p>}
+              <button className="pe-btn is-dark" disabled={busy} onClick={() => start(p)}><Play size={13} />평가</button>
+            </>}
+        </div>;
+      })}
+      <div className="pe-card is-all">
+        <div className="pe-title"><b>전체 질문 · 혼동 검사</b></div>
+        <small>시험지 전체를 범위 없이 돌려요. 다른 프로젝트 문서를 가져온 질문을 세요.{untagged ? ` 프로젝트 없는 질문 ${untagged}개 포함.` : ''}</small>
+        {whole ? <button className="pe-metrics" onClick={() => show(whole.run_id)} title={`#${whole.run_id} 기록 보기`}>
+            <span>recall@1</span><b>{pct(whole.summary['recall@1'])}</b>{bar(whole.summary['recall@1'])}
+            <span>1위가 다른 프로젝트</span><b>{whole.confusion ? `${whole.confusion.top1_foreign} / ${whole.confusion.questions}` : '—'}</b>
+            {whole.confusion ? <span className="pe-bar is-warn"><i style={{ width: `${(whole.confusion.top1_foreign / Math.max(1, whole.confusion.questions)) * 100}%` }} /></span> : <span />}
+            <small className="pe-when">#{whole.run_id} · {shortTime(whole.created_at)}{projects.length < 2 ? ' · 프로젝트가 하나라 혼동은 생길 수 없어요' : ''}</small>
+          </button> : <p className="pe-empty">아직 돌린 적이 없어요.</p>}
+        <button className="pe-btn is-dark" disabled={busy} onClick={() => start(null)}><Play size={13} />전체 평가</button>
+      </div>
+    </div>
+  </section>;
+}
+
+function EvalRuns({ openPipeline, openCompare, openQuestions, tabs }: { openPipeline: () => void; openCompare: () => void; openQuestions: () => void; tabs: React.ReactNode }) {
   const { list, runs, want, reload, error } = useEvalRuns();
   const { setup } = useSetup();
+  const { projects } = useProjects();
+  const [scope, setScope] = useState<'project' | 'all'>('project');
+  const [counts, setCounts] = useState<Record<string, number>>({});
   const [runId, setRunId] = useState<number | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<EvalFilter>('all');
@@ -311,8 +375,8 @@ function EvalRuns({ openPipeline, openCompare, tabs }: { openPipeline: () => voi
   // 마지막 평가 뒤에 시험지가 바뀌었는지. 바뀌었으면 숫자를 이전 기록과 바로 비교할 수 없다.
   const [setChanged, setSetChanged] = useState<{ sha: string; old: string | null } | null>(null);
   useEffect(() => {
-    api<{ sha: string; last_eval: { sha: string | null; same_set: boolean } | null }>('/questions')
-      .then(d => setSetChanged(d.last_eval && !d.last_eval.same_set ? { sha: d.sha, old: d.last_eval.sha } : null))
+    api<{ sha: string; last_eval: { sha: string | null; same_set: boolean } | null; summary: { projects?: Record<string, number> } }>('/questions')
+      .then(d => { setSetChanged(d.last_eval && !d.last_eval.same_set ? { sha: d.sha, old: d.last_eval.sha } : null); setCounts(d.summary.projects ?? {}); })
       .catch(() => setSetChanged(null));
   }, [list]);
   useEffect(() => { want(runId); }, [runId]);
@@ -341,10 +405,14 @@ function EvalRuns({ openPipeline, openCompare, tabs }: { openPipeline: () => voi
     {setup?.index.external && <p className="eval-runner-note"><CircleAlert size={12} />This setup uses an external model: every question is sent to {setup.index.label.embedder.split(' · ')[0]} once.</p>}
     {evalJob.error && <p className="source-error eval-runner-error">{evalJob.error}</p>}
   </Card>;
+  const projectCards = projects && list && <ProjectEvalCards projects={projects} counts={counts} list={list} scope={scope} setScope={setScope}
+    busy={evalJob.active || !setup} show={setRunId} openQuestions={openQuestions}
+    start={p => void evalJob.start(label.trim(), withAnswers, p ? { id: p.id, scope } : undefined)} />;
 
   if (list && !list.length) return <>
     <Heading title="Evaluations" subtitle="Retrieval quality on the evaluation set">{tabs}</Heading>
     {runner}
+    {projectCards}
     <Card className="empty-state"><ColorIcon icon={ChartNoAxesCombined} color="peach" /><h2>No evaluation runs yet</h2><p>Press “Evaluate current setup”. The result is stored and listed here.</p></Card>
   </>;
 
@@ -356,8 +424,9 @@ function EvalRuns({ openPipeline, openCompare, tabs }: { openPipeline: () => voi
   const firstHits = run ? run.questions.filter(q => !q.abstain && q.rank === 1).length : 0;
 
   return <>
-    <Heading title="Evaluations" subtitle={run ? `Run #${run.meta.run_id} · ${run.meta.documents} documents · ${run.meta.chunks} chunks · ${run.meta.questions_file} @ ${run.meta.questions_sha256}` : 'Retrieval quality on the evaluation set'}>{tabs}</Heading>
+    <Heading title="Evaluations" subtitle={run ? `Run #${run.meta.run_id}${run.meta.setup.project ? ` · ${scopeName(run.meta.setup.project)}` : ''} · ${run.meta.documents} documents · ${run.meta.chunks} chunks · ${run.meta.questions_file} @ ${run.meta.questions_sha256}` : 'Retrieval quality on the evaluation set'}>{tabs}</Heading>
     {runner}
+    {projectCards}
     {setChanged && <p className="qs-banner"><CircleAlert size={14} />마지막 평가 뒤에 시험지가 바뀌었어요 ({setChanged.old ?? '?'} → {setChanged.sha}). 이전 기록과 숫자를 바로 비교하지 말고, 위에서 평가를 다시 돌려 기준점을 새로 잡아 주세요.</p>}
 
     <div className="eval-pickers">
@@ -377,6 +446,8 @@ function EvalRuns({ openPipeline, openCompare, tabs }: { openPipeline: () => voi
         <MetricCard icon={Clock3} color="neutral" label="Latency" value={`${Math.round(s.latency_ms.mean)} ms`} note={`p95 ${Math.round(s.latency_ms.p95)} ms · embed + DB`} delay={0.15} />
         <ScoreStrip run={run} selected={selectedId} select={setSelectedId} />
       </div>
+      {s.confusion && <p className={`eval-runner-note pe-confusion ${s.confusion.top1_foreign ? '' : 'is-zero'}`}><CircleAlert size={12} />혼동: 1위가 질문의 프로젝트 밖 문서인 질문 {s.confusion.top1_foreign} / {s.confusion.questions}개 · 상위 결과 중 다른 프로젝트 조각 {pct(s.confusion.foreign_rate)}</p>}
+      {s.by_project && Object.keys(s.by_project).length > 1 && <p className="eval-runner-note">프로젝트별 recall@1: {Object.entries(s.by_project).map(([k, v]) => `${k || '프로젝트 없음'} ${pct(v['recall@1'])}`).join(' · ')}</p>}
       {s.answer && <AnswerSummaryCard a={s.answer} />}
 
       <div className="eval-workspace">
@@ -390,7 +461,7 @@ function EvalRuns({ openPipeline, openCompare, tabs }: { openPipeline: () => voi
           <div className="eval-questions">
             {shown.map(q => { const o = evalOutcome(q); return <button key={q.id} className={`eval-q ${selectedId === q.id ? 'is-selected' : ''}`} onClick={() => setSelectedId(q.id)} aria-pressed={selectedId === q.id}>
               <span className="eval-id">{q.id}</span>
-              <span className="eval-q-text"><b>{q.question}</b><small>{q.kind} · top-1 {q.top1_score?.toFixed(3)}</small></span>
+              <span className="eval-q-text"><b>{q.question}</b><small>{q.kind}{!run.meta.setup.project && q.project ? ` · ${q.project}` : ''} · top-1 {q.top1_score?.toFixed(3)}</small></span>
               <span className={`pill ${o.tone}`}>{o.label}</span>
             </button>; })}
             {!shown.length && <div className="empty-state compact"><p>No questions in this filter.</p></div>}

@@ -73,7 +73,9 @@ def run_job(job_id: int) -> None:
             result = run_eval(label=params.get("label", ""), on_step=on_step,
                               index_id=int(params["index_id"]) if params.get("index_id") else None,
                               reranker=params.get("reranker"), keyword=params.get("keyword"),
-                              answers=bool(params.get("answers")))
+                              answers=bool(params.get("answers")),
+                              project_id=int(params["project_id"]) if params.get("project_id") else None,
+                              scope=params.get("scope", "project"))
         elif kind == "drafts":
             from drafts import make_drafts
             result = make_drafts(int(params.get("count", 10)), params.get("batch", ""), on_step)
