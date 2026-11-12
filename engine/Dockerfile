@@ -21,5 +21,7 @@ WORKDIR /srv/engine/app
 ENV PYTHONPATH=/srv/engine/app
 
 RUN useradd --create-home worker
+# GitHub 저장소를 받는 폴더. repos 볼륨이 처음 만들어질 때 이 소유자를 따른다
+RUN mkdir -p /srv/repos && chown worker /srv/repos
 USER worker
 CMD ["celery", "-A", "tasks", "worker", "--concurrency=1", "--loglevel=INFO"]

@@ -9,11 +9,14 @@ import { Drawer } from './questionset';
 export type ProjectRef = { id: number; name: string; origin: boolean };
 export type Project = {
   id: number; name: string; kind: 'git' | 'managed'; description: string;
-  source: { from?: string; path?: string }; defaults: { env?: string; doc_type?: string; external_ok?: boolean };
+  source: { from?: 'local' | 'github'; path?: string; url?: string; owner?: string; repo?: string; branch?: string; folder?: string }; defaults: { env?: string; doc_type?: string; external_ok?: boolean };
   documents: number; origin_documents: number; chunks: number; last_ingested: string | null;
-  git: { repo: string; branch: string | null; commit: string | null } | null;
+  // GitHub 프로젝트는 마지막 [새 커밋 확인] 결과가 붙는다 (behind: 받아 둔 커밋보다 원본이 앞선 커밋 수)
+  git: { repo: string; branch: string | null; commit: string | null; behind?: number; remote_commit?: string | null; checked_at?: string } | null;
 };
-export type PullResult = { jobs: { job_id: number; path: string }[]; skipped: { path: string; reason: string }[] };
+export type GitStatus = { behind: number; remote_commit: string | null; checked_at: string };
+export type PullResult = { jobs: { job_id: number; path: string }[]; skipped: { path: string; reason: string }[]; git?: GitStatus | null };
+const isGitHub = (p: Pick<Project, 'source'>) => p.source.from === 'github';
 export type UploadResult = {
   new: { name: string }[]; updated: { name: string; from: string | null }[]; unchanged: { name: string; version: string }[];
   skipped: { name: string; reason: string }[]; jobs: { job_id: number; path: string }[];
@@ -106,11 +109,12 @@ export function ProjectCards({ projects, selected, select, onNew }: { projects: 
     {projects.map((p, i) => <motion.button key={p.id} className={`pj-card ${selected === p.id ? 'is-active' : ''}`} aria-pressed={selected === p.id}
       initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05, duration: 0.3 }}
       onClick={() => select(selected === p.id ? null : p.id)}>
-      <span className="pj-tags"><KindTag project={p} />{p.kind === 'git' && <span className="pj-tag">로컬 폴더</span>}
+      <span className="pj-tags"><KindTag project={p} />{p.kind === 'git' && <span className="pj-tag">{isGitHub(p) ? 'GitHub' : '로컬 폴더'}</span>}
+        {!!p.git?.behind && <span className="pj-tag is-warn">새 커밋 {p.git.behind}개</span>}
         <AnimatePresence>{selected === p.id && <motion.span className="pj-check" initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0 }} transition={spring}><Check size={12} /></motion.span>}</AnimatePresence>
       </span>
       <h3>{p.name}</h3>
-      <small className="pj-src">{p.git ? `${p.git.repo} · ${p.git.branch ?? '브랜치 없음'} @ ${p.git.commit ?? '커밋 없음'}` : p.kind === 'git' ? '폴더를 읽을 수 없어요' : `업로드 문서${p.last_ingested ? ` · 마지막 ${shortTime(p.last_ingested)}` : ''}`}</small>
+      <small className="pj-src">{isGitHub(p) && p.git ? `${p.source.owner}/${p.source.repo} · ${p.git.branch} @ ${p.git.commit}` : p.git ? `${p.git.repo} · ${p.git.branch ?? '브랜치 없음'} @ ${p.git.commit ?? '커밋 없음'}` : p.kind === 'git' ? '폴더를 읽을 수 없어요' : `업로드 문서${p.last_ingested ? ` · 마지막 ${shortTime(p.last_ingested)}` : ''}`}</small>
       <span className="pj-stats"><span><b>{p.documents}</b><small>문서</small></span><span><b>{p.chunks}</b><small>조각</small></span>
         {p.documents > p.origin_documents && <span><b>{p.documents - p.origin_documents}</b><small>연결</small></span>}</span>
     </motion.button>)}
@@ -137,7 +141,18 @@ export async function waitJobs(ids: number[]): Promise<number | null> {
 
 export function ProjectHead({ project, onPulled, openPipeline }: { project: Project; onPulled: () => void; openPipeline: () => void }) {
   const [pulling, setPulling] = useState(false);
-  const [note, setNote] = useState<{ ok: boolean; text: string; detail?: string[] } | null>(null);
+  const [note, setNote] = useState<{ ok: boolean; text: string; detail?: string[]; jobs?: boolean } | null>(null);
+  const [fetching, setFetching] = useState(false);
+  // [새 커밋 확인]: GitHub에 묻기만 하고 문서는 그대로다
+  async function check() {
+    setFetching(true); setNote(null);
+    try {
+      const r = await api<GitStatus>(`/projects/${project.id}/fetch`, { method: 'POST' });
+      setNote({ ok: true, text: r.behind ? `새 커밋 ${r.behind}개가 있어요 (원본 ${r.remote_commit}). [다시 받기]를 누르면 받아서 바뀐 문서만 다시 넣어요` : '새 커밋이 없어요. 받아 둔 커밋이 원본과 같아요' });
+      onPulled();
+    } catch (e) { setNote({ ok: false, text: message(e) }); }
+    setFetching(false);
+  }
   async function upload(files: File[]) {
     if (!files.length) return;
     setPulling(true); setNote(null);
@@ -145,11 +160,11 @@ export function ProjectHead({ project, onPulled, openPipeline }: { project: Proj
       const r = await uploadFiles(project.id, files);
       const detail = r.skipped.map(x => `${x.name}: ${x.reason}`);
       const ok = r.jobs.length > 0 || r.unchanged.length > 0;
-      setNote({ ok, text: uploadSummary(r) + (r.jobs.length ? ' · 넣는 중' : ''), detail });
+      setNote({ ok, text: uploadSummary(r) + (r.jobs.length ? ' · 넣는 중' : ''), detail, jobs: r.jobs.length > 0 });
       onPulled();
       if (r.jobs.length) {
         const failed = await waitJobs(r.jobs.map(j => j.job_id));
-        setNote({ ok: failed === 0, detail, text: uploadSummary(r) + (failed === null ? ' · 아직 넣는 중이에요' : failed ? ` · 넣기 실패 ${failed}개` : ' · 다 넣었어요') });
+        setNote({ ok: failed === 0, detail, jobs: true, text: uploadSummary(r) + (failed === null ? ' · 아직 넣는 중이에요' : failed ? ` · 넣기 실패 ${failed}개` : ' · 다 넣었어요') });
         onPulled();
       }
     } catch (e) { setNote({ ok: false, text: message(e) }); }
@@ -160,12 +175,12 @@ export function ProjectHead({ project, onPulled, openPipeline }: { project: Proj
     setPulling(true);
     try {
       const r = await api<PullResult>(`/projects/${project.id}/pull`, { method: 'POST' });
-      const base = `문서 ${r.jobs.length}개를 다시 확인해요. 바뀐 문서만 다시 넣어요${r.skipped.length ? ` · 뺀 문서 ${r.skipped.length}개` : ''}`;
-      setNote({ ok: true, text: base });
+      const base = `${r.git ? `커밋 ${project.git?.commit ?? '—'} → ${r.git.remote_commit ?? '—'} · ` : ''}문서 ${r.jobs.length}개를 다시 확인해요. 바뀐 문서만 다시 넣어요${r.skipped.length ? ` · 뺀 문서 ${r.skipped.length}개` : ''}`;
+      setNote({ ok: true, text: base, jobs: r.jobs.length > 0 });
       onPulled();
       if (r.jobs.length) {
         const failed = await waitJobs(r.jobs.map(j => j.job_id));
-        setNote({ ok: failed === 0, text: base + (failed === null ? ' · 아직 진행 중' : failed ? ` · 실패 ${failed}개` : ' · 끝났어요') });
+        setNote({ ok: failed === 0, jobs: true, text: base + (failed === null ? ' · 아직 진행 중' : failed ? ` · 실패 ${failed}개` : ' · 끝났어요') });
         onPulled();
       }
     } catch (e) { setNote({ ok: false, text: message(e) }); }
@@ -175,22 +190,28 @@ export function ProjectHead({ project, onPulled, openPipeline }: { project: Proj
     <div className="pj-head-row">
       <KindTag project={project} />
       <div className="pj-head-info">
-        <b>{project.git ? project.git.repo : project.name}</b>
-        <small>{project.kind === 'git'
+        <b>{isGitHub(project) ? `github.com/${project.source.owner}/${project.source.repo}` : project.git ? project.git.repo : project.name}</b>
+        <small>{isGitHub(project)
+          ? <>브랜치 <code>{project.source.branch}</code> · 받은 커밋 <code>{project.git?.commit ?? '—'}</code> · 문서 폴더 {project.source.folder ? <code>{project.source.folder}/</code> : '저장소 전체'}
+            {project.git?.checked_at ? ` · 마지막 확인 ${shortTime(project.git.checked_at)}` : ''}{` · 외부 전송 기본 ${project.defaults.external_ok ? '허용' : '불가'}`}</>
+          : project.kind === 'git'
           ? <>브랜치 <code>{project.git?.branch ?? '—'}</code> · 지금 커밋 <code>{project.git?.commit ?? '—'}</code> · 폴더 <code>{project.source.path ?? '—'}</code></>
           : <>문서 {project.origin_documents}개 · 원문은 DB에 저장해요{project.last_ingested ? ` · 마지막으로 넣은 때 ${shortTime(project.last_ingested)}` : ''}{` · 외부 전송 기본 ${project.defaults.external_ok ? '허용' : '불가'}`}</>}
           {project.defaults.env || project.defaults.doc_type ? ` · 기본값 ${[project.defaults.env, project.defaults.doc_type].filter(Boolean).join(' · ')}` : ''}</small>
       </div>
-      {project.kind === 'git' && <button className="primary-button" disabled={pulling} onClick={() => void pull()}>
+      {isGitHub(project) && <button className="ghost-button pj-fetch" disabled={pulling || fetching} onClick={() => void check()}>
+        {fetching ? <LoaderCircle size={14} className="spin" /> : <GitBranch size={14} />}새 커밋 확인{project.git?.behind ? <span className="pj-count">{project.git.behind}</span> : null}</button>}
+      {project.kind === 'git' && <button className="primary-button" disabled={pulling || fetching} onClick={() => void pull()}>
         {pulling ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}다시 받기</button>}
       {project.kind === 'managed' && (pulling ? <span className="primary-button pj-busy"><LoaderCircle size={14} className="spin" />올리는 중</span>
         : <DropZone compact onFiles={f => void upload(f)} />)}
     </div>
     {note && <p className={`pj-note ${note.ok ? 'is-ok' : 'is-error'}`}>{note.ok ? <Check size={13} /> : <CircleAlert size={13} />}<span>{note.text}</span>
-      {note.ok && <button className="text-button" onClick={openPipeline}>진행 보기 <ArrowRight size={12} /></button>}
+      {note.ok && note.jobs && <button className="text-button" onClick={openPipeline}>진행 보기 <ArrowRight size={12} /></button>}
       {note.detail && note.detail.length > 0 && <small className="pj-note-detail">{note.detail.join(' / ')}</small>}</p>}
     {project.kind === 'managed' && <p className="pj-hint">같은 이름의 파일을 다시 올리면 새 판이 돼요. 내용이 같으면 판을 늘리지 않아요. 파일을 머리 띠의 [파일 올리기]에 끌어 놓아도 돼요.</p>}
-    {project.kind === 'git' && <p className="pj-hint">Git이 원본이에요. 여기서 파일을 올리거나 고칠 수 없어요. 원본 저장소에서 고치고 [다시 받기]를 누르면 바뀐 문서만 다시 넣어요 (기본 색인 ★).</p>}
+    {isGitHub(project) && <p className="pj-hint">GitHub 저장소가 원본이에요. [새 커밋 확인]은 원본에 새 커밋이 있는지만 봐요. [다시 받기]는 최신 커밋을 받아 바뀐 문서만 다시 넣어요 (기본 색인 ★). 받은 저장소는 서버의 repos 볼륨에 있어요.</p>}
+    {project.kind === 'git' && !isGitHub(project) && <p className="pj-hint">Git이 원본이에요. 여기서 파일을 올리거나 고칠 수 없어요. 원본 저장소에서 고치고 [다시 받기]를 누르면 바뀐 문서만 다시 넣어요 (기본 색인 ★).</p>}
   </div>;
 }
 
@@ -226,6 +247,8 @@ export function LinkModal({ title, documentId, links, projects, close, saved }: 
 // ---------- 새 프로젝트 서랍 ----------
 
 type Check_ = { ok: true; path: string; repo: string; branch: string | null; commit: string | null; md_count: number } | { ok: false; error: string };
+type GhCheck = ({ ok: true; owner: string; repo: string; full_name: string; private: boolean; default_branch: string; branch: string; commit: string; folder: string; md_count: number; truncated: boolean }
+  | { ok: false; error: string }) & { token: boolean };
 const ALL_STEPS = ['name', 'kind', 'folder', 'files', 'defaults', 'review'] as const;
 type Step = typeof ALL_STEPS[number];
 const ENVS = ['혼합', '운영', '개발', '샘플'] as const;
@@ -250,6 +273,9 @@ export function NewProjectFlow({ open, onClose, onCreated, taken }: { open: bool
   const [env, setEnv] = useState<string>('혼합');
   const [docType, setDocType] = useState<string>('해설');
   const [kind, setKind] = useState<'git' | 'managed'>('git');
+  const [from, setFrom] = useState<'local' | 'github'>('local');
+  const [gh, setGh] = useState({ url: '', branch: '', folder: '' });
+  const [ghCheck, setGhCheck] = useState<GhCheck | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [external, setExternal] = useState(false);
   const [working, setWorking] = useState(false);
@@ -258,7 +284,7 @@ export function NewProjectFlow({ open, onClose, onCreated, taken }: { open: bool
   const STEPS = ALL_STEPS.filter(k => k !== (kind === 'git' ? 'files' : 'folder'));
   const step = STEPS[Math.min(at, STEPS.length - 1)];
 
-  useEffect(() => { if (open) { setAt(0); setName(''); setDesc(''); setPath(''); setCheck(null); setEnv('혼합'); setDocType('해설'); setKind('git'); setFiles([]); setExternal(false); setProblem(null); } }, [open]);
+  useEffect(() => { if (open) { setAt(0); setName(''); setDesc(''); setPath(''); setCheck(null); setEnv('혼합'); setDocType('해설'); setKind('git'); setFrom('local'); setGh({ url: '', branch: '', folder: '' }); setGhCheck(null); setFiles([]); setExternal(false); setProblem(null); } }, [open]);
   // 같은 이름 파일은 마지막 것만 남긴다 (엔진도 같은 이름 두 개는 받지 않는다)
   const addFiles = (more: File[]) => setFiles(cur => [...cur.filter(f => !more.some(m => m.name === f.name)), ...more]);
   // 폴더를 적는 동안 잠깐 멈추면 검사한다. 늦게 온 응답이 새 입력을 덮지 않게 순번을 본다.
@@ -274,17 +300,33 @@ export function NewProjectFlow({ open, onClose, onCreated, taken }: { open: bool
     }, 400);
     return () => clearTimeout(t);
   }, [path]);
+  // GitHub 주소·브랜치·폴더도 같은 방식으로 받기 전에 살펴본다 (GitHub API, 받지는 않음)
+  useEffect(() => {
+    if (from !== 'github' || !gh.url.trim()) { setGhCheck(null); if (from === 'github') setChecking(false); return; }
+    const n = ++seq.current;
+    setChecking(true);
+    const t = setTimeout(() => {
+      api<GhCheck>('/projects/github/check', { method: 'POST', body: gh })
+        .then(r => { if (n === seq.current) setGhCheck(r); })
+        .catch(e => { if (n === seq.current) setGhCheck({ ok: false, error: message(e), token: false }); })
+        .finally(() => { if (n === seq.current) setChecking(false); });
+    }, 600);
+    return () => clearTimeout(t);
+  }, [gh, from]);
+  const github = kind === 'git' && from === 'github';
 
   const nameProblem = !name.trim() ? '이름을 적어 주세요' : taken.some(t => t.toLowerCase() === name.trim().toLowerCase()) ? '같은 이름의 프로젝트가 있어요' : null;
-  const canNext = step === 'name' ? !nameProblem : step === 'folder' ? !!check?.ok && !checking : true;
+  const canNext = step === 'name' ? !nameProblem : step === 'folder' ? (github ? !!ghCheck?.ok && ghCheck.md_count > 0 : !!check?.ok) && !checking : true;
   const go = (i: number) => { setDir(i > at ? 1 : -1); setAt(i); setProblem(null); };
-  const dirty = !!(name || path || files.length);
+  const dirty = !!(name || path || gh.url || files.length);
   const close = () => { if (!working && (!dirty || window.confirm('만들던 프로젝트를 버리고 닫을까요?'))) onClose(); };
 
   async function create() {
     setWorking(true); setProblem(null);
     try {
-      const r = await api<{ project: Project } & PullResult>('/projects', { method: 'POST', body: { name: name.trim(), kind, path: kind === 'git' ? path.trim() : '', description: desc, env, doc_type: docType, external_ok: external } });
+      const r = await api<{ project: Project } & PullResult>('/projects', { method: 'POST', body: {
+        name: name.trim(), kind, source: from, path: kind === 'git' && !github ? path.trim() : '', description: desc, env, doc_type: docType, external_ok: external,
+        ...(github ? { url: gh.url.trim(), branch: gh.branch.trim(), folder: gh.folder.trim() } : {}) } });
       if (kind === 'managed' && files.length) {
         // 프로젝트는 이미 만들어졌다. 올리기가 실패해도 만든 프로젝트로 넘어가고, 실패는 안내에 남긴다.
         try {
@@ -302,7 +344,9 @@ export function NewProjectFlow({ open, onClose, onCreated, taken }: { open: bool
       <span>{at + 1} / {STEPS.length}</span>
     </div>
     <div className="qs-step sf-step">
-      <h3>{Q[step][0]}</h3><p className="sf-sub">{Q[step][1]}</p>
+      <h3>{github && step === 'folder' ? '어느 GitHub 저장소에서 가져올까요?' : Q[step][0]}</h3>
+      <p className="sf-sub">{github && step === 'folder' ? 'github.com 저장소만 받을 수 있어요. 받은 저장소는 서버(repos 볼륨)에 두고 읽기만 해요.'
+        : github && step === 'review' ? '만들면 저장소를 받고(크면 잠시 걸려요) 문서를 기본 색인(★)에 넣기 시작해요.' : Q[step][1]}</p>
       {step === 'name' && <>
         <label className="pj-field"><small>이름</small><input autoFocus maxLength={60} value={name} onChange={e => setName(e.target.value)} placeholder="예: k8s-handbook"
           onKeyDown={e => { if (e.key === 'Enter' && !nameProblem) go(1); }} /></label>
@@ -320,13 +364,27 @@ export function NewProjectFlow({ open, onClose, onCreated, taken }: { open: bool
       </div>}
       {step === 'folder' && <>
         <span className="segmented pj-from" role="radiogroup" aria-label="가져올 곳">
-          <button role="radio" aria-checked className="is-on"><span>이 컴퓨터의 git 폴더</span></button>
-          <button role="radio" aria-checked={false} disabled title="다음 단계에서 만들 수 있어요"><span>GitHub · 준비 중</span></button>
+          <button role="radio" aria-checked={from === 'local'} className={from === 'local' ? 'is-on' : ''} onClick={() => setFrom('local')}><span>이 컴퓨터의 git 폴더</span></button>
+          <button role="radio" aria-checked={from === 'github'} className={from === 'github' ? 'is-on' : ''} onClick={() => setFrom('github')}><span>GitHub</span></button>
         </span>
+        {github ? <>
+          <label className="pj-field"><small>저장소 주소</small><input autoFocus className="mono" spellCheck={false} value={gh.url} onChange={e => setGh(g => ({ ...g, url: e.target.value }))} placeholder="https://github.com/소유자/저장소" /></label>
+          <div className="pj-field-row">
+            <label className="pj-field"><small>브랜치 (비우면 기본)</small><input className="mono" spellCheck={false} value={gh.branch} onChange={e => setGh(g => ({ ...g, branch: e.target.value }))} placeholder={ghCheck?.ok ? ghCheck.default_branch : 'main'} /></label>
+            <label className="pj-field"><small>문서 폴더 (비우면 전체)</small><input className="mono" spellCheck={false} value={gh.folder} onChange={e => setGh(g => ({ ...g, folder: e.target.value }))} placeholder="docs" /></label>
+          </div>
+          {checking ? <p className="sf-impact"><LoaderCircle size={13} className="spin" />저장소를 보는 중…</p>
+            : ghCheck?.ok && ghCheck.md_count === 0 ? <p className="sf-impact is-warn"><CircleAlert size={13} />{ghCheck.full_name} · 브랜치 {ghCheck.branch}{ghCheck.folder ? ` · ${ghCheck.folder}/` : ''} 안에 Markdown(.md) 파일이 없어요. 브랜치나 문서 폴더를 바꿔 보세요</p>
+            : ghCheck?.ok ? <p className="sf-impact is-ok"><Check size={13} />{ghCheck.private ? '비공개' : '공개'} 저장소 {ghCheck.full_name} · 브랜치 {ghCheck.branch} @ {ghCheck.commit} · {ghCheck.folder ? `${ghCheck.folder}/ 안 ` : ''}.md {ghCheck.md_count}개{ghCheck.truncated ? ' (저장소가 커서 일부만 셌어요)' : ''}</p>
+            : ghCheck ? <p className="sf-impact is-warn"><CircleAlert size={13} />{ghCheck.error}</p> : null}
+          <p className="sf-note">{ghCheck?.token ? 'GITHUB_TOKEN이 있어요. 토큰이 볼 수 있는 비공개 저장소도 받을 수 있어요.'
+            : '비공개 저장소는 .env에 GITHUB_TOKEN(읽기 전용 권장)을 넣고 엔진을 다시 띄워야 받을 수 있어요. 토큰 값은 화면에 보이지 않아요.'}</p>
+        </> : <>
         <label className="pj-field"><small>폴더</small><input autoFocus className="mono" spellCheck={false} value={path} onChange={e => setPath(e.target.value)} placeholder="/path/to/docs-repo" /></label>
         {checking ? <p className="sf-impact"><LoaderCircle size={13} className="spin" />폴더를 보는 중…</p>
           : check?.ok ? <p className="sf-impact is-ok"><Check size={13} />git 저장소 {check.repo} · 브랜치 {check.branch ?? '—'} @ {check.commit ?? '커밋 없음'} · .md {check.md_count}개</p>
           : check ? <p className="sf-impact is-warn"><CircleAlert size={13} />{check.error}</p> : null}
+        </>}
       </>}
       {step === 'files' && <>
         <DropZone onFiles={addFiles} />
@@ -337,13 +395,16 @@ export function NewProjectFlow({ open, onClose, onCreated, taken }: { open: bool
       {step === 'defaults' && <>
         <Pick label="환경" values={ENVS} value={env} set={setEnv} />
         <Pick label="자료 성격" values={TYPES} value={docType} set={setDocType} />
-        {kind === 'managed'
+        {kind === 'managed' || github
           ? <><Pick label="외부 전송 (OpenAI 등)" values={['불가', '허용']} value={external ? '허용' : '불가'} set={v => setExternal(v === '허용')} />
             <p className="sf-note">기본은 불가예요. 외부 임베딩이나 LLM 답변을 쓰려면 허용해야 해요. 문서마다 Knowledge에서 바꿀 수 있어요.</p></>
           : <p className="sf-note">외부 전송은 폴더로 정해져요. .env의 EXTERNAL_OK_ROOTS 안 문서만 허용, 나머지는 불가예요. 문서마다 Knowledge에서 바꿀 수 있어요.</p>}
       </>}
       {step === 'review' && <div className="sf-diff">
-        {(kind === 'git'
+        {(github && ghCheck?.ok
+          ? [['이름', name.trim()], ['관리 방식', 'Git · GitHub'], ['저장소', `${ghCheck.full_name}${ghCheck.private ? ' (비공개)' : ''}`], ['브랜치', `${ghCheck.branch} @ ${ghCheck.commit}`],
+            ['문서 폴더', ghCheck.folder ? `${ghCheck.folder}/` : '저장소 전체'], ['가져올 문서', `.md ${ghCheck.md_count}개`], ['기본값', `${env} · ${docType} · 외부 ${external ? '허용' : '불가'}`]]
+          : kind === 'git'
           ? [['이름', name.trim()], ['관리 방식', 'Git · 로컬 폴더'], ['폴더', check?.ok ? check.path : path], ['가져올 문서', check?.ok ? `.md ${check.md_count}개` : '—'], ['기본값', `${env} · ${docType}`]]
           : [['이름', name.trim()], ['관리 방식', '직접 관리'], ['올릴 파일', files.length ? `${files.length}개` : '나중에'], ['기본값', `${env} · ${docType} · 외부 ${external ? '허용' : '불가'}`]]).map(([k, v]) =>
           <div key={k} className="sf-drow is-changed"><span className="sf-dk">{k}</span><span className="sf-dv"><b>{v}</b></span><span /></div>)}

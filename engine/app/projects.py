@@ -17,6 +17,7 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
+import github
 from ingest import connect, load_env
 
 KINDS = ("git", "managed")
@@ -82,6 +83,20 @@ def create_project(conn, name: str, kind: str, source: dict, defaults: dict, des
     ).fetchone()[0]
 
 
+# 같은 이름의 저장소를 쓰는 Git 프로젝트. 문서는 (저장소 이름, 경로)로 구분되므로 이름이 같으면 문서가 겹친다.
+def repo_in_use(conn, repo: str) -> str | None:
+    for _, name, source in conn.execute("SELECT id, name, source FROM projects WHERE kind='git'").fetchall():
+        if source.get("from") == "github":
+            other = source.get("repo")
+        else:
+            folder = project_path(source)
+            info = git_info(folder) if folder and folder.is_dir() else None
+            other = info["repo"] if info else None
+        if other and other.lower() == repo.lower():
+            return name
+    return None
+
+
 # 파일 경로가 들어 있는 Git 프로젝트. 폴더가 겹치지 않으므로 많아야 하나다. 없으면 None.
 def project_for_path(conn, path: Path) -> tuple[int, str] | None:
     for pid, name, source in conn.execute("SELECT id, name, source FROM projects WHERE kind='git'").fetchall():
@@ -123,7 +138,9 @@ def list_projects(conn) -> list[dict]:
         folder = project_path(p["source"]) if p["kind"] == "git" else None
         p["git"] = git_info(folder) if folder and folder.is_dir() else None
         if p["git"]:
-            p["git"].pop("top", None)   # 저장소 맨 위 경로는 화면에 필요 없다
+            top = Path(p["git"].pop("top"))   # 저장소 맨 위 경로는 화면에 필요 없다
+            if p["source"].get("from") == "github":
+                p["git"] |= github.status(top, p["source"]["branch"])   # 네트워크 없이 마지막 확인 결과만
         out.append(p)
     return out
 

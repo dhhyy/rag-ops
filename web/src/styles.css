@@ -1066,3 +1066,10 @@ html.qs-drawer-open .app-shell{transform:scale(.965) translateX(-18px);transform
 .pj-ver small{font-size:10.5px;color:#9a91a5}
 .pj-ver code{font-family:ui-monospace,Menlo,monospace}
 .pj-ver.is-now{background:#f4effc}
+/* GitHub 프로젝트 */
+.pj-tag.is-warn{background:#fdeee4;color:#a35f3b}
+.pj-fetch{display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border:1px solid #e3dceb;border-radius:13px;background:#fff;color:#2f2a38;font-size:12px;cursor:pointer;white-space:nowrap}
+.pj-fetch:disabled{opacity:.6;cursor:default}
+.pj-count{display:inline-grid;place-items:center;min-width:17px;height:17px;padding:0 5px;border-radius:9px;background:#fdeee4;color:#a35f3b;font-size:10px}
+.pj-field-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media (max-width:520px){.pj-field-row{grid-template-columns:1fr}}

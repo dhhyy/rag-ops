@@ -92,6 +92,8 @@ services:
         # 평가 질문 파일(eval/questions.jsonl). 웹의 [현재 설정으로 평가]가 읽고, 시험지 탭에서 고치면 엔진이 쓴다
         # (임시 파일 → 바꿔치기라서 파일이 아니라 폴더를 쓰기로 연결한다)
         - ./eval:/srv/eval
+        # GitHub 프로젝트의 저장소를 받아 두는 곳 (engine/app/github.py). 엔진이 받고 worker가 읽는다
+        - repos:/srv/repos
       depends_on:
         db:
           condition: service_healthy
@@ -150,6 +152,7 @@ services:
 
 volumes:
   db-data:
+  repos:
   embed-cache:
   rerank-cache:
   redis-data:

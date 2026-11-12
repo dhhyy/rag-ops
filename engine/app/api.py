@@ -33,6 +33,7 @@ import components as comp
 import drafts
 import evaluate
 import indexes
+import github
 import projects
 import questions
 from ingest import STAGES, IngestError, connect, ingest_file, load_env
@@ -683,8 +684,14 @@ def link_document(doc_id: int, req: DocumentLinks) -> list[dict]:
 
 # ---------- 프로젝트 ----------
 
+# 프로젝트 폴더를 읽을 수 있는 곳: INGEST_ROOTS + GitHub에서 받은 저장소 폴더.
+# 경로 입력칸(/jobs)과 로컬 Git 프로젝트 폴더 검사는 INGEST_ROOTS만 쓴다.
+def project_roots() -> list[Path]:
+    return [*allowed_roots(), github.REPOS_DIR]
+
+
 def count_md(folder: Path) -> int:
-    return len(expand_folder(folder, allowed_roots())[0])
+    return len(expand_folder(folder, project_roots())[0])
 
 
 @app.get("/projects")
@@ -716,14 +723,39 @@ def match_project(path: str) -> dict:
     return {"project": {"id": owner[0], "name": owner[1]} if owner else None}
 
 
+class GitHubCheck(BaseModel):
+    url: str
+    branch: str = ""
+    folder: str = ""
+
+
+# 새 프로젝트 서랍에서 GitHub 주소를 적으면 받기 전에 살펴본다 (저장소·브랜치·문서 폴더·.md 수, 토큰 유무).
+@app.post("/projects/github/check")
+def check_github(req: GitHubCheck) -> dict:
+    try:
+        info = github.inspect(req.url, req.branch, req.folder)
+    except github.GitHubError as e:
+        return {"ok": False, "error": str(e), "token": github.has_token()}
+    with connect(load_env()) as conn:
+        used = projects.repo_in_use(conn, info["repo"])
+    if used:
+        return {"ok": False, "error": f"프로젝트 '{used}'가 같은 이름의 저장소({info['repo']})를 써요. 문서가 겹쳐서 만들 수 없어요",
+                "token": info["token"]}
+    return {"ok": True, **info}
+
+
 class ProjectCreate(BaseModel):
     name: str
     kind: Literal["git", "managed"] = "git"
+    source: Literal["local", "github"] = "local"   # git 프로젝트를 어디서 가져오나
     path: str = ""
+    url: str = ""        # GitHub
+    branch: str = ""     # GitHub. 비우면 기본 브랜치
+    folder: str = ""     # GitHub 저장소 안 문서 폴더. 비우면 저장소 전체
     description: str = ""
     env: Literal["운영", "개발", "샘플", "혼합"] | None = None
     doc_type: Literal["설정", "실행 결과", "해설", "장애 기록"] | None = None
-    external_ok: bool = False          # 직접 관리 프로젝트에 올리는 문서의 외부 전송 기본값 (Git은 폴더 규칙을 따른다)
+    external_ok: bool = False          # 직접 관리·GitHub 프로젝트 문서의 외부 전송 기본값 (로컬 Git은 폴더 규칙을 따른다)
 
 
 # 프로젝트의 폴더 문서를 모두 가져오기 작업으로 넣는다. 내용이 같은 문서는 작업 안에서 건너뛴다.
@@ -732,12 +764,14 @@ def pull_project(project: dict) -> dict:
     if folder is None:
         raise HTTPException(409, "이 프로젝트에는 가져올 폴더가 없습니다")
     try:
-        _, files, skipped = expand_target(str(folder), allowed_roots())
+        _, files, skipped = expand_target(str(folder), project_roots())
     except ValueError as e:
         raise HTTPException(400, str(e))
     defaults = project["defaults"] or {}
     base = {"kind": "ingest", "env": defaults.get("env"), "doc_type": defaults.get("doc_type"), "verification": "미확인"}
-    created = queue_files(files, skipped, base, None)
+    # 로컬 Git은 폴더 규칙(EXTERNAL_OK_ROOTS), GitHub는 만들 때 고른 기본값
+    given = bool(defaults.get("external_ok")) if project["source"].get("from") == "github" else None
+    created = queue_files(files, skipped, base, given)
     return {"jobs": created, "skipped": skipped, "stages": STAGES}
 
 
@@ -749,7 +783,21 @@ def create_project(req: ProjectCreate) -> dict:
     defaults = {k: v for k, v in {"env": req.env, "doc_type": req.doc_type}.items() if v}
     with connect(load_env()) as conn:
         try:
-            if req.kind == "git":
+            if req.kind == "git" and req.source == "github":
+                info = github.inspect(req.url, req.branch, req.folder)
+                used = projects.repo_in_use(conn, info["repo"])
+                if used:
+                    raise ValueError(f"프로젝트 '{used}'가 같은 이름의 저장소({info['repo']})를 써요")
+                source = {"from": "github", "url": info["url"], "owner": info["owner"], "repo": info["repo"],
+                          "branch": info["branch"], "folder": info["folder"]}
+                pid = projects.create_project(conn, req.name, "git", source,
+                                              defaults | {"external_ok": req.external_ok}, req.description)
+                # 받기가 실패하면 예외로 프로젝트 행도 되돌린다 (with 블록이 롤백)
+                top = github.clone(pid, info["owner"], info["repo"], info["branch"])
+                folder = top / info["folder"] if info["folder"] else top
+                conn.execute("UPDATE projects SET source = source || %s WHERE id=%s",
+                             (Jsonb({"path": str(folder)}), pid))
+            elif req.kind == "git":
                 info = projects.check_folder(conn, req.path, allowed_roots(), count_md)
                 pid = projects.create_project(conn, req.name, "git", {"from": "local", "path": info["path"]},
                                               defaults, req.description)
@@ -844,14 +892,47 @@ def document_versions(doc_id: int, with_content: bool = False) -> list[dict]:
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
-# [다시 받기]: 프로젝트 폴더를 다시 넣는다. 바뀐 문서만 다시 자르고 임베딩한다 (기본 색인).
-@app.post("/projects/{project_id}/pull", status_code=202)
-def pull(project_id: int) -> dict:
+# GitHub 프로젝트의 받아 둔 저장소 맨 위 폴더
+def github_top(project: dict) -> Path:
+    src = project["source"]
+    if src.get("from") != "github":
+        raise HTTPException(409, "GitHub 프로젝트가 아니에요")
+    top = github.clone_dir(project["id"], src["repo"])
+    if not top.is_dir():
+        raise HTTPException(409, "받아 둔 저장소가 없어요. 프로젝트를 다시 만들어 주세요")
+    return top
+
+
+def load_project(project_id: int) -> dict:
     with connect(load_env()) as conn:
         project = projects.get_project(conn, project_id)
     if project is None:
         raise HTTPException(404, f"project {project_id} 없음")
-    return pull_project(project)
+    return project
+
+
+# [새 커밋 확인] (GitHub): 원본에서 새 커밋을 받아 와 몇 개 뒤처졌는지 알려 준다. 문서는 바꾸지 않는다.
+@app.post("/projects/{project_id}/fetch")
+def fetch_project(project_id: int) -> dict:
+    project = load_project(project_id)
+    try:
+        return github.fetch(github_top(project), project["source"]["branch"])
+    except github.GitHubError as e:
+        raise HTTPException(502, str(e))
+
+
+# [다시 받기]: 프로젝트 폴더를 다시 넣는다. 바뀐 문서만 다시 자르고 임베딩한다 (기본 색인).
+# GitHub 프로젝트는 먼저 원본 브랜치의 최신 커밋으로 맞춘다.
+@app.post("/projects/{project_id}/pull", status_code=202)
+def pull(project_id: int) -> dict:
+    project = load_project(project_id)
+    git = None
+    if project["source"].get("from") == "github":
+        try:
+            git = github.update(github_top(project), project["source"]["branch"])
+        except github.GitHubError as e:
+            raise HTTPException(502, str(e))
+    return {**pull_project(project), "git": git}
 
 
 # ---------- 평가 ----------
