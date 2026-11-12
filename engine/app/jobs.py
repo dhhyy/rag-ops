@@ -6,6 +6,7 @@
   eval    현재 설정으로 평가를 돌린다
   drafts  LLM으로 평가 질문 초안을 만든다 (시험지 3단계)
   upload  직접 관리 프로젝트에 올린 파일 하나를 넣는다 (원문은 params.content, 판 번호는 저장할 때 매김)
+          PDF는 올릴 때 뽑은 글이 content에, 원본 파일은 document_files(params.file_id)에 있다
 상태는 queued(대기) → running(진행) → done(완료) / failed(실패) 순서로만 바뀐다.
 """
 from __future__ import annotations
@@ -85,7 +86,8 @@ def run_job(job_id: int) -> None:
                                  commit=None, fallback_title=Path(params["filename"]).stem,
                                  env_label=params.get("env"), doc_type=params.get("doc_type"), verification="미확인",
                                  external_ok=bool(params.get("external_ok")), on_step=on_step,
-                                 project_id=int(params["project_id"]))
+                                 project_id=int(params["project_id"]), file_id=params.get("file_id"),
+                                 size_bytes=params.get("size_bytes"))
         else:
             result = ingest_file(Path(path), env_label=params.get("env"), doc_type=params.get("doc_type"),
                                  verification=params.get("verification") or "미확인",

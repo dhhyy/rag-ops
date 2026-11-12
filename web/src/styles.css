@@ -1101,3 +1101,4 @@ html.qs-drawer-open .app-shell{transform:scale(.965) translateX(-18px);transform
 .qs-proj-select svg{position:absolute;right:8px;pointer-events:none}
 .pe-scope button.is-on{background:#fff;box-shadow:0 1px 4px #4b375a14}
 .pe-confusion.is-zero{color:#8f879a}
+.detail-link{margin-left:8px;font-size:11px;color:#7a5cc4;text-decoration:underline;text-underline-offset:2px;white-space:nowrap}

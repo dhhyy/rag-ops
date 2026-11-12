@@ -87,7 +87,7 @@ def _api(path: str) -> dict:
         raise GitHubError(f"GitHub에 연결할 수 없어요 ({_scrub(str(e.reason))})")
 
 
-# 받기 전에 저장소를 살펴본다: 공개/비공개, 기본 브랜치, 고른 브랜치의 지금 커밋, 문서 폴더 안 .md 수.
+# 받기 전에 저장소를 살펴본다: 공개/비공개, 기본 브랜치, 고른 브랜치의 지금 커밋, 문서 폴더 안 문서(.md·.pdf) 수 (md_count).
 def inspect(url: str, branch: str = "", folder: str = "") -> dict:
     owner, repo = parse_url(url)
     folder = clean_folder(folder)
@@ -103,7 +103,7 @@ def inspect(url: str, branch: str = "", folder: str = "") -> dict:
         raise GitHubError(f"'{folder}' 폴더가 {branch} 브랜치에 없어요")
     prefix = f"{folder}/" if folder else ""
     # 숨김 폴더(.github 등)는 가져오기에서도 빼므로 세지 않는다 (api.expand_folder와 같은 규칙)
-    md = [e for e in entries if e["type"] == "blob" and e["path"].lower().endswith(".md") and e["path"].startswith(prefix)
+    md = [e for e in entries if e["type"] == "blob" and e["path"].lower().endswith((".md", ".pdf")) and e["path"].startswith(prefix)
           and not any(p.startswith(".") for p in e["path"][len(prefix):].split("/"))]
     return {"owner": owner, "repo": info["name"], "full_name": info["full_name"], "url": f"https://github.com/{info['full_name']}",
             "private": bool(info.get("private")), "default_branch": info["default_branch"],

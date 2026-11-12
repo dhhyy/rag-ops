@@ -137,7 +137,10 @@ function DocumentModal({ doc, target, close }: { doc: StoredDocument; target?: D
   const { chunks, error } = useChunks(doc.id, target?.indexId);
   return <Modal title={doc.title} close={close}>
     <DetailRows rows={[
-      ['Source', `${doc.source_repo}/${doc.source_path}`],
+      ['Source', /\.pdf$/i.test(doc.source_path)
+        ? <>{`${doc.source_repo}/${doc.source_path}`}<a className="detail-link" href={`${RAG_API}/documents/${doc.id}/original`} target="_blank" rel="noreferrer">원본 PDF 열기</a>
+            <em className="detail-hint">PDF는 pypdf로 뽑은 글을 쪽마다 한 조각으로 넣었어요 (p.1, p.2…). 표·그림 속 글자는 빠질 수 있어요</em></>
+        : `${doc.source_repo}/${doc.source_path}`],
       ['Projects', doc.projects.length ? doc.projects.map(p => `${p.name}${p.origin ? ' (원본)' : ''}`).join(', ') : '—'],
       doc.source_kind === 'managed'
         ? ['판', <>{doc.source_commit.replace(/^v/, '')}판<em className="detail-hint">직접 관리 문서예요. 같은 이름으로 다시 올리면 새 판이 돼요</em></>]
@@ -704,7 +707,7 @@ function QueueStrip({ jobs, selected, select }: { jobs: Job[]; selected: number 
         onClick={() => select(j.id)} title={j.path}
         initial={{ opacity: 0, y: 6, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ ...spring, delay: Math.min(i, 20) * 0.03 }}>
         <Icon size={12} className={j.status === 'running' ? 'spin' : ''} />
-        <span>{j.path.split('/').pop()?.replace(/\.md$/, '')}</span>
+        <span>{j.path.split('/').pop()?.replace(/\.(md|pdf)$/i, '')}</span>
         {j.status === 'running' && <motion.i className="queue-fill" initial={false} animate={{ width: `${Math.round(indexingProgress(j) * 100)}%` }} transition={{ duration: 0.6, ease }} />}
       </motion.button>;
     })}

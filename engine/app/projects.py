@@ -48,7 +48,7 @@ def project_path(source: dict) -> Path | None:
 
 
 # 새 Git 프로젝트로 쓸 폴더를 검사한다. 통과하면 화면에 보여 줄 정보를 돌려주고, 아니면 ValueError.
-#   roots: INGEST_ROOTS (api.allowed_roots), count_md: 폴더 안 .md 수를 세는 함수 (숨김 폴더 제외 규칙을 api와 같게)
+#   roots: INGEST_ROOTS (api.allowed_roots), count_md: 폴더 안 문서(.md·.pdf) 수를 세는 함수 (숨김 폴더 제외 규칙을 api와 같게)
 def check_folder(conn, raw: str, roots: list[Path], count_md) -> dict:
     if not raw.strip():
         raise ValueError("폴더 경로를 적어 주세요")

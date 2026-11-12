@@ -56,8 +56,10 @@ async fn proxy_rag(State(engine): State<Engine>, req: Request) -> Response {
     let url = format!("{}{}", engine.base, rest);
     let method = req.method().clone();
     let content_type = req.headers().get(header::CONTENT_TYPE).cloned();
-    // 요청 본문은 1MB까지만 받는다. 경로·메타데이터만 오가므로 이보다 클 일이 없다.
-    let body = match to_bytes(req.into_body(), 1024 * 1024).await {
+    // 요청 본문은 1MB까지만 받는다. 경로·메타데이터·Markdown만 오가므로 이보다 클 일이 없다.
+    // PDF 올리기(/projects/{id}/upload-pdf)만 PDF 파일을 그대로 받으므로 20MB까지 받는다 (엔진 pdf.MAX_BYTES와 같게).
+    let limit = if req.uri().path().ends_with("/upload-pdf") { 20 * 1024 * 1024 } else { 1024 * 1024 };
+    let body = match to_bytes(req.into_body(), limit).await {
         Ok(bytes) => bytes,
         Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, "request body too large").into_response(),
     };
@@ -69,7 +71,7 @@ async fn proxy_rag(State(engine): State<Engine>, req: Request) -> Response {
     match upstream.send().await {
         Ok(res) => {
             let mut out = Response::builder().status(res.status());
-            for name in [header::CONTENT_TYPE, header::CACHE_CONTROL] {
+            for name in [header::CONTENT_TYPE, header::CACHE_CONTROL, header::CONTENT_DISPOSITION] {
                 if let Some(value) = res.headers().get(&name) {
                     out = out.header(name, value.clone());
                 }

@@ -239,7 +239,16 @@ def ingest_file(path: Path, *, env_label: str | None = None, doc_type: str | Non
     # 1. 확인: 문서를 읽고 출처(git 저장소·커밋)를 구한다. git 밖의 파일은 출처를 남길 수 없어 거절한다.
     if on_step:
         on_step("확인", None, None)
-    raw = path.read_text(encoding="utf-8")
+    if path.suffix.lower() == ".pdf":
+        import pdf   # PDF는 글자를 뽑아 페이지마다 나눈 글로 넣는다 (pdf.py)
+        if path.stat().st_size > pdf.MAX_BYTES:
+            raise IngestError(f"PDF가 {pdf.MAX_BYTES // (1024 * 1024)}MB보다 커요")
+        try:
+            raw = pdf.extract(path.read_bytes()).content
+        except pdf.PdfError as e:
+            raise IngestError(str(e)) from None
+    else:
+        raw = path.read_text(encoding="utf-8")
     try:
         repo, rel, commit = git_source(path)
     except subprocess.CalledProcessError:
@@ -255,7 +264,8 @@ def ingest_file(path: Path, *, env_label: str | None = None, doc_type: str | Non
 def ingest_text(raw: str, *, kind: str, repo: str, rel: str, commit: str | None, fallback_title: str,
                 env_label: str | None = None, doc_type: str | None = None, verification: str = "미확인",
                 checked_at: str | None = None, external_ok: bool = False, on_step: OnStep | None = None,
-                project_id: int | None = None) -> dict:
+                project_id: int | None = None, file_id: int | None = None, size_bytes: int | None = None) -> dict:
+    """file_id·size_bytes: 직접 관리 PDF의 원본 파일(document_files)과 그 크기. 판에 같이 남긴다."""
     def step(name: str, done: int | None = None, total: int | None = None) -> None:
         if on_step:
             on_step(name, done, total)
@@ -305,9 +315,9 @@ def ingest_text(raw: str, *, kind: str, repo: str, rel: str, commit: str | None,
             doc["source_commit"] = f"v{version}"
         doc_id, created = upsert_document(conn, doc)
         if version is not None:
-            conn.execute("""INSERT INTO document_versions (document_id, version, content_hash, content, title, filename, size_bytes)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                         (doc_id, version, doc["content_hash"], raw, title, rel, len(raw.encode())))
+            conn.execute("""INSERT INTO document_versions (document_id, version, content_hash, content, title, filename, size_bytes, file_id)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                         (doc_id, version, doc["content_hash"], raw, title, rel, size_bytes or len(raw.encode()), file_id))
         store(conn, base["id"], doc_id, doc["content_hash"], rows)
         if project_id:
             from projects import link_origin

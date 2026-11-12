@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { ArrowLeft, ArrowRight, Check, ChevronDown, CircleAlert, FileUp, GitBranch, LoaderCircle, NotebookPen, RefreshCw, X } from 'lucide-react';
-import { api, Modal, shortTime, spring } from './ui';
+import { api, Modal, RAG_API, readError, shortTime, spring } from './ui';
 import { Drawer } from './questionset';
 
 export type ProjectRef = { id: number; name: string; origin: boolean };
@@ -20,30 +20,44 @@ const isGitHub = (p: Pick<Project, 'source'>) => p.source.from === 'github';
 export type UploadResult = {
   new: { name: string }[]; updated: { name: string; from: string | null }[]; unchanged: { name: string; version: string }[];
   skipped: { name: string; reason: string }[]; jobs: { job_id: number; path: string }[];
+  // 올린 PDF마다 페이지 수, 빈 페이지 수, 글자가 깨졌을 수 있는지
+  pdf?: { name: string; pages: number; empty_pages: number; suspect: boolean }[];
 };
 export type Version = { version: number; content_hash: string; title: string | null; filename: string; size_bytes: number; uploaded_at: string; content?: string };
 
 // ---------- 파일 올리기 (직접 관리 프로젝트) ----------
 
-const MAX_FILE = 512 * 1024;      // 엔진과 같은 한도
+const MAX_FILE = 512 * 1024;      // 엔진과 같은 한도 (Markdown)
+const MAX_PDF = 20 * 1024 * 1024; // 엔진 pdf.MAX_BYTES와 같은 한도. PDF는 파일 그대로 하나씩 보낸다
+const isPdf = (name: string) => name.toLowerCase().endsWith('.pdf');
+const isMd = (name: string) => name.toLowerCase().endsWith('.md');
+const tooBig = (f: File) => f.size > (isPdf(f.name) ? MAX_PDF : MAX_FILE);
 const MAX_BODY = 900 * 1024;      // 웹 프록시가 요청 하나를 1MB까지 받아서, 그보다 작게 나눠 보낸다
 const MAX_FILES = 50;
-const kb = (n: number) => `${Math.max(1, Math.round(n / 1024))}KB`;
+const kb = (n: number) => n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`;
 
 // 고른 파일을 읽어 나눠 보내고 결과를 합친다. 너무 큰 파일은 보내지 않고 이유와 함께 뺀다.
+// Markdown은 글로 묶어 보내고(/upload), PDF는 파일 그대로 하나씩 보낸다(/upload-pdf, 글은 엔진이 뽑는다).
 export async function uploadFiles(projectId: number, files: File[]): Promise<UploadResult> {
-  const out: UploadResult = { new: [], updated: [], unchanged: [], skipped: [], jobs: [] };
+  const out: UploadResult = { new: [], updated: [], unchanged: [], skipped: [], jobs: [], pdf: [] };
+  const merge = (r: UploadResult) => (Object.keys(out) as (keyof UploadResult)[]).forEach(k => (out[k] as unknown[]).push(...(r[k] ?? [])));
   let batch: { name: string; content: string }[] = [];
   let size = 0;
   const send = async () => {
     if (!batch.length) return;
-    const r = await api<UploadResult>(`/projects/${projectId}/upload`, { method: 'POST', body: { files: batch } });
-    (Object.keys(out) as (keyof UploadResult)[]).forEach(k => (out[k] as unknown[]).push(...r[k]));
+    merge(await api<UploadResult>(`/projects/${projectId}/upload`, { method: 'POST', body: { files: batch } }));
     batch = []; size = 0;
   };
   for (const f of files) {
-    if (f.size > MAX_FILE) { out.skipped.push({ name: f.name, reason: `${kb(MAX_FILE)}보다 커요 (${kb(f.size)})` }); continue; }
-    if (!f.name.toLowerCase().endsWith('.md')) { out.skipped.push({ name: f.name, reason: 'Markdown(.md) 파일만 올릴 수 있어요' }); continue; }
+    if (!isMd(f.name) && !isPdf(f.name)) { out.skipped.push({ name: f.name, reason: 'Markdown(.md)·PDF(.pdf) 파일만 올릴 수 있어요' }); continue; }
+    if (tooBig(f)) { out.skipped.push({ name: f.name, reason: `${kb(isPdf(f.name) ? MAX_PDF : MAX_FILE)}보다 커요 (${kb(f.size)})` }); continue; }
+    if (isPdf(f.name)) {
+      const res = await fetch(`${RAG_API}/projects/${projectId}/upload-pdf?name=${encodeURIComponent(f.name)}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/pdf' }, body: f });
+      if (!res.ok) { out.skipped.push({ name: f.name, reason: await readError(res) }); continue; }
+      merge(await res.json());
+      continue;
+    }
     const content = await f.text();
     const bytes = new Blob([JSON.stringify(content)]).size + f.name.length + 32;
     if (batch.length && (size + bytes > MAX_BODY || batch.length >= MAX_FILES)) await send();
@@ -59,17 +73,23 @@ export function uploadSummary(r: UploadResult): string {
   return parts.length ? parts.join(' · ') : '올린 파일이 없어요';
 }
 
-// 끌어 놓기 + 눌러서 고르기. 폴더째 끌어 놓으면 브라우저가 파일만 넘기지 않으므로 .md 파일을 골라 달라고 안내한다.
+// PDF마다 알려 둘 것: 페이지 수, 글자 없는 페이지, 글자가 깨졌을 수 있음 (뺀 파일 이유와 함께 안내 아래에 보인다)
+export function uploadDetail(r: UploadResult): string[] {
+  return [...r.skipped.map(x => `${x.name}: ${x.reason}`),
+    ...(r.pdf ?? []).map(p => `${p.name}: ${p.pages}쪽${p.empty_pages ? ` · 글자 없는 쪽 ${p.empty_pages}개는 빠져요` : ''}${p.suspect ? ' · 글자가 깨져 보여요. 문서에서 뽑힌 글을 확인해 주세요' : ''}`)];
+}
+
+// 끌어 놓기 + 눌러서 고르기. 폴더째 끌어 놓으면 브라우저가 파일만 넘기지 않으므로 파일을 골라 달라고 안내한다.
 function DropZone({ onFiles, compact = false, disabled = false }: { onFiles: (f: File[]) => void; compact?: boolean; disabled?: boolean }) {
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
   return <div className={`pj-drop ${over ? 'is-over' : ''} ${compact ? 'is-compact' : ''}`}
     onDragOver={e => { e.preventDefault(); if (!disabled) setOver(true); }} onDragLeave={() => setOver(false)}
     onDrop={e => { e.preventDefault(); setOver(false); if (!disabled) onFiles([...e.dataTransfer.files]); }}>
-    <input ref={input} type="file" multiple accept=".md,text/markdown" hidden onChange={e => { onFiles([...(e.target.files ?? [])]); e.target.value = ''; }} />
+    <input ref={input} type="file" multiple accept=".md,text/markdown,.pdf,application/pdf" hidden onChange={e => { onFiles([...(e.target.files ?? [])]); e.target.value = ''; }} />
     <button type="button" className="pj-drop-btn" disabled={disabled} onClick={() => input.current?.click()}>
       <FileUp size={compact ? 14 : 18} /><b>{compact ? '파일 올리기' : '여기로 끌어 놓거나 눌러서 고르기'}</b></button>
-    {!compact && <small>.md 여러 개 · 파일 하나 {kb(MAX_FILE)}까지 · 같은 이름을 다시 올리면 새 판이 돼요</small>}
+    {!compact && <small>.md · .pdf 여러 개 · .md {kb(MAX_FILE)}, .pdf {kb(MAX_PDF)}까지 · PDF는 쪽마다 조각나요 · 같은 이름을 다시 올리면 새 판이 돼요</small>}
   </div>;
 }
 
@@ -158,7 +178,7 @@ export function ProjectHead({ project, onPulled, openPipeline }: { project: Proj
     setPulling(true); setNote(null);
     try {
       const r = await uploadFiles(project.id, files);
-      const detail = r.skipped.map(x => `${x.name}: ${x.reason}`);
+      const detail = uploadDetail(r);
       const ok = r.jobs.length > 0 || r.unchanged.length > 0;
       setNote({ ok, text: uploadSummary(r) + (r.jobs.length ? ' · 넣는 중' : ''), detail, jobs: r.jobs.length > 0 });
       onPulled();
@@ -360,7 +380,7 @@ export function NewProjectFlow({ open, onClose, onCreated, taken }: { open: bool
         <button role="radio" aria-checked={kind === 'managed'} className={`sf-opt ${kind === 'managed' ? 'is-on' : ''}`} onClick={() => setKind('managed')}><span className="sf-radio" /><span className="sf-opt-body">
           <span className="sf-opt-head"><b>직접 관리</b><span className="pj-tag is-own"><NotebookPen size={11} />직접</span></span>
           <small>파일을 올리면 원문을 DB에 저장해요. 판 = 내용이 바뀐 파일을 올릴 때마다 1판, 2판… git이 없어도 돼요.</small>
-          <span className="sf-meta">지금은 .md만 · PDF는 다음 단계</span></span></button>
+          <span className="sf-meta">.md · .pdf (PDF는 글자만, 스캔본은 못 읽어요)</span></span></button>
       </div>}
       {step === 'folder' && <>
         <span className="segmented pj-from" role="radiogroup" aria-label="가져올 곳">
@@ -374,22 +394,22 @@ export function NewProjectFlow({ open, onClose, onCreated, taken }: { open: bool
             <label className="pj-field"><small>문서 폴더 (비우면 전체)</small><input className="mono" spellCheck={false} value={gh.folder} onChange={e => setGh(g => ({ ...g, folder: e.target.value }))} placeholder="docs" /></label>
           </div>
           {checking ? <p className="sf-impact"><LoaderCircle size={13} className="spin" />저장소를 보는 중…</p>
-            : ghCheck?.ok && ghCheck.md_count === 0 ? <p className="sf-impact is-warn"><CircleAlert size={13} />{ghCheck.full_name} · 브랜치 {ghCheck.branch}{ghCheck.folder ? ` · ${ghCheck.folder}/` : ''} 안에 Markdown(.md) 파일이 없어요. 브랜치나 문서 폴더를 바꿔 보세요</p>
-            : ghCheck?.ok ? <p className="sf-impact is-ok"><Check size={13} />{ghCheck.private ? '비공개' : '공개'} 저장소 {ghCheck.full_name} · 브랜치 {ghCheck.branch} @ {ghCheck.commit} · {ghCheck.folder ? `${ghCheck.folder}/ 안 ` : ''}.md {ghCheck.md_count}개{ghCheck.truncated ? ' (저장소가 커서 일부만 셌어요)' : ''}</p>
+            : ghCheck?.ok && ghCheck.md_count === 0 ? <p className="sf-impact is-warn"><CircleAlert size={13} />{ghCheck.full_name} · 브랜치 {ghCheck.branch}{ghCheck.folder ? ` · ${ghCheck.folder}/` : ''} 안에 Markdown(.md)·PDF(.pdf) 파일이 없어요. 브랜치나 문서 폴더를 바꿔 보세요</p>
+            : ghCheck?.ok ? <p className="sf-impact is-ok"><Check size={13} />{ghCheck.private ? '비공개' : '공개'} 저장소 {ghCheck.full_name} · 브랜치 {ghCheck.branch} @ {ghCheck.commit} · {ghCheck.folder ? `${ghCheck.folder}/ 안 ` : ''}문서(.md·.pdf) {ghCheck.md_count}개{ghCheck.truncated ? ' (저장소가 커서 일부만 셌어요)' : ''}</p>
             : ghCheck ? <p className="sf-impact is-warn"><CircleAlert size={13} />{ghCheck.error}</p> : null}
           <p className="sf-note">{ghCheck?.token ? 'GITHUB_TOKEN이 있어요. 토큰이 볼 수 있는 비공개 저장소도 받을 수 있어요.'
             : '비공개 저장소는 .env에 GITHUB_TOKEN(읽기 전용 권장)을 넣고 엔진을 다시 띄워야 받을 수 있어요. 토큰 값은 화면에 보이지 않아요.'}</p>
         </> : <>
         <label className="pj-field"><small>폴더</small><input autoFocus className="mono" spellCheck={false} value={path} onChange={e => setPath(e.target.value)} placeholder="/path/to/docs-repo" /></label>
         {checking ? <p className="sf-impact"><LoaderCircle size={13} className="spin" />폴더를 보는 중…</p>
-          : check?.ok ? <p className="sf-impact is-ok"><Check size={13} />git 저장소 {check.repo} · 브랜치 {check.branch ?? '—'} @ {check.commit ?? '커밋 없음'} · .md {check.md_count}개</p>
+          : check?.ok ? <p className="sf-impact is-ok"><Check size={13} />git 저장소 {check.repo} · 브랜치 {check.branch ?? '—'} @ {check.commit ?? '커밋 없음'} · 문서(.md·.pdf) {check.md_count}개</p>
           : check ? <p className="sf-impact is-warn"><CircleAlert size={13} />{check.error}</p> : null}
         </>}
       </>}
       {step === 'files' && <>
         <DropZone onFiles={addFiles} />
         {files.length > 0 && <div className="pj-files">{files.map(f => <div key={f.name} className="pj-file">
-          <span>{f.name}</span><small>{kb(f.size)}{f.size > MAX_FILE ? ' · 너무 커서 빠져요' : !f.name.toLowerCase().endsWith('.md') ? ' · .md가 아니라 빠져요' : ''}</small>
+          <span>{f.name}</span><small>{kb(f.size)}{!isMd(f.name) && !isPdf(f.name) ? ' · .md·.pdf가 아니라 빠져요' : tooBig(f) ? ' · 너무 커서 빠져요' : ''}</small>
           <button aria-label={`${f.name} 빼기`} onClick={() => setFiles(cur => cur.filter(x => x !== f))}><X size={13} /></button></div>)}</div>}
       </>}
       {step === 'defaults' && <>
@@ -403,9 +423,9 @@ export function NewProjectFlow({ open, onClose, onCreated, taken }: { open: bool
       {step === 'review' && <div className="sf-diff">
         {(github && ghCheck?.ok
           ? [['이름', name.trim()], ['관리 방식', 'Git · GitHub'], ['저장소', `${ghCheck.full_name}${ghCheck.private ? ' (비공개)' : ''}`], ['브랜치', `${ghCheck.branch} @ ${ghCheck.commit}`],
-            ['문서 폴더', ghCheck.folder ? `${ghCheck.folder}/` : '저장소 전체'], ['가져올 문서', `.md ${ghCheck.md_count}개`], ['기본값', `${env} · ${docType} · 외부 ${external ? '허용' : '불가'}`]]
+            ['문서 폴더', ghCheck.folder ? `${ghCheck.folder}/` : '저장소 전체'], ['가져올 문서', `${ghCheck.md_count}개 (.md·.pdf)`], ['기본값', `${env} · ${docType} · 외부 ${external ? '허용' : '불가'}`]]
           : kind === 'git'
-          ? [['이름', name.trim()], ['관리 방식', 'Git · 로컬 폴더'], ['폴더', check?.ok ? check.path : path], ['가져올 문서', check?.ok ? `.md ${check.md_count}개` : '—'], ['기본값', `${env} · ${docType}`]]
+          ? [['이름', name.trim()], ['관리 방식', 'Git · 로컬 폴더'], ['폴더', check?.ok ? check.path : path], ['가져올 문서', check?.ok ? `${check.md_count}개 (.md·.pdf)` : '—'], ['기본값', `${env} · ${docType}`]]
           : [['이름', name.trim()], ['관리 방식', '직접 관리'], ['올릴 파일', files.length ? `${files.length}개` : '나중에'], ['기본값', `${env} · ${docType} · 외부 ${external ? '허용' : '불가'}`]]).map(([k, v]) =>
           <div key={k} className="sf-drow is-changed"><span className="sf-dk">{k}</span><span className="sf-dv"><b>{v}</b></span><span /></div>)}
       </div>}

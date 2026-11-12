@@ -24,8 +24,8 @@ from typing import Literal
 
 import anyio
 import redis
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from psycopg.types.json import Jsonb
 
@@ -34,6 +34,7 @@ import drafts
 import evaluate
 import indexes
 import github
+import pdf
 import projects
 import questions
 from ingest import STAGES, IngestError, connect, ingest_file, load_env
@@ -88,24 +89,27 @@ def resolve_allowed(raw_path: str, roots: list[Path]) -> Path:
     고려할 것:
       - "../" 로 허용 폴더 밖으로 나가는 경로
       - 허용 폴더 안에 있지만 밖을 가리키는 심볼릭 링크
-      - 폴더나 없는 파일, .md가 아닌 파일
+      - 폴더나 없는 파일, .md·.pdf가 아닌 파일
     """
     # resolve()로 심볼릭 링크와 ".."를 먼저 풀어야 "폴더 안처럼 보이지만 밖"인 경로를 잡을 수 있다.
     path = Path(raw_path).expanduser().resolve()
     if not any(path.is_relative_to(root.resolve()) for root in roots):
         raise ValueError("허용된 폴더(INGEST_ROOTS) 밖의 경로입니다")
-    if path.suffix.lower() != ".md":
-        raise ValueError("Markdown(.md) 파일만 가져올 수 있습니다")
+    if path.suffix.lower() not in DOC_SUFFIXES:
+        raise ValueError("Markdown(.md)·PDF(.pdf) 파일만 가져올 수 있습니다")
     if not path.is_file():
         raise ValueError("파일이 없습니다")
     return path
 
 
-# 폴더 안의 .md 파일을 모두 찾는다. 숨김 폴더(.git, .obsidian 등)는 건너뛴다.
+DOC_SUFFIXES = (".md", ".pdf")
+
+
+# 폴더 안의 문서(.md·.pdf)를 모두 찾는다. 숨김 폴더(.git, .obsidian 등)는 건너뛴다.
 # 파일마다 resolve_allowed를 다시 거쳐서, 폴더 안에 있지만 밖을 가리키는 링크는 이유와 함께 빼 둔다.
 def expand_folder(folder: Path, roots: list[Path]) -> tuple[list[Path], list[dict]]:
     files, skipped = [], []
-    for p in sorted(folder.rglob("*.md")):
+    for p in sorted(p for p in folder.rglob("*") if p.suffix.lower() in DOC_SUFFIXES and p.is_file()):
         if any(part.startswith(".") for part in p.relative_to(folder).parts):
             continue
         try:
@@ -197,7 +201,7 @@ def queue_files(files: list[Path], skipped: list[dict], base_params: dict, given
     return created
 
 
-# 파일 또는 폴더 경로를 가져올 파일 목록으로 바꾼다. 허용 폴더 밖이거나 .md가 없으면 ValueError.
+# 파일 또는 폴더 경로를 가져올 파일 목록으로 바꾼다. 허용 폴더 밖이거나 문서(.md·.pdf)가 없으면 ValueError.
 def expand_target(raw: str, roots: list[Path]) -> tuple[Path, list[Path], list[dict]]:
     target = Path(raw).expanduser().resolve()
     if target.is_dir():
@@ -205,12 +209,12 @@ def expand_target(raw: str, roots: list[Path]) -> tuple[Path, list[Path], list[d
             raise ValueError("허용된 폴더(INGEST_ROOTS) 밖의 경로입니다")
         files, skipped = expand_folder(target, roots)
         if not files and not skipped:
-            raise ValueError("폴더 안에 Markdown(.md) 파일이 없습니다")
+            raise ValueError("폴더 안에 Markdown(.md)·PDF(.pdf) 파일이 없습니다")
         return target, files, skipped
     return target, [resolve_allowed(raw, roots)], []
 
 
-# 가져오기 작업을 만든다. 파일이면 1개, 폴더면 안의 .md마다 1개씩. 경로 검사는 바로 하고, 통과한 문서만 대기열에 넣는다.
+# 가져오기 작업을 만든다. 파일이면 1개, 폴더면 안의 문서마다 1개씩. 경로 검사는 바로 하고, 통과한 문서만 대기열에 넣는다.
 @app.post("/jobs", status_code=202)
 def create_jobs(req: IngestRequest) -> dict:
     try:
@@ -729,7 +733,7 @@ class GitHubCheck(BaseModel):
     folder: str = ""
 
 
-# 새 프로젝트 서랍에서 GitHub 주소를 적으면 받기 전에 살펴본다 (저장소·브랜치·문서 폴더·.md 수, 토큰 유무).
+# 새 프로젝트 서랍에서 GitHub 주소를 적으면 받기 전에 살펴본다 (저장소·브랜치·문서 폴더·문서(.md·.pdf) 수, 토큰 유무).
 @app.post("/projects/github/check")
 def check_github(req: GitHubCheck) -> dict:
     try:
@@ -827,30 +831,61 @@ class UploadRequest(BaseModel):
     files: list[UploadFile]
 
 
-# 파일을 올린다. 파일마다 지금 판과 내용(해시)을 비교해서
+# 올린 파일 하나를 지금 판과 비교해서 작업을 넣는다 (Markdown·PDF 공용). 결과는 out의 칸 하나에 쌓는다.
 #   new: 처음 올린 이름 → 작업을 넣고 저장할 때 1판
 #   updated: 내용이 바뀜 → 작업을 넣고 저장할 때 다음 판
 #   unchanged: 내용이 같음 → 판을 늘리지 않고 작업도 만들지 않는다
 #   skipped: 넣을 수 없음 (이유와 함께)
-# 같은 이름이면 같은 문서다. 폴더 경로가 붙어 와도 파일 이름만 쓴다.
+# content는 넣을 글(PDF면 뽑은 글)이고, 내용이 같은지는 이 글의 해시로 본다. 같은 이름이면 같은 문서다.
+# extra: 작업 params에 더 넣을 값 (PDF의 원본 파일 번호 등)
+def queue_upload(conn, project: dict, name: str, content: str, out: dict, extra: dict | None = None) -> None:
+    defaults = project["defaults"] or {}
+    digest = hashlib.sha256(content.encode()).hexdigest()
+    cur = conn.execute("""SELECT id, content_hash, source_commit FROM documents
+                          WHERE source_kind='managed' AND source_repo=%s AND source_path=%s""",
+                       (project["name"], name)).fetchone()
+    if cur and cur[1] == digest:
+        out["unchanged"].append({"name": name, "version": cur[2]})
+        return
+    path = f"{project['name']}/{name}"
+    busy = conn.execute("SELECT id FROM ingest_jobs WHERE path=%s AND status IN ('queued', 'running')", (path,)).fetchone()
+    if busy:
+        out["skipped"].append({"name": name, "reason": f"같은 파일을 넣는 작업이 진행 중이에요 (job {busy[0]})"})
+        return
+    params = {"kind": "upload", "project_id": project["id"], "project": project["name"], "filename": name,
+              "content": content, "env": defaults.get("env"), "doc_type": defaults.get("doc_type"),
+              "verification": "미확인", "external_ok": bool(defaults.get("external_ok")), **(extra or {})}
+    job_id = conn.execute("INSERT INTO ingest_jobs (path, params) VALUES (%s, %s) RETURNING id",
+                          (path, Jsonb(params))).fetchone()[0]
+    out["updated" if cur else "new"].append({"name": name, "job_id": job_id, "from": cur[2] if cur else None})
+    out["jobs"].append({"job_id": job_id, "path": path})
+
+
+def managed_project(project_id: int) -> dict:
+    project = load_project(project_id)
+    if project["kind"] != "managed":
+        raise HTTPException(409, "Git 프로젝트에는 파일을 올릴 수 없어요. 원본 저장소에서 고치고 [다시 받기]를 누르세요")
+    return project
+
+
+def upload_name(raw: str) -> str:
+    return Path(raw.replace("\\", "/")).name.strip()   # 폴더 경로가 붙어 와도 파일 이름만 쓴다
+
+
+# Markdown 파일을 올린다 (JSON으로 글을 받는다). PDF는 /upload-pdf로 한 개씩 올린다.
 @app.post("/projects/{project_id}/upload", status_code=202)
 def upload(project_id: int, req: UploadRequest) -> dict:
     if not req.files or len(req.files) > UPLOAD_MAX_FILES:
         raise HTTPException(400, f"파일은 한 번에 1~{UPLOAD_MAX_FILES}개까지 올릴 수 있어요")
-    with connect(load_env()) as conn:
-        project = projects.get_project(conn, project_id)
-    if project is None:
-        raise HTTPException(404, f"project {project_id} 없음")
-    if project["kind"] != "managed":
-        raise HTTPException(409, "Git 프로젝트에는 파일을 올릴 수 없어요. 원본 저장소에서 고치고 [다시 받기]를 누르세요")
-    defaults = project["defaults"] or {}
+    project = managed_project(project_id)
     out: dict[str, list] = {"new": [], "updated": [], "unchanged": [], "skipped": [], "jobs": []}
     seen: set[str] = set()
     with connect(load_env()) as conn:
         for f in req.files:
-            name = Path(f.name.replace("\\", "/")).name.strip()
+            name = upload_name(f.name)
             size = len(f.content.encode())
-            reason = ("Markdown(.md) 파일만 올릴 수 있어요" if not name.lower().endswith(".md")
+            reason = ("PDF는 따로 올려요 (/upload-pdf)" if pdf.is_pdf_name(name)
+                      else "Markdown(.md)·PDF(.pdf) 파일만 올릴 수 있어요" if not name.lower().endswith(".md")
                       else "빈 파일이에요" if not f.content.strip()
                       else f"{UPLOAD_MAX_BYTES // 1024}KB보다 커요" if size > UPLOAD_MAX_BYTES
                       else "같은 이름의 파일이 두 번 들어 있어요" if name in seen else None)
@@ -858,27 +893,85 @@ def upload(project_id: int, req: UploadRequest) -> dict:
                 out["skipped"].append({"name": name or f.name, "reason": reason})
                 continue
             seen.add(name)
-            digest = hashlib.sha256(f.content.encode()).hexdigest()
-            cur = conn.execute("""SELECT id, content_hash, source_commit FROM documents
-                                  WHERE source_kind='managed' AND source_repo=%s AND source_path=%s""",
-                               (project["name"], name)).fetchone()
-            if cur and cur[1] == digest:
-                out["unchanged"].append({"name": name, "version": cur[2]})
-                continue
-            path = f"{project['name']}/{name}"
-            busy = conn.execute("SELECT id FROM ingest_jobs WHERE path=%s AND status IN ('queued', 'running')", (path,)).fetchone()
-            if busy:
-                out["skipped"].append({"name": name, "reason": f"같은 파일을 넣는 작업이 진행 중이에요 (job {busy[0]})"})
-                continue
-            params = {"kind": "upload", "project_id": project_id, "project": project["name"], "filename": name,
-                      "content": f.content, "env": defaults.get("env"), "doc_type": defaults.get("doc_type"),
-                      "verification": "미확인", "external_ok": bool(defaults.get("external_ok"))}
-            job_id = conn.execute("INSERT INTO ingest_jobs (path, params) VALUES (%s, %s) RETURNING id",
-                                  (path, Jsonb(params))).fetchone()[0]
-            out["updated" if cur else "new"].append({"name": name, "job_id": job_id, "from": cur[2] if cur else None})
-            out["jobs"].append({"job_id": job_id, "path": path})
+            queue_upload(conn, project, name, f.content, out)
     enqueue([j["job_id"] for j in out["jobs"]])
     return out
+
+
+# PDF 하나를 올린다. 본문은 PDF 파일 그대로(application/pdf), 이름은 ?name=. 웹 프록시는 이 경로만 20MB까지 받는다.
+# 글은 여기서 바로 뽑는다: 암호·스캔본 같은 문제를 올리는 순간 알려 주려고. 원본은 document_files에 한 번만 둔다.
+@app.post("/projects/{project_id}/upload-pdf", status_code=202)
+async def upload_pdf(project_id: int, request: Request, name: str = Query(..., min_length=1, max_length=255)) -> dict:
+    project = managed_project(project_id)
+    name = upload_name(name)
+    out: dict[str, list] = {"new": [], "updated": [], "unchanged": [], "skipped": [], "jobs": [], "pdf": []}
+    data = await request.body()
+    try:
+        if not pdf.is_pdf_name(name):
+            raise pdf.PdfError("PDF(.pdf) 파일이 아니에요")
+        text = await anyio.to_thread.run_sync(pdf.extract, data)   # 큰 PDF는 몇 초 걸릴 수 있어 다른 요청을 막지 않게
+    except pdf.PdfError as e:
+        out["skipped"].append({"name": name, "reason": str(e)})
+        return out
+
+    def save() -> None:
+        with connect(load_env()) as conn:
+            digest = hashlib.sha256(data).hexdigest()
+            file_id = conn.execute(
+                """INSERT INTO document_files (sha256, mime, size_bytes, data) VALUES (%s, 'application/pdf', %s, %s)
+                   ON CONFLICT (sha256) DO UPDATE SET sha256 = EXCLUDED.sha256 RETURNING id""",
+                (digest, len(data), data)).fetchone()[0]
+            queue_upload(conn, project, name, text.content, out, {"file_id": file_id, "size_bytes": len(data)})
+    await anyio.to_thread.run_sync(save)
+    if not out["skipped"]:
+        out["pdf"].append({"name": name, "pages": text.pages, "empty_pages": text.empty_pages,
+                           "suspect": text.odd_ratio >= pdf.SUSPECT_RATIO})
+    enqueue([j["job_id"] for j in out["jobs"]])
+    return out
+
+
+# 문서의 원본 파일 (지금은 PDF만). 직접 관리 문서는 지금 판의 원본(DB), Git 문서는 원본 프로젝트 폴더의 지금 파일.
+@app.get("/documents/{doc_id}/original")
+def document_original(doc_id: int) -> Response:
+    with connect(load_env()) as conn:
+        row = conn.execute("SELECT source_kind, source_repo, source_path, source_commit FROM documents WHERE id=%s",
+                           (doc_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, f"document {doc_id} 없음")
+        kind, repo, rel, commit = row
+        if not pdf.is_pdf_name(rel):
+            raise HTTPException(404, "원본 파일은 PDF 문서만 볼 수 있어요")
+        if kind == "managed":
+            f = conn.execute("""SELECT f.data FROM document_versions v JOIN documents d ON d.id = v.document_id
+                                JOIN document_files f ON f.id = v.file_id
+                                WHERE d.id=%s AND 'v' || v.version = d.source_commit""", (doc_id,)).fetchone()
+            if f is None:
+                raise HTTPException(404, "이 판의 원본 파일이 없어요")
+            data = bytes(f[0])
+        else:
+            origin = conn.execute("""SELECT p.id FROM project_documents pd JOIN projects p ON p.id = pd.project_id
+                                     WHERE pd.document_id=%s AND pd.is_origin""", (doc_id,)).fetchone()
+            project = projects.get_project(conn, origin[0]) if origin else None
+            top = None
+            if project and project["kind"] == "git":
+                folder = projects.project_path(project["source"])
+                info = projects.git_info(folder) if folder and folder.is_dir() else None
+                top = Path(info["top"]) if info else None
+            if top is None:
+                raise HTTPException(404, "원본 저장소 폴더를 찾을 수 없어요")
+            path = (top / rel).resolve()
+            if not path.is_relative_to(top.resolve()) or not any(path.is_relative_to(r.resolve()) for r in project_roots()) \
+                    or not path.is_file():
+                raise HTTPException(404, "원본 파일이 없어요 (저장소에서 옮겨졌거나 지워졌을 수 있어요)")
+            data = path.read_bytes()
+    filename = quote_name(Path(rel).name)
+    return Response(data, media_type="application/pdf",
+                    headers={"Content-Disposition": f"inline; filename*=UTF-8''{filename}", "Cache-Control": "no-store"})
+
+
+def quote_name(name: str) -> str:
+    from urllib.parse import quote
+    return quote(name, safe="")
 
 
 # 직접 관리 문서의 판 목록 (새 판이 위). 원문은 with_content=true일 때만 (두 판을 비교할 때).

@@ -26,6 +26,7 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
+import pdf
 from ingest import MAX_TOKENS, count_tokens, embed, embed_url, make_embed_text, split_sections, tei_post
 
 
@@ -75,7 +76,7 @@ class Chunk:
 class HeadingChunker:
     spec = Spec(
         id="heading", stage="chunker", label="Heading sections",
-        description="Split at ## and ### headings. One section becomes one chunk.",
+        description="Split at ## and ### headings. One section becomes one chunk. PDF: one page becomes one chunk.",
         provider="local", vendor="rag-ops",
         params=(Param("prefix", "Text that gets embedded", "path",
                       (("path", "Heading path + section"), ("none", "Section only")),
@@ -86,6 +87,9 @@ class HeadingChunker:
         self.prefix = params["prefix"]
 
     def split(self, text: str, title: str) -> list[Chunk]:
+        # PDF는 제목 구조가 없어서 페이지 단위로 자른다 (pdf.py). 페이지 번호는 뜻이 없어 임베딩할 글에는 붙이지 않는다.
+        if pdf.is_paged(text):
+            return [Chunk(path, body, body) for path, body in pdf.split_pages(text, title)]
         out = []
         for s in split_sections(text, title):
             embed_text = make_embed_text(s.heading_path, s.body) if self.prefix == "path" else s.body
