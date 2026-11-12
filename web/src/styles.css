@@ -1043,3 +1043,26 @@ html.qs-drawer-open .app-shell{transform:scale(.965) translateX(-18px);transform
 }
 /* 범위 목록이 아래 카드에 가리지 않게 질문 카드를 위로 */
 .pg-ask{position:relative;z-index:5}
+/* 직접 관리: 파일 올리기, 판 기록 */
+.pj-drop{display:flex;flex-direction:column;align-items:center;gap:6px;padding:22px 16px;border:1.5px dashed #d9d0e6;border-radius:16px;background:#ffffff99;text-align:center;transition:border-color .15s,background .15s}
+.pj-drop.is-over{border-color:#8a6fd0;background:#f4effc}
+.pj-drop small{font-size:10.5px;color:#9a91a5;line-height:1.6}
+.pj-drop-btn{display:inline-flex;align-items:center;gap:7px;border:0;background:transparent;color:#5d4a8e;font-size:12.5px;cursor:pointer;padding:4px 8px;border-radius:10px}
+.pj-drop-btn b{font-weight:500}
+.pj-drop-btn:disabled{opacity:.5;cursor:default}
+.pj-drop.is-compact{flex-direction:row;padding:0;border:0;background:transparent}
+.pj-drop.is-compact .pj-drop-btn{padding:9px 14px;border-radius:13px;background:#2f2a38;color:#fff;font-size:12px}
+.pj-drop.is-compact.is-over .pj-drop-btn{background:#6b4fb0;outline:2px dashed #8a6fd0;outline-offset:3px}
+.pj-busy{display:inline-flex;align-items:center;gap:6px;opacity:.7}
+.pj-note-detail{flex-basis:100%;font-size:10.5px;color:#9a6a6a;overflow-wrap:anywhere}
+.pj-files{display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto;margin-top:10px}
+.pj-file{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:11px;background:#ffffffcc;font-size:12px;min-width:0}
+.pj-file span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pj-file small{font-size:10.5px;color:#9a91a5;white-space:nowrap}
+.pj-file button{border:0;background:transparent;color:#9a91a5;cursor:pointer;padding:2px;display:inline-flex}
+.pj-versions{display:flex;flex-direction:column;gap:4px;margin-bottom:14px}
+.pj-ver{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;padding:8px 12px;border-radius:11px;background:#faf8fc;font-size:12px}
+.pj-ver b{font-weight:500}
+.pj-ver small{font-size:10.5px;color:#9a91a5}
+.pj-ver code{font-family:ui-monospace,Menlo,monospace}
+.pj-ver.is-now{background:#f4effc}

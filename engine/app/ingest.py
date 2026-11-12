@@ -197,15 +197,15 @@ def upsert_document(conn, doc: dict) -> tuple[int, bool]:
         """UPDATE documents SET source_commit=%(source_commit)s, content_hash=%(content_hash)s, content=%(content)s,
                   title=%(title)s, env=%(env)s, doc_type=%(doc_type)s, verification=%(verification)s,
                   checked_at=%(checked_at)s, external_ok=%(external_ok)s, ingested_at=now()
-           WHERE source_repo=%(source_repo)s AND source_path=%(source_path)s RETURNING id""",
+           WHERE source_kind=%(source_kind)s AND source_repo=%(source_repo)s AND source_path=%(source_path)s RETURNING id""",
         doc,
     ).fetchone()
     if row:
         return row[0], False
     row = conn.execute(
-        """INSERT INTO documents (source_repo, source_path, source_commit, content_hash, content, title,
+        """INSERT INTO documents (source_kind, source_repo, source_path, source_commit, content_hash, content, title,
                                   env, doc_type, verification, checked_at, external_ok)
-           VALUES (%(source_repo)s, %(source_path)s, %(source_commit)s, %(content_hash)s, %(content)s, %(title)s,
+           VALUES (%(source_kind)s, %(source_repo)s, %(source_path)s, %(source_commit)s, %(content_hash)s, %(content)s, %(title)s,
                    %(env)s, %(doc_type)s, %(verification)s, %(checked_at)s, %(external_ok)s)
            RETURNING id""",
         doc,
@@ -236,19 +236,33 @@ def ingest_file(path: Path, *, env_label: str | None = None, doc_type: str | Non
     on_step을 주면 6단계(STAGES)에 들어설 때마다 부른다. CLI는 주지 않는다.
     project_id를 주면 그 프로젝트를 문서의 원본으로 연결한다 (건너뛴 문서도 연결은 맞춘다).
     """
-    def step(name: str, done: int | None = None, total: int | None = None) -> None:
-        if on_step:
-            on_step(name, done, total)
-
-    # 1. 확인: 문서를 읽고 머리말을 떼고 출처(git 저장소·커밋)를 구한다. git 밖의 파일은 출처를 남길 수 없어 거절한다.
-    step("확인")
+    # 1. 확인: 문서를 읽고 출처(git 저장소·커밋)를 구한다. git 밖의 파일은 출처를 남길 수 없어 거절한다.
+    if on_step:
+        on_step("확인", None, None)
     raw = path.read_text(encoding="utf-8")
-    meta, _ = parse_front_matter(raw)
-    title = meta.get("title") or path.stem
     try:
         repo, rel, commit = git_source(path)
     except subprocess.CalledProcessError:
         raise IngestError("git 저장소 안의 파일이 아닙니다. 출처(저장소·커밋)를 기록할 수 없습니다")
+    return ingest_text(raw, kind="git", repo=repo, rel=rel, commit=commit, fallback_title=path.stem,
+                       env_label=env_label, doc_type=doc_type, verification=verification, checked_at=checked_at,
+                       external_ok=external_ok, on_step=on_step, project_id=project_id)
+
+
+# 원문 하나를 넣는다. git 파일(ingest_file)과 직접 관리 프로젝트에 올린 파일이 같이 쓴다.
+#   kind="git"    : commit = 읽은 판의 커밋
+#   kind="managed": commit은 비워 두고 저장할 때 판 번호를 매긴다 (v1, v2…). 판마다 원문을 document_versions에 남긴다.
+def ingest_text(raw: str, *, kind: str, repo: str, rel: str, commit: str | None, fallback_title: str,
+                env_label: str | None = None, doc_type: str | None = None, verification: str = "미확인",
+                checked_at: str | None = None, external_ok: bool = False, on_step: OnStep | None = None,
+                project_id: int | None = None) -> dict:
+    def step(name: str, done: int | None = None, total: int | None = None) -> None:
+        if on_step:
+            on_step(name, done, total)
+
+    step("확인")
+    meta, _ = parse_front_matter(raw)
+    title = meta.get("title") or fallback_title
 
     # 2. 중복 확인: content_hash(원문 전체의 sha256)가 DB와 같으면 여기서 끝낸다.
     #    04 마이그레이션 전에 들어온 문서라 원문이 비어 있으면 원문만 채운다.
@@ -257,16 +271,16 @@ def ingest_file(path: Path, *, env_label: str | None = None, doc_type: str | Non
 
     env = load_env()
     doc = {
-        "source_repo": repo, "source_path": rel, "source_commit": commit,
+        "source_kind": kind, "source_repo": repo, "source_path": rel, "source_commit": commit,
         "content_hash": hashlib.sha256(raw.encode()).hexdigest(), "content": raw, "title": title,
         "env": env_label, "doc_type": doc_type, "verification": verification,
         "checked_at": checked_at, "external_ok": external_ok,
     }
     result = {"source_repo": repo, "source_path": rel, "source_commit": commit, "title": title}
     with connect(env) as conn:
-        same = conn.execute("""SELECT id, content IS NULL FROM documents
-                               WHERE source_repo=%s AND source_path=%s AND content_hash=%s""",
-                            (repo, rel, doc["content_hash"])).fetchone()
+        same = conn.execute("""SELECT id, content IS NULL, source_commit FROM documents
+                               WHERE source_kind=%s AND source_repo=%s AND source_path=%s AND content_hash=%s""",
+                            (kind, repo, rel, doc["content_hash"])).fetchone()
         if same and same[1]:
             conn.execute("UPDATE documents SET content=%s WHERE id=%s", (raw, same[0]))
         base = base_index(conn)
@@ -274,21 +288,32 @@ def ingest_file(path: Path, *, env_label: str | None = None, doc_type: str | Non
             from projects import link_origin
             link_origin(conn, project_id, same[0])
     if same:
-        return {**result, "status": "skipped", "document_id": same[0], "chunks": None, "tokens": None}
+        return {**result, "source_commit": same[2], "status": "skipped", "document_id": same[0], "chunks": None, "tokens": None}
 
     # 3~5. 청킹 → 토큰 검사 → 임베딩: 기본 색인의 청킹 방식·임베딩 모델로 한다 (indexes.prepare).
     rows, tokens = prepare(base, raw, title, external_ok, env, on_step)
 
     # 6. 저장: 문서 1행과 기본 색인의 조각을 한 트랜잭션으로. 다른 색인은 건드리지 않는다 (사용자가 갱신을 누르면 그때).
+    #    직접 관리 문서는 같은 트랜잭션에서 다음 판 번호를 매기고 판 원문을 남긴다 (저장에 실패하면 판도 남지 않는다).
     step("저장")
     with connect(env) as conn:
+        version = None
+        if kind == "managed":
+            version = conn.execute(
+                """SELECT coalesce(max(v.version), 0) + 1 FROM documents d JOIN document_versions v ON v.document_id = d.id
+                   WHERE d.source_kind='managed' AND d.source_repo=%s AND d.source_path=%s""", (repo, rel)).fetchone()[0]
+            doc["source_commit"] = f"v{version}"
         doc_id, created = upsert_document(conn, doc)
+        if version is not None:
+            conn.execute("""INSERT INTO document_versions (document_id, version, content_hash, content, title, filename, size_bytes)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                         (doc_id, version, doc["content_hash"], raw, title, rel, len(raw.encode())))
         store(conn, base["id"], doc_id, doc["content_hash"], rows)
         if project_id:
             from projects import link_origin
             link_origin(conn, project_id, doc_id)
-    return {**result, "status": "inserted" if created else "replaced", "document_id": doc_id,
-            "index_id": base["id"], "chunks": len(rows), "tokens": tokens}
+    return {**result, "source_commit": doc["source_commit"], "status": "inserted" if created else "replaced",
+            "document_id": doc_id, "index_id": base["id"], "chunks": len(rows), "tokens": tokens, "version": version}
 
 
 # ---------- 실행 ----------

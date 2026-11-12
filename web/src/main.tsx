@@ -18,7 +18,7 @@ import { UsagePage } from './usage';
 import { Home as HomePage } from './home';
 import { SetupBar, StagePanel, useCatalog, useSetup, type BuildResponse, type IndexInfo, type PanelStage } from './setup';
 import { SetupFlow, stepOf } from './setupflow';
-import { LinkModal, NewProjectFlow, ProjectCards, ProjectHead, useProjects, type ProjectRef } from './projects';
+import { LinkModal, NewProjectFlow, ProjectCards, ProjectHead, useProjects, VersionList, waitJobs, type ProjectRef } from './projects';
 
 type Page = 'home' | 'knowledge' | 'pipeline' | 'playground' | 'compare' | 'evaluations' | 'runs' | 'usage' | 'settings';
 type Collection = { id: number; name: string; documents: number; color: string };
@@ -107,7 +107,7 @@ function App() {
 }
 
 type StoredDocument = {
-  id: number; source_repo: string; source_path: string; source_commit: string; title: string;
+  id: number; source_kind: 'git' | 'managed'; source_repo: string; source_path: string; source_commit: string; title: string;
   env: string | null; doc_type: string | null; verification: string; checked_at: string | null;
   external_ok: boolean; ingested_at: string; chunks: number; projects: ProjectRef[];
 };
@@ -139,13 +139,16 @@ function DocumentModal({ doc, target, close }: { doc: StoredDocument; target?: D
     <DetailRows rows={[
       ['Source', `${doc.source_repo}/${doc.source_path}`],
       ['Projects', doc.projects.length ? doc.projects.map(p => `${p.name}${p.origin ? ' (원본)' : ''}`).join(', ') : '—'],
-      ['Commit', <>{doc.source_commit}{doc.source_commit.endsWith('-dirty') && <em className="detail-hint">-dirty: the file had uncommitted edits</em>}</>],
+      doc.source_kind === 'managed'
+        ? ['판', <>{doc.source_commit.replace(/^v/, '')}판<em className="detail-hint">직접 관리 문서예요. 같은 이름으로 다시 올리면 새 판이 돼요</em></>]
+        : ['Commit', <>{doc.source_commit}{doc.source_commit.endsWith('-dirty') && <em className="detail-hint">-dirty: the file had uncommitted edits</em>}</>],
       ['Environment', doc.env ?? '—'],
       ['Document type', doc.doc_type ?? '—'],
       ['Verification', `${doc.verification}${doc.checked_at ? ` · checked ${doc.checked_at}` : ''}`],
       ['External LLM', doc.external_ok ? 'Allowed' : 'Not allowed'],
       ['Ingested', shortTime(doc.ingested_at)],
     ]} />
+    {doc.source_kind === 'managed' && <><p className="muted document-chunks-heading">판 기록</p><VersionList documentId={doc.id} /></>}
     <p className="muted document-chunks-heading">{chunks ? `${chunks.length} chunks${target ? ` · Playground에서 본 조각 #${String(target.chunkIndex).padStart(2, '0')}을 강조했어요 (색인 #${target.indexId ?? '기본'})` : ''}` : error ?? 'Loading chunks…'}</p>
     {chunks && <ChunkList chunks={chunks} highlight={target?.chunkIndex} />}
   </Modal>;
@@ -226,7 +229,16 @@ function Knowledge({ view, target, clearTarget, openPipeline }: { view: 'all' | 
     {linking && projects && <LinkModal title={linking.title} documentId={linking.id} links={linking.projects} projects={projects} close={() => setLinking(null)}
       saved={links => { setLinks(linking.id, links); setLinking(null); void reloadProjects(); }} />}
     <NewProjectFlow open={creating} taken={projects?.map(p => p.name) ?? []} onClose={() => setCreating(false)}
-      onCreated={(p, r) => { setCreating(false); setPid(p.id); setCreated(`프로젝트 ${p.name}을 만들었어요 · 문서 ${r.jobs.length}개를 넣는 중${r.skipped.length ? ` · 뺀 문서 ${r.skipped.length}개` : ''}`); void reloadProjects(); }} />
+      onCreated={(p, r) => {
+        setCreating(false); setPid(p.id); void reloadProjects();
+        const skipped = r.skipped.length ? ` · 뺀 문서 ${r.skipped.length}개` : '';
+        setCreated(`프로젝트 ${p.name}을 만들었어요 · 문서 ${r.jobs.length}개를 넣는 중${skipped}`);
+        // 넣기가 끝나면 목록을 다시 읽어 문서·조각 수를 맞춘다
+        if (r.jobs.length) void waitJobs(r.jobs.map(j => j.job_id)).then(failed => {
+          setCreated(`프로젝트 ${p.name}을 만들었어요 · 문서 ${r.jobs.length}개 ${failed === null ? '아직 넣는 중' : failed ? `중 ${failed}개 실패` : '다 넣었어요'}${skipped}`);
+          void reloadProjects(); void reload();
+        });
+      }} />
     {open && <DocumentModal doc={open} target={target?.documentId === open.id ? target : null} close={() => { setOpen(null); clearTarget(); }} />}
   </>;
 }

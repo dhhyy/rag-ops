@@ -5,6 +5,7 @@
   build   저장된 문서 하나를 다른 색인에 넣는다 (색인 만들기·갱신)
   eval    현재 설정으로 평가를 돌린다
   drafts  LLM으로 평가 질문 초안을 만든다 (시험지 3단계)
+  upload  직접 관리 프로젝트에 올린 파일 하나를 넣는다 (원문은 params.content, 판 번호는 저장할 때 매김)
 상태는 queued(대기) → running(진행) → done(완료) / failed(실패) 순서로만 바뀐다.
 """
 from __future__ import annotations
@@ -15,7 +16,8 @@ from psycopg.types.json import Jsonb
 
 from ingest import STAGES, IngestError, connect, ingest_file, load_env
 
-JOB_COLUMNS = ("id, path, params, status, stage, stage_index, progress_done, progress_total, "
+# 올린 파일 작업은 params에 원문(content)을 담아 worker에 넘긴다. 목록·조회에는 원문을 빼고 보낸다.
+JOB_COLUMNS = ("id, path, params - 'content' AS params, status, stage, stage_index, progress_done, progress_total, "
                "error, result, created_at, started_at, finished_at")
 
 NOW = object()  # update_job에 넘기면 DB 시각 now()로 기록한다
@@ -75,6 +77,13 @@ def run_job(job_id: int) -> None:
         elif kind == "drafts":
             from drafts import make_drafts
             result = make_drafts(int(params.get("count", 10)), params.get("batch", ""), on_step)
+        elif kind == "upload":
+            from ingest import ingest_text
+            result = ingest_text(params["content"], kind="managed", repo=params["project"], rel=params["filename"],
+                                 commit=None, fallback_title=Path(params["filename"]).stem,
+                                 env_label=params.get("env"), doc_type=params.get("doc_type"), verification="미확인",
+                                 external_ok=bool(params.get("external_ok")), on_step=on_step,
+                                 project_id=int(params["project_id"]))
         else:
             result = ingest_file(Path(path), env_label=params.get("env"), doc_type=params.get("doc_type"),
                                  verification=params.get("verification") or "미확인",

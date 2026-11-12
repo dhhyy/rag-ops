@@ -1,6 +1,7 @@
 """프로젝트: 문서를 묶는 단위. 검색 범위(Playground)와 문서 연결의 기준이 된다.
 
-- 프로젝트마다 문서를 가져오는 방식(kind)이 하나로 정해진다. 지금은 git(로컬 git 폴더)만 만들 수 있다.
+- 프로젝트마다 문서를 가져오는 방식(kind)이 하나로 정해진다.
+  git: 로컬 git 폴더에서 가져온다 (판 = 커밋). managed: 파일을 올리면 원문을 DB에 둔다 (판 = 1, 2, …, document_versions).
 - Git 프로젝트의 폴더는 서로 겹치지 않는다. 그래서 파일 경로 하나는 많아야 한 프로젝트에 속하고,
   가져오기 작업은 경로로 프로젝트를 찾는다 (project_for_path).
 - 문서는 한 번만 저장한다. 다른 프로젝트에는 연결(project_documents)만 늘린다. 들여온 프로젝트가 원본(is_origin)이다.
@@ -182,7 +183,7 @@ def backfill() -> None:
             n = conn.execute(
                 """INSERT INTO project_documents (project_id, document_id, is_origin)
                    SELECT %s, d.id, true FROM documents d
-                   WHERE d.source_repo=%s
+                   WHERE d.source_kind='git' AND d.source_repo=%s
                      AND NOT EXISTS (SELECT 1 FROM project_documents pd WHERE pd.document_id=d.id AND pd.is_origin)
                    ON CONFLICT (project_id, document_id) DO UPDATE SET is_origin = true""",
                 (pid, repo)).rowcount

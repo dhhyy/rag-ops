@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 import uuid
@@ -141,7 +142,7 @@ def create_document(req: IngestRequest) -> dict:
 def list_documents() -> list[dict]:
     with connect(load_env()) as conn:
         cur = conn.execute(
-            """SELECT d.id, d.source_repo, d.source_path, d.source_commit, d.title, d.env, d.doc_type,
+            """SELECT d.id, d.source_kind, d.source_repo, d.source_path, d.source_commit, d.title, d.env, d.doc_type,
                       d.verification, d.checked_at, d.external_ok, d.ingested_at,
                       (SELECT count(*) FROM chunks c WHERE c.document_id = d.id
                          AND c.index_id = (SELECT id FROM indexes WHERE is_base)) AS chunks,
@@ -722,6 +723,7 @@ class ProjectCreate(BaseModel):
     description: str = ""
     env: Literal["운영", "개발", "샘플", "혼합"] | None = None
     doc_type: Literal["설정", "실행 결과", "해설", "장애 기록"] | None = None
+    external_ok: bool = False          # 직접 관리 프로젝트에 올리는 문서의 외부 전송 기본값 (Git은 폴더 규칙을 따른다)
 
 
 # 프로젝트의 폴더 문서를 모두 가져오기 작업으로 넣는다. 내용이 같은 문서는 작업 안에서 건너뛴다.
@@ -739,21 +741,107 @@ def pull_project(project: dict) -> dict:
     return {"jobs": created, "skipped": skipped, "stages": STAGES}
 
 
-# 프로젝트를 만든다. 지금은 Git · 로컬 폴더만. 만들면 바로 폴더 문서를 기본 색인에 넣기 시작한다.
+# 프로젝트를 만든다.
+#   git     : 폴더를 검사하고, 만들면 바로 폴더 문서를 기본 색인에 넣기 시작한다.
+#   managed : 폴더 없이 만든다. 문서는 /projects/{id}/upload로 올린다.
 @app.post("/projects", status_code=201)
 def create_project(req: ProjectCreate) -> dict:
-    if req.kind != "git":
-        raise HTTPException(501, "직접 관리 프로젝트는 다음 단계에서 만들 수 있어요")
+    defaults = {k: v for k, v in {"env": req.env, "doc_type": req.doc_type}.items() if v}
     with connect(load_env()) as conn:
         try:
-            info = projects.check_folder(conn, req.path, allowed_roots(), count_md)
-            defaults = {k: v for k, v in {"env": req.env, "doc_type": req.doc_type}.items() if v}
-            pid = projects.create_project(conn, req.name, "git", {"from": "local", "path": info["path"]},
-                                          defaults, req.description)
+            if req.kind == "git":
+                info = projects.check_folder(conn, req.path, allowed_roots(), count_md)
+                pid = projects.create_project(conn, req.name, "git", {"from": "local", "path": info["path"]},
+                                              defaults, req.description)
+            else:
+                pid = projects.create_project(conn, req.name, "managed", {}, defaults | {"external_ok": req.external_ok},
+                                              req.description)
         except ValueError as e:
             raise HTTPException(400, str(e))
         project = projects.get_project(conn, pid)
+    if req.kind == "managed":
+        return {"project": project, "jobs": [], "skipped": [], "stages": STAGES}
     return {"project": project, **pull_project(project)}
+
+
+# ---------- 직접 관리 프로젝트: 파일 올리기 ----------
+
+UPLOAD_MAX_BYTES = 512 * 1024    # 파일 하나. 웹 프록시가 요청 하나를 1MB까지 받으므로 화면이 나눠서 보낸다
+UPLOAD_MAX_FILES = 50
+
+
+class UploadFile(BaseModel):
+    name: str
+    content: str
+
+
+class UploadRequest(BaseModel):
+    files: list[UploadFile]
+
+
+# 파일을 올린다. 파일마다 지금 판과 내용(해시)을 비교해서
+#   new: 처음 올린 이름 → 작업을 넣고 저장할 때 1판
+#   updated: 내용이 바뀜 → 작업을 넣고 저장할 때 다음 판
+#   unchanged: 내용이 같음 → 판을 늘리지 않고 작업도 만들지 않는다
+#   skipped: 넣을 수 없음 (이유와 함께)
+# 같은 이름이면 같은 문서다. 폴더 경로가 붙어 와도 파일 이름만 쓴다.
+@app.post("/projects/{project_id}/upload", status_code=202)
+def upload(project_id: int, req: UploadRequest) -> dict:
+    if not req.files or len(req.files) > UPLOAD_MAX_FILES:
+        raise HTTPException(400, f"파일은 한 번에 1~{UPLOAD_MAX_FILES}개까지 올릴 수 있어요")
+    with connect(load_env()) as conn:
+        project = projects.get_project(conn, project_id)
+    if project is None:
+        raise HTTPException(404, f"project {project_id} 없음")
+    if project["kind"] != "managed":
+        raise HTTPException(409, "Git 프로젝트에는 파일을 올릴 수 없어요. 원본 저장소에서 고치고 [다시 받기]를 누르세요")
+    defaults = project["defaults"] or {}
+    out: dict[str, list] = {"new": [], "updated": [], "unchanged": [], "skipped": [], "jobs": []}
+    seen: set[str] = set()
+    with connect(load_env()) as conn:
+        for f in req.files:
+            name = Path(f.name.replace("\\", "/")).name.strip()
+            size = len(f.content.encode())
+            reason = ("Markdown(.md) 파일만 올릴 수 있어요" if not name.lower().endswith(".md")
+                      else "빈 파일이에요" if not f.content.strip()
+                      else f"{UPLOAD_MAX_BYTES // 1024}KB보다 커요" if size > UPLOAD_MAX_BYTES
+                      else "같은 이름의 파일이 두 번 들어 있어요" if name in seen else None)
+            if reason:
+                out["skipped"].append({"name": name or f.name, "reason": reason})
+                continue
+            seen.add(name)
+            digest = hashlib.sha256(f.content.encode()).hexdigest()
+            cur = conn.execute("""SELECT id, content_hash, source_commit FROM documents
+                                  WHERE source_kind='managed' AND source_repo=%s AND source_path=%s""",
+                               (project["name"], name)).fetchone()
+            if cur and cur[1] == digest:
+                out["unchanged"].append({"name": name, "version": cur[2]})
+                continue
+            path = f"{project['name']}/{name}"
+            busy = conn.execute("SELECT id FROM ingest_jobs WHERE path=%s AND status IN ('queued', 'running')", (path,)).fetchone()
+            if busy:
+                out["skipped"].append({"name": name, "reason": f"같은 파일을 넣는 작업이 진행 중이에요 (job {busy[0]})"})
+                continue
+            params = {"kind": "upload", "project_id": project_id, "project": project["name"], "filename": name,
+                      "content": f.content, "env": defaults.get("env"), "doc_type": defaults.get("doc_type"),
+                      "verification": "미확인", "external_ok": bool(defaults.get("external_ok"))}
+            job_id = conn.execute("INSERT INTO ingest_jobs (path, params) VALUES (%s, %s) RETURNING id",
+                                  (path, Jsonb(params))).fetchone()[0]
+            out["updated" if cur else "new"].append({"name": name, "job_id": job_id, "from": cur[2] if cur else None})
+            out["jobs"].append({"job_id": job_id, "path": path})
+    enqueue([j["job_id"] for j in out["jobs"]])
+    return out
+
+
+# 직접 관리 문서의 판 목록 (새 판이 위). 원문은 with_content=true일 때만 (두 판을 비교할 때).
+@app.get("/documents/{doc_id}/versions")
+def document_versions(doc_id: int, with_content: bool = False) -> list[dict]:
+    with connect(load_env()) as conn:
+        cur = conn.execute(
+            f"""SELECT version, content_hash, title, filename, size_bytes, uploaded_at{", content" if with_content else ""}
+                FROM document_versions WHERE document_id=%s ORDER BY version DESC""", (doc_id,))
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
 # [다시 받기]: 프로젝트 폴더를 다시 넣는다. 바뀐 문서만 다시 자르고 임베딩한다 (기본 색인).
