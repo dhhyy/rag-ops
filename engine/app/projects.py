@@ -145,6 +145,70 @@ def list_projects(conn) -> list[dict]:
     return out
 
 
+# ---------- 이름 바꾸기·지우기 ----------
+
+# 이 프로젝트의 문서를 넣는 작업이 대기·진행 중인지. 그동안 이름을 바꾸거나 지우면 작업이 엉뚱한 곳에 저장된다.
+def busy_jobs(conn, project: dict) -> int:
+    return conn.execute("""SELECT count(*) FROM ingest_jobs WHERE status IN ('queued', 'running')
+                           AND (params->>'project_id' = %s OR path LIKE %s)""",
+                        (str(project["id"]), f"{project['name']}/%")).fetchone()[0]
+
+
+# 프로젝트를 지우면 바뀌는 것. 원본 문서는 같이 지우고, 연결만 된 문서는 연결만 끊는다.
+def project_impact(conn, project_id: int) -> dict:
+    row = conn.execute(
+        """WITH o AS (SELECT document_id FROM project_documents WHERE project_id=%(p)s AND is_origin),
+                l AS (SELECT document_id FROM project_documents WHERE project_id=%(p)s AND NOT is_origin)
+           SELECT (SELECT count(*) FROM o),
+                  (SELECT count(*) FROM chunks WHERE document_id IN (SELECT document_id FROM o)),
+                  (SELECT count(*) FROM document_versions WHERE document_id IN (SELECT document_id FROM o)),
+                  (SELECT count(DISTINCT file_id) FROM document_versions WHERE document_id IN (SELECT document_id FROM o)),
+                  (SELECT count(*) FROM l),
+                  (SELECT count(*) FROM documents WHERE source_kind='managed' AND source_repo=(SELECT name FROM projects WHERE id=%(p)s)),
+                  (SELECT coalesce(array_agg(d.source_path), '{}') FROM documents d WHERE d.id IN (SELECT document_id FROM o))""",
+        {"p": project_id}).fetchone()
+    keys = ("origin_documents", "chunks", "versions", "files", "linked_documents", "managed_documents", "paths")
+    return dict(zip(keys, row))
+
+
+# 원본 문서·조각(모든 색인)·판을 지우고, 쓰는 판이 없어진 원본 파일도 지운다. 연결은 프로젝트와 함께 사라진다.
+# 저장소 파일은 건드리지 않는다. GitHub에서 받아 둔 폴더는 호출한 쪽이 커밋 뒤에 지운다.
+def delete_project(conn, project_id: int) -> None:
+    docs = [r[0] for r in conn.execute("SELECT document_id FROM project_documents WHERE project_id=%s AND is_origin",
+                                       (project_id,)).fetchall()]
+    delete_documents(conn, docs)
+    conn.execute("DELETE FROM projects WHERE id=%s", (project_id,))
+
+
+# 문서를 지운다. 조각·색인 기록·연결·판은 외래 키(ON DELETE CASCADE)로 같이 지워진다.
+def delete_documents(conn, document_ids: list[int]) -> None:
+    if not document_ids:
+        return
+    files = [r[0] for r in conn.execute("SELECT DISTINCT file_id FROM document_versions WHERE document_id = ANY(%s) AND file_id IS NOT NULL",
+                                        (document_ids,)).fetchall()]
+    conn.execute("DELETE FROM documents WHERE id = ANY(%s)", (document_ids,))
+    if files:
+        conn.execute("""DELETE FROM document_files f WHERE f.id = ANY(%s)
+                        AND NOT EXISTS (SELECT 1 FROM document_versions v WHERE v.file_id = f.id)""", (files,))
+
+
+# 이름을 바꾼다. 직접 관리 문서는 출처 이름(source_repo)이 프로젝트 이름이라 같이 바꾼다. 조각·벡터는 그대로다.
+def rename_project(conn, project_id: int, new_name: str) -> str:
+    new_name = new_name.strip()
+    if not new_name or len(new_name) > 60:
+        raise ValueError("이름은 1~60자로 적어 주세요")
+    old = conn.execute("SELECT name FROM projects WHERE id=%s", (project_id,)).fetchone()[0]
+    if new_name == old:
+        return old
+    if conn.execute("SELECT 1 FROM projects WHERE lower(name)=lower(%s) AND id<>%s", (new_name, project_id)).fetchone():
+        raise ValueError(f"'{new_name}' 이름의 프로젝트가 이미 있습니다")
+    if conn.execute("SELECT 1 FROM documents WHERE source_kind='managed' AND source_repo=%s", (new_name,)).fetchone():
+        raise ValueError(f"'{new_name}' 이름으로 저장된 문서가 이미 있어요 (지운 프로젝트의 문서가 남았을 수 있어요)")
+    conn.execute("UPDATE projects SET name=%s WHERE id=%s", (new_name, project_id))
+    conn.execute("UPDATE documents SET source_repo=%s WHERE source_kind='managed' AND source_repo=%s", (new_name, old))
+    return old
+
+
 # 들여온 프로젝트를 원본으로 연결한다. 같은 문서를 다시 넣어도 그대로다.
 def link_origin(conn, project_id: int, document_id: int) -> None:
     conn.execute("""INSERT INTO project_documents (project_id, document_id, is_origin) VALUES (%s, %s, true)

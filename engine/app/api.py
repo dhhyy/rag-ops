@@ -969,6 +969,89 @@ def document_original(doc_id: int) -> Response:
                     headers={"Content-Disposition": f"inline; filename*=UTF-8''{filename}", "Cache-Control": "no-store"})
 
 
+# ---------- 이름 바꾸기·지우기 ----------
+
+def not_busy(conn, project: dict) -> None:
+    n = projects.busy_jobs(conn, project)
+    if n:
+        raise HTTPException(409, f"이 프로젝트에 문서를 넣는 작업 {n}개가 아직 진행 중이에요. 끝난 뒤에 해 주세요")
+
+
+# 지우기·이름 바꾸기 확인 창에 보여 줄 숫자
+@app.get("/projects/{project_id}/impact")
+def project_impact(project_id: int) -> dict:
+    project = load_project(project_id)
+    with connect(load_env()) as conn:
+        info = projects.project_impact(conn, project_id)
+        busy = projects.busy_jobs(conn, project)
+    paths = info.pop("paths")
+    return {**info, "questions": questions.count_project(project["name"]),
+            "evidence_questions": questions.count_evidence(paths), "busy_jobs": busy,
+            "github": project["source"].get("from") == "github"}
+
+
+class ProjectRename(BaseModel):
+    name: str
+
+
+# 이름 바꾸기: 직접 관리 문서의 출처 이름과 시험지의 project 값을 같이 바꾼다. 지난 평가 기록은 그대로 둔다.
+@app.patch("/projects/{project_id}")
+def rename_project(project_id: int, req: ProjectRename) -> dict:
+    project = load_project(project_id)
+    with connect(load_env()) as conn:
+        not_busy(conn, project)
+        try:
+            old = projects.rename_project(conn, project_id, req.name)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        new = req.name.strip()
+        renamed = questions.rename_project(old, new) if old != new else 0   # DB가 커밋되기 전에 쓴다 (실패하면 DB도 되돌린다)
+    return {"id": project_id, "name": new, "old": old, "questions": renamed}
+
+
+# 프로젝트 지우기: 원본 문서와 그 조각(모든 색인)·판·원본 파일까지 지운다. confirm에 프로젝트 이름을 그대로 적어야 한다.
+@app.delete("/projects/{project_id}")
+def delete_project(project_id: int, confirm: str = Query(...)) -> dict:
+    project = load_project(project_id)
+    if confirm != project["name"]:
+        raise HTTPException(400, "확인용 이름이 프로젝트 이름과 달라요")
+    with connect(load_env()) as conn:
+        not_busy(conn, project)
+        info = projects.project_impact(conn, project_id)
+        projects.delete_project(conn, project_id)
+    if project["source"].get("from") == "github":
+        github.remove(project_id)   # 받아 둔 저장소 폴더. DB를 지운 뒤에 지운다
+    info.pop("paths")
+    return {"deleted": project["name"], **info}
+
+
+# 문서 지우기 확인 창에 보여 줄 숫자
+@app.get("/documents/{doc_id}/impact")
+def document_impact(doc_id: int) -> dict:
+    with connect(load_env()) as conn:
+        row = conn.execute("SELECT source_kind, source_path FROM documents WHERE id=%s", (doc_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, f"document {doc_id} 없음")
+        chunks = conn.execute("SELECT count(*) FROM chunks WHERE document_id=%s", (doc_id,)).fetchone()[0]
+        versions = conn.execute("SELECT count(*) FROM document_versions WHERE document_id=%s", (doc_id,)).fetchone()[0]
+    return {"kind": row[0], "chunks": chunks, "versions": versions, "evidence_questions": questions.count_evidence([row[1]])}
+
+
+@app.delete("/documents/{doc_id}")
+def delete_document(doc_id: int) -> dict:
+    with connect(load_env()) as conn:
+        row = conn.execute("SELECT source_kind, source_repo, source_path FROM documents WHERE id=%s", (doc_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, f"document {doc_id} 없음")
+        busy = conn.execute("""SELECT id FROM ingest_jobs WHERE status IN ('queued', 'running')
+                               AND (path = %s OR path LIKE %s OR params->>'document_id' = %s)""",
+                            (f"{row[1]}/{row[2]}", f"%/{row[2]}", str(doc_id))).fetchone()
+        if busy:
+            raise HTTPException(409, f"이 문서를 넣는 작업이 진행 중이에요 (job {busy[0]}). 끝난 뒤에 지워 주세요")
+        projects.delete_documents(conn, [doc_id])
+    return {"deleted": doc_id, "source_path": row[2]}
+
+
 def quote_name(name: str) -> str:
     from urllib.parse import quote
     return quote(name, safe="")

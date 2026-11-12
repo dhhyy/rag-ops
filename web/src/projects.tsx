@@ -2,7 +2,7 @@
 // 화면 나누기: 카드 격자 = Fluid(폭에 따라 열 수), 머리 띠 = Hybrid(정보는 늘고 줄며 버튼은 고정), 서랍·연결 창 = Fixed 폭.
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { ArrowLeft, ArrowRight, Check, ChevronDown, CircleAlert, FileUp, GitBranch, LoaderCircle, NotebookPen, RefreshCw, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, ChevronDown, CircleAlert, Ellipsis, FileUp, GitBranch, LoaderCircle, NotebookPen, RefreshCw, X } from 'lucide-react';
 import { api, Modal, RAG_API, readError, shortTime, spring } from './ui';
 import { Drawer } from './questionset';
 
@@ -159,8 +159,9 @@ export async function waitJobs(ids: number[]): Promise<number | null> {
   return left.length ? null : failed;
 }
 
-export function ProjectHead({ project, onPulled, openPipeline }: { project: Project; onPulled: () => void; openPipeline: () => void }) {
+export function ProjectHead({ project, onPulled, onDeleted, openPipeline }: { project: Project; onPulled: () => void; onDeleted: () => void; openPipeline: () => void }) {
   const [pulling, setPulling] = useState(false);
+  const [manage, setManage] = useState<'rename' | 'delete' | null>(null);
   const [note, setNote] = useState<{ ok: boolean; text: string; detail?: string[]; jobs?: boolean } | null>(null);
   const [fetching, setFetching] = useState(false);
   // [새 커밋 확인]: GitHub에 묻기만 하고 문서는 그대로다
@@ -225,7 +226,10 @@ export function ProjectHead({ project, onPulled, openPipeline }: { project: Proj
         {pulling ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}다시 받기</button>}
       {project.kind === 'managed' && (pulling ? <span className="primary-button pj-busy"><LoaderCircle size={14} className="spin" />올리는 중</span>
         : <DropZone compact onFiles={f => void upload(f)} />)}
+      <ProjectMenu disabled={pulling || fetching} pick={setManage} />
     </div>
+    {manage === 'rename' && <RenameProject project={project} close={() => setManage(null)} done={text => { setManage(null); setNote({ ok: true, text }); onPulled(); }} />}
+    {manage === 'delete' && <DeleteProject project={project} close={() => setManage(null)} done={onDeleted} />}
     {note && <p className={`pj-note ${note.ok ? 'is-ok' : 'is-error'}`}>{note.ok ? <Check size={13} /> : <CircleAlert size={13} />}<span>{note.text}</span>
       {note.ok && note.jobs && <button className="text-button" onClick={openPipeline}>진행 보기 <ArrowRight size={12} /></button>}
       {note.detail && note.detail.length > 0 && <small className="pj-note-detail">{note.detail.join(' / ')}</small>}</p>}
@@ -233,6 +237,135 @@ export function ProjectHead({ project, onPulled, openPipeline }: { project: Proj
     {isGitHub(project) && <p className="pj-hint">GitHub 저장소가 원본이에요. [새 커밋 확인]은 원본에 새 커밋이 있는지만 봐요. [다시 받기]는 최신 커밋을 받아 바뀐 문서만 다시 넣어요 (기본 색인 ★). 받은 저장소는 서버의 repos 볼륨에 있어요.</p>}
     {project.kind === 'git' && !isGitHub(project) && <p className="pj-hint">Git이 원본이에요. 여기서 파일을 올리거나 고칠 수 없어요. 원본 저장소에서 고치고 [다시 받기]를 누르면 바뀐 문서만 다시 넣어요 (기본 색인 ★).</p>}
   </div>;
+}
+
+// ---------- 이름 바꾸기·지우기 ----------
+
+type ProjectImpact = { origin_documents: number; chunks: number; versions: number; files: number; linked_documents: number;
+  managed_documents: number; questions: number; evidence_questions: number; busy_jobs: number; github: boolean };
+type DocImpact = { kind: 'git' | 'managed'; chunks: number; versions: number; evidence_questions: number };
+
+// 머리 띠의 [⋯]: 자주 쓰지 않는 일(이름 바꾸기·지우기)을 모아 둔다. 바깥을 누르거나 Esc로 닫힌다.
+function ProjectMenu({ disabled, pick }: { disabled: boolean; pick: (m: 'rename' | 'delete') => void }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', away); document.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', esc); };
+  }, [open]);
+  const choose = (m: 'rename' | 'delete') => { setOpen(false); pick(m); };
+  return <div className="pj-more" ref={box}>
+    <button className="ghost-button pj-more-btn" aria-label="프로젝트 관리" aria-haspopup="menu" aria-expanded={open} disabled={disabled} onClick={() => setOpen(o => !o)}><Ellipsis size={16} /></button>
+    <AnimatePresence>{open && <motion.div className="pj-menu" role="menu" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.12 }}>
+      <button role="menuitem" onClick={() => choose('rename')}>이름 바꾸기</button>
+      <button role="menuitem" className="is-danger" onClick={() => choose('delete')}>프로젝트 지우기…</button>
+    </motion.div>}</AnimatePresence>
+  </div>;
+}
+
+function useImpact<T>(path: string) {
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { api<T>(path).then(setData).catch(e => setError(message(e))); }, [path]);
+  return { data, error };
+}
+
+function RenameProject({ project, close, done }: { project: Project; close: () => void; done: (text: string) => void }) {
+  const { data, error } = useImpact<ProjectImpact>(`/projects/${project.id}/impact`);
+  const [name, setName] = useState(project.name);
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const next = name.trim();
+  const ready = !!data && !data.busy_jobs && !!next && next !== project.name && !saving;
+  async function save() {
+    setSaving(true); setProblem(null);
+    try {
+      const r = await api<{ name: string; questions: number }>(`/projects/${project.id}`, { method: 'PATCH', body: { name: next } });
+      done(`이름을 ${r.name}(으)로 바꿨어요${r.questions ? ` · 시험지 질문 ${r.questions}개도 바꿨어요` : ''}`);
+    } catch (e) { setProblem(message(e)); setSaving(false); }
+  }
+  return <Modal title="이름 바꾸기" close={close}>
+    <div className="pm-body">
+      <label className="pm-field"><small>새 이름</small>
+        <input value={name} maxLength={60} onChange={e => setName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && ready) void save(); }} /></label>
+      {error ? <p className="pm-impact is-warn">{error}</p> : !data ? <p className="pm-impact"><LoaderCircle size={13} className="spin" />바뀌는 것을 세는 중…</p>
+        : <div className="pm-impact">
+          <div><span>시험지 질문의 프로젝트</span><b>{data.questions}개{data.questions && next && next !== project.name ? ` · ${project.name} → ${next}` : ''}</b></div>
+          {project.kind === 'managed' && <div><span>직접 관리 문서의 출처 이름</span><b>{data.managed_documents}개</b></div>}
+          <small>조각·벡터는 다시 만들지 않아요. 지난 평가 기록은 그때 이름 그대로 남아요.</small>
+        </div>}
+      {data?.busy_jobs ? <p className="pm-impact is-warn">문서를 넣는 작업 {data.busy_jobs}개가 진행 중이에요. 끝난 뒤에 바꿔 주세요</p> : null}
+      {problem && <p className="pm-impact is-warn">{problem}</p>}
+      <div className="pm-actions"><button className="ghost-button" onClick={close}>취소</button>
+        <button className="primary-button" disabled={!ready} onClick={() => void save()}>{saving && <LoaderCircle size={14} className="spin" />}바꾸기</button></div>
+    </div>
+  </Modal>;
+}
+
+function DeleteProject({ project, close, done }: { project: Project; close: () => void; done: () => void }) {
+  const { data, error } = useImpact<ProjectImpact>(`/projects/${project.id}/impact`);
+  const [typed, setTyped] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const ready = !!data && !data.busy_jobs && typed === project.name && !saving;
+  async function remove() {
+    setSaving(true); setProblem(null);
+    try { await api(`/projects/${project.id}?confirm=${encodeURIComponent(project.name)}`, { method: 'DELETE' }); done(); }
+    catch (e) { setProblem(message(e)); setSaving(false); }
+  }
+  return <Modal title={`${project.name} 프로젝트 지우기`} close={close}>
+    <div className="pm-body">
+      {error ? <p className="pm-impact is-warn">{error}</p> : !data ? <p className="pm-impact"><LoaderCircle size={13} className="spin" />지워지는 것을 세는 중…</p> : <>
+        <div className="pm-impact is-bad">
+          <div><span>원본 문서 (같이 지워요)</span><b>{data.origin_documents}개</b></div>
+          <div><span>조각 (모든 색인)</span><b>{data.chunks}개</b></div>
+          {project.kind === 'managed' && <div><span>판 기록 · 올린 원본 파일</span><b>{data.versions}개 · {data.files}개</b></div>}
+          <div><span>연결만 끊는 문서 (다른 프로젝트가 원본)</span><b>{data.linked_documents}개</b></div>
+        </div>
+        {(data.questions > 0 || data.evidence_questions > 0) && <p className="pm-impact is-warn">
+          {data.questions > 0 && `시험지 질문 ${data.questions}개가 이 프로젝트를 가리켜요. `}{data.evidence_questions > 0 && `질문 ${data.evidence_questions}개가 이 프로젝트 문서를 근거로 써요. `}
+          지운 뒤 시험지 점검에 오류로 나와요 (시험지는 고치지 않아요).</p>}
+        {data.busy_jobs > 0 && <p className="pm-impact is-warn">문서를 넣는 작업 {data.busy_jobs}개가 진행 중이에요. 끝난 뒤에 지워 주세요</p>}
+      </>}
+      <small className="pm-note">되돌릴 수 없어요. {project.kind === 'git' ? (data?.github ? 'GitHub에서 받아 둔 폴더도 지워요. GitHub 저장소는 그대로예요.' : '저장소 파일은 그대로 둬요.') : ''}</small>
+      <label className="pm-field"><small>확인하려면 프로젝트 이름 <b>{project.name}</b>을 적어 주세요</small>
+        <input value={typed} placeholder={project.name} onChange={e => setTyped(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && ready) void remove(); }} /></label>
+      {problem && <p className="pm-impact is-warn">{problem}</p>}
+      <div className="pm-actions"><button className="ghost-button" onClick={close}>취소</button>
+        <button className="danger-button" disabled={!ready} onClick={() => void remove()}>{saving && <LoaderCircle size={14} className="spin" />}지우기</button></div>
+    </div>
+  </Modal>;
+}
+
+// 문서 하나 지우기. 문서 창 위에 한 번 더 묻는다.
+export function DeleteDocument({ id, name, projects, close, done }: { id: number; name: string; projects: ProjectRef[]; close: () => void; done: () => void }) {
+  const { data, error } = useImpact<DocImpact>(`/documents/${id}/impact`);
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  async function remove() {
+    setSaving(true); setProblem(null);
+    try { await api(`/documents/${id}`, { method: 'DELETE' }); done(); }
+    catch (e) { setProblem(message(e)); setSaving(false); }
+  }
+  return <Modal title={`${name} 지우기`} close={close}>
+    <div className="pm-body">
+      {error ? <p className="pm-impact is-warn">{error}</p> : !data ? <p className="pm-impact"><LoaderCircle size={13} className="spin" />세는 중…</p> : <>
+        <div className="pm-impact is-bad">
+          <div><span>조각 (모든 색인)</span><b>{data.chunks}개</b></div>
+          {data.kind === 'managed' && <div><span>판 기록</span><b>{data.versions}개</b></div>}
+          <div><span>연결된 프로젝트</span><b>{projects.length ? projects.map(p => `${p.name}${p.origin ? ' (원본)' : ''}`).join(', ') : '—'}</b></div>
+        </div>
+        {data.kind === 'git' && <p className="pm-impact is-warn">Git 문서예요. 저장소에 파일이 남아 있으면 [다시 받기] 때 다시 들어와요.</p>}
+        {data.evidence_questions > 0 && <p className="pm-impact is-warn">질문 {data.evidence_questions}개가 이 문서를 근거로 써요. 지운 뒤 시험지 점검에 오류로 나와요.</p>}
+      </>}
+      {problem && <p className="pm-impact is-warn">{problem}</p>}
+      <div className="pm-actions"><button className="ghost-button" onClick={close}>취소</button>
+        <button className="danger-button" disabled={!data || saving} onClick={() => void remove()}>{saving && <LoaderCircle size={14} className="spin" />}지우기</button></div>
+    </div>
+  </Modal>;
 }
 
 // ---------- 문서를 다른 프로젝트에 연결 ----------

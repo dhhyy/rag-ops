@@ -263,6 +263,30 @@ def delete(sha: str, qid: str) -> dict:
     return check()
 
 
+# ── 프로젝트 이름·문서가 바뀔 때 ──────────────────────────────────────────
+
+# 이 프로젝트를 가리키는 질문 수, 이 문서들을 근거로 쓰는 질문 수 (지우기·이름 바꾸기 확인 창에 보여 준다)
+def count_project(name: str) -> int:
+    questions, _ = load_questions()
+    return sum(1 for q in questions if q.get("project") == name)
+
+
+def count_evidence(paths: list[str]) -> int:
+    wanted = set(paths)
+    questions, _ = load_questions()
+    return sum(1 for q in questions if any(e.get("path") in wanted for e in q.get("evidence") or []))
+
+
+# 프로젝트 이름을 바꿀 때 시험지의 project 값도 같이 바꾼다. 바꾼 질문 수를 돌려준다.
+def rename_project(old: str, new: str) -> int:
+    with _lock:
+        questions, _ = load_questions()
+        n = sum(1 for q in questions if q.get("project") == old)
+        if n:
+            _write([{**q, "project": new} if q.get("project") == old else q for q in questions])
+    return n
+
+
 # ── 근거 문장 찾기 ─────────────────────────────────────────────────────────
 # 문서 원문에서 검색어가 든 문장을 돌려준다. 고르면 그 문장이 그대로 quote가 되어, 손으로 옮겨 적다 틀리는 일을 막는다.
 MARKER = re.compile(r"^\s*(?:#{1,6}|[-*+>]|\d+[.)])\s+")

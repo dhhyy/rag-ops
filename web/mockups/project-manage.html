@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>프로젝트 관리 시안</title>
+<style>
+:root{--ink:#302f35;--muted:#7c7887;--faint:#a39dad;--soft:#f6f4f9;--line:#ebe7f0;--accent:#9b81d3;--accent-ink:#6f53ad;--dark:#303034;--warn:#b0623a;--warn-bg:#fbefe7;--bad:#b04040;--bad-bg:#fbeaea;--own:#8a5a1f;--own-bg:#f8eedf;
+  font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Segoe UI',sans-serif;color:var(--ink);font-size:13px}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(125deg,#edeaf5,#efedf1);min-height:100vh;padding:24px 16px 60px}
+h1,h2,h3,p{margin:0}button,input{font:inherit;color:inherit}button{border:0;cursor:pointer;background:none}
+small{font-size:11px;color:var(--muted);line-height:1.6}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:28px}
+.lab{font-size:11px;color:var(--accent-ink);font-weight:600;letter-spacing:.02em;margin-bottom:8px}
+.lab span{color:var(--faint);font-weight:400;margin-left:6px}
+/* 머리 띠: Hybrid (정보는 늘고 줄며 버튼은 고정) */
+.head{display:flex;align-items:center;gap:14px;padding:16px 18px;border-radius:20px;background:#fff;flex-wrap:wrap}
+.tag{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:8px;font-size:10.5px;background:var(--own-bg);color:var(--own)}
+.head .info{flex:1;min-width:200px}.head .info b{font-weight:500;font-size:14px;display:block}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border-radius:12px;font-size:12px;border:1px solid #e3dceb;background:#fff}
+.btn.dark{background:var(--dark);color:#fff;border-color:var(--dark)}
+.btn.bad{background:var(--bad);color:#fff;border-color:var(--bad)}
+.btn:disabled{opacity:.45;cursor:default}
+.more{position:relative}
+.menu{position:absolute;right:0;top:44px;width:200px;padding:6px;border-radius:14px;background:#fff;box-shadow:0 10px 30px #3a2d5a24;z-index:2}
+.menu button{display:flex;width:100%;padding:9px 10px;border-radius:9px;font-size:12px;text-align:left}
+.menu button:hover{background:var(--soft)}.menu .danger{color:var(--bad)}
+/* 확인 창: Fixed 폭 440 */
+.row{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}
+.modal{width:440px;max-width:100%;padding:22px;border-radius:22px;background:#fff;box-shadow:0 20px 50px #3a2d5a1f;display:flex;flex-direction:column;gap:14px}
+.modal h3{font-size:16px;font-weight:500}
+.field{display:flex;flex-direction:column;gap:6px}.field input{padding:10px 12px;border-radius:12px;border:1px solid #e3dceb;background:var(--soft);outline:none}
+.impact{display:flex;flex-direction:column;gap:6px;padding:12px 14px;border-radius:14px;background:var(--soft);font-size:12px}
+.impact.bad{background:var(--bad-bg)}.impact.warn{background:var(--warn-bg);color:var(--warn)}
+.impact div{display:flex;justify-content:space-between;gap:10px}.impact div b{font-weight:500}
+.actions{display:flex;justify-content:flex-end;gap:8px}
+.doc{display:flex;flex-direction:column;gap:10px;padding:18px;border-radius:22px;background:#fff;width:440px;max-width:100%}
+.doc .foot{display:flex;justify-content:space-between;align-items:center;padding-top:10px;border-top:1px solid var(--line)}
+</style>
+</head>
+<body><div class="wrap">
+
+<section>
+  <p class="lab">① 프로젝트 머리 띠 <span>[⋯] 메뉴에 이름 바꾸기·지우기. 자주 쓰는 [파일 올리기]/[다시 받기]는 그대로</span></p>
+  <div class="head">
+    <span class="tag">직접 관리</span>
+    <div class="info"><b>sample-net</b><small>문서 3개 · 원문은 DB에 저장해요 · 마지막으로 넣은 때 11월 12일 오후 2:10</small></div>
+    <button class="btn dark">파일 올리기</button>
+    <div class="more"><button class="btn" aria-label="프로젝트 관리">⋯</button>
+      <div class="menu"><button>이름 바꾸기</button><button class="danger">프로젝트 지우기…</button></div></div>
+  </div>
+  <div style="height:90px"></div>
+</section>
+
+<section>
+  <p class="lab">② 확인 창 <span>바뀌는 것을 숫자로 먼저 보여 주고 누르게 해요</span></p>
+  <div class="row">
+    <div class="modal">
+      <h3>이름 바꾸기</h3>
+      <label class="field"><small>새 이름</small><input value="sample-network"></label>
+      <div class="impact">
+        <div><span>시험지 질문의 프로젝트</span><b>4개 · sample-net → sample-network</b></div>
+        <div><span>직접 관리 문서의 출처 이름</span><b>3개</b></div>
+        <small>조각·벡터는 다시 만들지 않아요. 지난 평가 기록은 그때 이름 그대로 남아요.</small>
+      </div>
+      <div class="actions"><button class="btn">취소</button><button class="btn dark">바꾸기</button></div>
+    </div>
+
+    <div class="modal">
+      <h3>sample-net 프로젝트 지우기</h3>
+      <div class="impact bad">
+        <div><span>원본 문서 (같이 지워요)</span><b>3개</b></div>
+        <div><span>조각 (모든 색인)</span><b>9개</b></div>
+        <div><span>판 기록 · 올린 원본 파일</span><b>4개 · 1개</b></div>
+        <div><span>연결만 끊는 문서 (다른 프로젝트가 원본)</span><b>1개</b></div>
+      </div>
+      <div class="impact warn"><small>시험지 질문 4개가 이 프로젝트를 가리켜요. 지운 뒤 시험지 점검에 '없는 프로젝트'로 나와요 (시험지는 고치지 않아요).</small></div>
+      <small>되돌릴 수 없어요. Git 프로젝트라면 저장소 파일은 그대로 두고, GitHub에서 받아 둔 폴더만 지워요.</small>
+      <label class="field"><small>확인하려면 프로젝트 이름 <b>sample-net</b>을 적어 주세요</small><input placeholder="sample-net"></label>
+      <div class="actions"><button class="btn">취소</button><button class="btn bad" disabled>지우기</button></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <p class="lab">③ 문서 창 아래 <span>문서 하나 지우기</span></p>
+  <div class="row">
+    <div class="doc">
+      <small>… 문서 정보 · 판 기록 · 조각 …</small>
+      <div class="foot"><small>모든 색인의 조각 3개와 판 기록이 같이 지워져요</small><button class="btn">문서 지우기</button></div>
+    </div>
+    <div class="modal">
+      <h3>guide.md 지우기</h3>
+      <div class="impact bad"><div><span>조각 (모든 색인)</span><b>3개</b></div><div><span>연결된 프로젝트</span><b>publish (원본)</b></div></div>
+      <div class="impact warn"><small>Git 문서예요. 저장소에 파일이 남아 있으면 [다시 받기] 때 다시 들어와요.</small></div>
+      <div class="actions"><button class="btn">취소</button><button class="btn bad">지우기</button></div>
+    </div>
+  </div>
+</section>
+
+</div></body></html>

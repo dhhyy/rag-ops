@@ -1102,3 +1102,33 @@ html.qs-drawer-open .app-shell{transform:scale(.965) translateX(-18px);transform
 .pe-scope button.is-on{background:#fff;box-shadow:0 1px 4px #4b375a14}
 .pe-confusion.is-zero{color:#8f879a}
 .detail-link{margin-left:8px;font-size:11px;color:#7a5cc4;text-decoration:underline;text-underline-offset:2px;white-space:nowrap}
+/* 프로젝트·문서 이름 바꾸기·지우기 (확인 창 = Fixed 폭, 안의 숫자 표 = 줄마다 Hybrid) */
+.ghost-button,.danger-button{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 14px;border-radius:13px;font-size:12px;white-space:nowrap;cursor:pointer}
+.ghost-button{border:1px solid #e3dceb;background:#fff;color:#2f2a38}
+.ghost-button:hover{background:#f7f4fb}
+.danger-button{border:1px solid #b04040;background:#b04040;color:#fff}
+.danger-button:hover{background:#963535}
+.ghost-button:disabled,.danger-button:disabled{opacity:.45;cursor:default}
+.pj-more{position:relative}
+.pj-more-btn{padding:9px 11px}
+.pj-menu{position:absolute;right:0;top:calc(100% + 6px);width:190px;padding:6px;border-radius:14px;background:#fff;box-shadow:0 10px 30px #3a2d5a24;z-index:20;display:flex;flex-direction:column}
+.pj-menu button{padding:9px 10px;border-radius:9px;font-size:12px;text-align:left;background:transparent;color:#2f2a38}
+.pj-menu button:hover{background:#f6f3fa}
+.pj-menu .is-danger{color:#b04040}
+.pm-body{display:flex;flex-direction:column;gap:12px;margin-top:16px}
+.pm-field{display:flex;flex-direction:column;gap:6px}
+.pm-field small{font-size:11px;color:#8f879a}
+.pm-field small b{color:#2f2a38;font-weight:500}
+.pm-field input{padding:10px 12px;border-radius:12px;border:1px solid #e3dceb;background:#f7f5fa;outline:none;font-size:12px}
+.pm-field input:focus{border-color:#b9a4e4}
+.pm-impact{display:flex;flex-direction:column;gap:6px;margin:0;padding:12px 14px;border-radius:14px;background:#f6f4f9;font-size:12px;color:#4a4553;line-height:1.6}
+.pm-impact>div{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.pm-impact>div b{font-weight:500;color:#2f2a38;text-align:right}
+.pm-impact small{font-size:11px;color:#8f879a}
+.pm-impact.is-bad{background:#fbeaea}
+.pm-impact.is-warn{background:#fbefe7;color:#a35f3b;font-size:11.5px}
+.pm-impact>svg{display:inline;vertical-align:-2px;margin-right:6px}
+.pm-note{font-size:11px;color:#8f879a;line-height:1.6}
+.pm-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
+.doc-foot{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:16px;padding-top:14px;border-top:1px solid #efeaf4}
+.doc-foot small{font-size:10.5px;color:#9a91a5}

@@ -18,7 +18,7 @@ import { UsagePage } from './usage';
 import { Home as HomePage } from './home';
 import { SetupBar, StagePanel, useCatalog, useSetup, type BuildResponse, type IndexInfo, type PanelStage } from './setup';
 import { SetupFlow, stepOf } from './setupflow';
-import { LinkModal, NewProjectFlow, ProjectCards, ProjectHead, useProjects, VersionList, waitJobs, type ProjectRef } from './projects';
+import { DeleteDocument, LinkModal, NewProjectFlow, ProjectCards, ProjectHead, useProjects, VersionList, waitJobs, type ProjectRef } from './projects';
 
 type Page = 'home' | 'knowledge' | 'pipeline' | 'playground' | 'compare' | 'evaluations' | 'runs' | 'usage' | 'settings';
 type Collection = { id: number; name: string; documents: number; color: string };
@@ -133,8 +133,9 @@ function useDocuments() {
   return { docs, error, setExternal, setLinks, reload };
 }
 
-function DocumentModal({ doc, target, close }: { doc: StoredDocument; target?: DocTarget | null; close: () => void }) {
+function DocumentModal({ doc, target, close, onDeleted }: { doc: StoredDocument; target?: DocTarget | null; close: () => void; onDeleted: () => void }) {
   const { chunks, error } = useChunks(doc.id, target?.indexId);
+  const [deleting, setDeleting] = useState(false);
   return <Modal title={doc.title} close={close}>
     <DetailRows rows={[
       ['Source', /\.pdf$/i.test(doc.source_path)
@@ -154,6 +155,10 @@ function DocumentModal({ doc, target, close }: { doc: StoredDocument; target?: D
     {doc.source_kind === 'managed' && <><p className="muted document-chunks-heading">판 기록</p><VersionList documentId={doc.id} /></>}
     <p className="muted document-chunks-heading">{chunks ? `${chunks.length} chunks${target ? ` · Playground에서 본 조각 #${String(target.chunkIndex).padStart(2, '0')}을 강조했어요 (색인 #${target.indexId ?? '기본'})` : ''}` : error ?? 'Loading chunks…'}</p>
     {chunks && <ChunkList chunks={chunks} highlight={target?.chunkIndex} />}
+    <div className="doc-foot"><small>모든 색인의 조각{chunks ? ` ${chunks.length}개` : ''}{doc.source_kind === 'managed' ? '와 판 기록' : ''}이 같이 지워져요</small>
+      <button className="ghost-button" onClick={() => setDeleting(true)}>문서 지우기</button></div>
+    {deleting && <DeleteDocument id={doc.id} name={doc.source_path.split('/').pop() ?? doc.title} projects={doc.projects}
+      close={() => setDeleting(false)} done={() => { setDeleting(false); onDeleted(); }} />}
   </Modal>;
 }
 
@@ -195,7 +200,8 @@ function Knowledge({ view, target, clearTarget, openPipeline }: { view: 'all' | 
     <AnimatePresence initial={false}>{created && <motion.p className="pj-note is-ok pj-created" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>
       <Check size={13} /><span>{created}</span><button className="text-button" onClick={openPipeline}>진행 보기 <ArrowRight size={12} /></button><button className="text-button" onClick={() => setCreated(null)}>닫기</button></motion.p>}</AnimatePresence>
     <AnimatePresence initial={false} mode="wait">{project && <motion.div key={project.id} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.2 }}>
-      <ProjectHead project={project} openPipeline={openPipeline} onPulled={() => { void reloadProjects(); void reload(); }} />
+      <ProjectHead project={project} openPipeline={openPipeline} onPulled={() => { void reloadProjects(); void reload(); }}
+        onDeleted={() => { setPid(null); void reloadProjects(); void reload(); }} />
     </motion.div>}</AnimatePresence>
 
     <div className="section-heading document-heading">
@@ -242,7 +248,8 @@ function Knowledge({ view, target, clearTarget, openPipeline }: { view: 'all' | 
           void reloadProjects(); void reload();
         });
       }} />
-    {open && <DocumentModal doc={open} target={target?.documentId === open.id ? target : null} close={() => { setOpen(null); clearTarget(); }} />}
+    {open && <DocumentModal doc={open} target={target?.documentId === open.id ? target : null} close={() => { setOpen(null); clearTarget(); }}
+      onDeleted={() => { setOpen(null); clearTarget(); void reload(); void reloadProjects(); }} />}
   </>;
 }
 // ---------- Live ingest pipeline (engine API: /api/rag) ----------
