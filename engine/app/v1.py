@@ -255,3 +255,116 @@ def delete_project_v1(project_id: int, request: Request) -> dict:
     project = _owned(project_id, _service(request))
     out = api.delete_project(project_id, confirm=project["name"])
     return {"deleted": project_id, "name": project["name"], "documents": out.get("origin_documents"), "chunks": out.get("chunks")}
+
+
+# ---------- 조각 읽기와 외부 LLM 호출 ----------
+
+# 서비스가 읽을 수 있는 조각인지: 조각의 문서가 붙은 프로젝트 중 하나라도 그 서비스가 읽을 수 있으면 된다.
+def _chunks_for(conn, chunk_ids: list[int], service: str) -> dict[int, dict]:
+    rows = conn.execute(
+        """SELECT c.id, c.document_id, c.content, c.heading_path, d.title, d.external_ok,
+                  array_agg(p.source->>'service') AS owners
+           FROM chunks c JOIN documents d ON d.id = c.document_id
+           JOIN project_documents pd ON pd.document_id = d.id JOIN projects p ON p.id = pd.project_id
+           WHERE c.id = ANY(%s) GROUP BY c.id, d.id""", (chunk_ids,)).fetchall()
+    out = {}
+    for cid, doc_id, content, heading, title, ext, owners in rows:
+        if any(o is None or o == service for o in owners):
+            out[cid] = {"chunk_id": cid, "document_id": doc_id, "text": content, "title": title,
+                        "heading_path": " > ".join(heading) if isinstance(heading, list) else (heading or ""),
+                        "external_ok": bool(ext)}
+    return out
+
+
+# 프로젝트의 조각 원문 목록 (지금 검색에 쓰는 색인 기준). 출제 재료처럼 검색 없이 전체를 읽을 때 쓴다.
+@router.get("/projects/{project_id}/chunks")
+def list_chunks_v1(project_id: int, request: Request, limit: int = Query(200, ge=1, le=500),
+                   offset: int = Query(0, ge=0)) -> dict:
+    service = _service(request)
+    env = load_env()
+    with connect(env) as conn:
+        if not _can_read(projects.get_project(conn, project_id), service):
+            raise V1Error(404, "project_not_found", f"프로젝트 {project_id}이(가) 없습니다")
+        index_id = load_setup(conn)["index"]["id"]
+        total = conn.execute(
+            """SELECT count(*) FROM chunks c JOIN project_documents pd ON pd.document_id = c.document_id
+               WHERE pd.project_id = %s AND c.index_id = %s""", (project_id, index_id)).fetchone()[0]
+        ids = [r[0] for r in conn.execute(
+            """SELECT c.id FROM chunks c JOIN project_documents pd ON pd.document_id = c.document_id
+               WHERE pd.project_id = %s AND c.index_id = %s ORDER BY c.document_id, c.chunk_index
+               LIMIT %s OFFSET %s""", (project_id, index_id, limit, offset)).fetchall()]
+        found = _chunks_for(conn, ids, service)
+    chunks = []
+    for cid in ids:
+        c = found[cid]
+        m = PAGE.match(c["heading_path"].split(" > ")[-1].strip()) if c["heading_path"] else None
+        chunks.append({"chunk_id": cid, "text": c["text"], "external_ok": c["external_ok"],
+                       "location": {"document_id": c["document_id"], "title": c["title"],
+                                    "heading_path": c["heading_path"], "page": int(m.group(1)) if m else None}})
+    return {"project_id": project_id, "index_id": index_id, "total": total, "offset": offset, "chunks": chunks}
+
+
+LLM_MODELS = ("gpt-6-luna", "gpt-6.1-terra")   # 단가를 아는 모델만 (components.PRICES). 금액을 늘 기록하려는 것
+
+
+class LlmV1(BaseModel):
+    instructions: str = Field(min_length=1, max_length=8000)   # 역할·규칙. 문서 원문은 넣지 않는다
+    input: str = Field(min_length=1, max_length=8000)          # 서비스 입력 (예: 출제 초안 JSON)
+    chunk_ids: list[int] = Field(default_factory=list, max_length=20)   # 근거. 원문은 엔진이 붙인다
+    model: Literal["gpt-6-luna", "gpt-6.1-terra"] = "gpt-6-luna"
+    max_output_tokens: int = Field(400, ge=16, le=2000)
+    purpose: str = Field("", max_length=60)   # 사용 기록에 남길 용도 (예: "quiz.generate")
+
+
+# 외부 LLM(OpenAI)을 엔진이 대신 부른다. 근거 조각은 chunk_ids로만 받고, 모두 외부 전송 가능일 때만 보낸다.
+# 호출마다 모델·토큰·금액을 서비스 이름으로 사용 기록에 남긴다.
+@router.post("/llm")
+def llm_v1(req: LlmV1, request: Request) -> dict:
+    t_start = time.perf_counter()
+    service = _service(request)
+    env = load_env()
+    ok, reason = comp.OpenAIEmbedder.availability(env)
+    if not ok:
+        raise V1Error(503, "llm_unavailable", "엔진에 외부 LLM 키가 설정되어 있지 않습니다")
+    ids = list(dict.fromkeys(req.chunk_ids))
+    with connect(env) as conn:
+        found = _chunks_for(conn, ids, service) if ids else {}
+    missing = [i for i in ids if i not in found]
+    if missing:
+        raise V1Error(404, "chunk_not_found", f"조각이 없습니다: {missing}")
+    blocked = [i for i in ids if not found[i]["external_ok"]]
+    if blocked:
+        raise V1Error(403, "external_not_allowed", f"외부 전송이 허용되지 않은 조각입니다: {blocked}")
+
+    sources = "\n\n".join(f"[{n}] {found[i]['title']} > {found[i]['heading_path']}\n{found[i]['text']}"
+                          for n, i in enumerate(ids, 1))
+    text_in = req.input + (f"\n\nSources:\n{sources}" if ids else "")
+    body = {"model": req.model, "instructions": req.instructions, "input": text_in,
+            "max_output_tokens": req.max_output_tokens, "reasoning": {"effort": "none"}, "store": False}
+    rec: dict = {"service": service, "status": "error", "question": (req.purpose or "llm")[:60],
+                 "setup": {"api": "v1", "kind": "llm", "model": req.model, "purpose": req.purpose},
+                 "hits": [{"chunk_id": i, "document_id": found[i]["document_id"]} for i in ids],
+                 "trace_id": telemetry.current_trace_id()}
+    result = None
+    try:
+        try:
+            data = comp.openai_post(comp.openai_base(env), "/responses", env["OPENAI_API_KEY"], body, timeout=90)
+        except comp.ComponentError as e:
+            rec["error"] = str(e)
+            raise V1Error(502, "llm_failed", str(e)) from None
+        answer = "".join(c.get("text", "") for o in data.get("output", []) if o.get("type") == "message"
+                         for c in o.get("content", []) if c.get("type") == "output_text").strip()
+        u = data.get("usage", {})
+        tin, tout = u.get("input_tokens", 0), u.get("output_tokens", 0)
+        cached = (u.get("input_tokens_details") or {}).get("cached_tokens", 0)
+        cost = comp.cost_usd(req.model, tin, tout, cached)
+        rec.update(status="ok", answer=answer, input_tokens=tin, output_tokens=tout, cached_tokens=cached, cost_usd=cost)
+        result = {"text": answer, "model": req.model, "status": data.get("status"),
+                  "chunks": [{"ref": n, "chunk_id": i} for n, i in enumerate(ids, 1)],
+                  "usage": {"input_tokens": tin, "cached_tokens": cached, "output_tokens": tout,
+                            "cost_usd": cost, "price_checked": comp.PRICE_CHECKED}}
+    finally:
+        total = round((time.perf_counter() - t_start) * 1000)
+        rec["latency_ms"] = {"total": total}
+        usage_id = usage.record(env, rec)
+    return result | {"latency_ms": {"total": total}, "usage_id": usage_id}

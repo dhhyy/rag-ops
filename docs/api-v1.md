@@ -22,7 +22,7 @@
 | 엔진 (`/v1`) | 서비스 |
 | --- | --- |
 | 근거 조각 찾기, 근거 위치·판·검증 상태·환경·외부 전송 가능 여부 붙이기 | 답변을 쓸지 **보류할지 판단** |
-| 사용 기록 (서비스별 질문 수·지연·비용) | 답변 생성(LLM), 화면, 사용자 기록 |
+| 사용 기록 (서비스별 질문 수·지연·비용), 외부 LLM 대신 부르기(`/v1/llm`, 외부 전송 검사·비용 기록) | 프롬프트와 답변 사용 방식, 화면, 사용자 기록 |
 
 - `/v1/search`는 **답변을 만들지 않는다.** 근거만 준다.
 - 외부 LLM에 근거를 보낼 때는 `meta.external_ok`가 `true`인 조각만 보낸다 (서비스 책임).
@@ -205,7 +205,66 @@ Content-Type: application/json
 
 응답 200: `{"deleted": 42, "name": "quiz-arena-room-42", "documents": 1, "chunks": 2}`
 
+## GET /v1/projects/{id}/chunks?limit=200&offset=0
+
+프로젝트의 조각 원문 목록 (검색 없이 전체를 읽을 때, 예: 출제 재료). 읽을 수 있는 프로젝트(자기 것 또는 콘솔 프로젝트)만. 엔진이 지금 검색에 쓰는 색인 기준.
+
+```json
+{ "project_id": 42, "index_id": 1, "total": 21, "offset": 0,
+  "chunks": [ { "chunk_id": 433, "text": "…", "external_ok": false,
+                "location": { "document_id": 35, "title": "bio", "heading_path": "bio > p.1", "page": 1 } } ] }
+```
+
+- `limit` 1~500 (기본 200). `total`보다 적게 왔으면 `offset`을 늘려 다시 부른다.
+
+## POST /v1/llm
+
+외부 LLM(OpenAI)을 엔진이 대신 부른다. **서비스는 OpenAI 키를 갖지 않는다.**
+
+```json
+{ "instructions": "너는 출제자다. 근거만 보고 4지선다 문제 하나를 JSON으로 만들어라.",
+  "input": "개념: 훈민정음 창제 연도",
+  "chunk_ids": [433],
+  "model": "gpt-6-luna",
+  "max_output_tokens": 400,
+  "purpose": "quiz.generate" }
+```
+
+| 필드 | 필수 | 설명 |
+| --- | --- | --- |
+| `instructions` | ✓ | 역할·규칙. 1~8000자. **문서 원문을 넣지 않는다** |
+| `input` | ✓ | 서비스 입력. 1~8000자. 문서 원문을 넣지 않는다 |
+| `chunk_ids` | | 근거 조각 (최대 20). 엔진이 원문을 `input` 뒤에 `Sources:`로 `[1]`, `[2]` 번호를 붙여 넣는다 |
+| `model` | | `gpt-6-luna`(기본) 또는 `gpt-6.1-terra`. 단가를 아는 모델만 받는다 |
+| `max_output_tokens` | | 16~2000 (기본 400) |
+| `purpose` | | 사용 기록에 남길 용도 (60자 이하) |
+
+- **외부 전송 검사는 엔진이 한다.** `chunk_ids` 중 하나라도 `external_ok`가 false면 `403 external_not_allowed`이고 OpenAI를 부르지 않는다.
+- 근거 원문을 `instructions`나 `input`에 직접 붙이면 이 검사를 피하게 된다. 규약 위반이다. 근거는 늘 `chunk_ids`로 보낸다.
+- 생각 단계는 끄고(`reasoning.effort: none`), OpenAI에 응답을 저장하지 않는다(`store: false`).
+
+응답 200:
+
+```json
+{ "text": "…", "model": "gpt-6-luna", "status": "completed",
+  "chunks": [ { "ref": 1, "chunk_id": 433 } ],
+  "usage": { "input_tokens": 86, "cached_tokens": 0, "output_tokens": 22, "cost_usd": 0.0000196, "price_checked": "2026-11-10" },
+  "latency_ms": { "total": 6659 }, "usage_id": 108 }
+```
+
+- `chunks[].ref`: 답에 나오는 `[n]`이 어느 조각인지.
+- `cost_usd`: 엔진 단가표(OpenAI 공식 가격 페이지, 확인일 `price_checked`)로 계산한 금액. 호출마다 서비스 이름으로 사용 기록에 남는다.
+
+오류 (위 오류 표에 더해):
+
+| HTTP | code | 언제 |
+| --- | --- | --- |
+| 403 | `external_not_allowed` | 외부 전송이 허용되지 않은 조각이 있음 |
+| 404 | `chunk_not_found` | 없거나 읽을 수 없는 조각 |
+| 502 | `llm_failed` | OpenAI가 오류를 돌려줌 (429·5xx는 엔진이 몇 번 다시 시도한 뒤) |
+| 503 | `llm_unavailable` | 엔진에 OpenAI 키가 없음 |
+
 ## 앞으로 (아직 없음)
 
-- `POST /v1/llm`: 외부 LLM 호출을 엔진이 대신 해 주고 `external_ok`를 검사, 비용을 기록
+- 서비스별 비용 한도 (넘으면 `/v1/llm`을 막기). 한도 값은 사용자가 정한다
 - 판 바뀜 알림
