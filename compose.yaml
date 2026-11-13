@@ -81,7 +81,8 @@ services:
         DB_HOST: db
         DB_PORT: "5432"
         EMBED_URL: http://embed:80
-        RERANK_URL: http://rerank:80
+        # Mac에서 Metal 리랭커(scripts/rerank-metal.sh)를 쓰면 .env에 RERANK_URL_IN_DOCKER=http://host.docker.internal:8082
+        RERANK_URL: ${RERANK_URL_IN_DOCKER:-http://rerank:80}
         REDIS_URL: redis://redis:6379/0
         # 추적을 Tempo로 보낸다. 비워 두면(OTEL_EXPORTER_OTLP_ENDPOINT=) 추적을 끈다
         OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT-http://tempo:4318}
@@ -124,6 +125,8 @@ services:
       KONG_PROXY_ERROR_LOG: /dev/stderr
       # 응답 헤더에 Kong 버전을 내보내지 않는다
       KONG_HEADERS: "off"
+      # 엔진 컨테이너를 다시 만들면 주소가 바뀐다. 주소를 오래 기억하면 옛 주소로 보내 502가 나므로 10초만 기억한다
+      KONG_DNS_VALID_TTL: "10"
     volumes:
       - ./gateway/kong.yml:/kong/kong.yml:ro
     ports:
