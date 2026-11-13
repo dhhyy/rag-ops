@@ -162,6 +162,17 @@ Content-Type: application/json
 
 응답 201: `{"project": {"id": 42, "name": "quiz-arena-room-42", "external_ok": false}}`
 
+## GET /v1/projects
+
+부르는 서비스가 만든 프로젝트만 돌려준다 (관리 콘솔 프로젝트와 다른 서비스 것은 빠진다). 남은 방을 정리할 때 쓴다.
+
+```json
+{ "projects": [ { "id": 42, "name": "quiz-arena-room-42", "external_ok": false,
+                  "created_at": "2026-11-14T01:02:03+00:00", "documents": 1, "active_jobs": 0 } ] }
+```
+
+- `active_jobs`: 넣는 중(queued/running)인 작업 수. 0이 아니면 지우기가 `409 conflict`로 막힌다.
+
 ## POST /v1/projects/{id}/pdf?name=파일이름.pdf
 
 본문은 PDF 원본 바이트 (`Content-Type: application/pdf`). 20MB 이하, 글자가 있는 PDF (스캔본은 글자가 안 나온다). 쪽마다 조각 하나가 된다.
@@ -185,6 +196,7 @@ Content-Type: application/json
 ```
 
 - `status`: `queued` → `running` → `done` | `failed`. `failed`면 `error`에 이유.
+- `progress`: 임베딩한 조각 수 기준 (PDF는 글자 있는 쪽마다 조각 하나). 임베딩 전에는 `{"done": 0, "total": null}`, 끝나면 `done = total = chunks`. 묶음 단위로 늘어서 작은 PDF는 0에서 바로 끝으로 뛴다.
 - 1~2초 간격으로 물어보면 된다 (분당 60회 제한 안에서).
 
 ## DELETE /v1/projects/{id}

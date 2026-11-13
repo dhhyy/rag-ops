@@ -61,8 +61,12 @@ def run_job(job_id: int) -> None:
 
     # 가져오기·색인 작업은 6단계(STAGES) 번호를 남기고, 평가처럼 단계가 다른 작업은 이름만 남긴다.
     def on_step(name: str, done: int | None, total: int | None) -> None:
-        update_job(job_id, stage=name, stage_index=STAGES.index(name) + 1 if name in STAGES else None,
-                   progress_done=done, progress_total=total)
+        index = STAGES.index(name) + 1 if name in STAGES else None
+        if name == "저장" and done is None and total is None:
+            # 저장 단계는 수를 주지 않는다. 임베딩에서 남긴 수(끝낸 조각/전체 조각)를 지우지 않고 둔다 (/v1 진행 막대용)
+            update_job(job_id, stage=name, stage_index=index)
+            return
+        update_job(job_id, stage=name, stage_index=index, progress_done=done, progress_total=total)
 
     kind = params.get("kind", "ingest")
     try:

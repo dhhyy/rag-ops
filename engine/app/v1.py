@@ -218,9 +218,34 @@ def get_job_v1(job_id: int, request: Request) -> dict:
     result = job.get("result") or {}
     return {"job_id": job["id"], "project_id": params["project_id"], "name": params.get("filename"),
             "status": job["status"], "stage": job["stage"],
-            "progress": {"done": job["progress_done"], "total": job["progress_total"]},
+            "progress": _progress(job, result),
             "error": job["error"], "document_id": result.get("document_id"), "version": result.get("version"),
             "chunks": result.get("chunks")}
+
+
+# 진행 수는 조각 기준이다 (PDF는 쪽마다 조각 하나라 쪽 수와 같다). 시간이 걸리는 건 임베딩이라 그 단계 수를 쓴다.
+# 임베딩 전에는 전체 수를 아직 모른다 (done 0, total null). 끝나면 done = total = 조각 수.
+def _progress(job: dict, result: dict) -> dict:
+    if job["status"] == "done" and result.get("chunks") is not None:
+        return {"done": result["chunks"], "total": result["chunks"]}
+    if job["progress_total"] is None:
+        return {"done": 0 if job["status"] in ("queued", "running") else None, "total": None}
+    return {"done": job["progress_done"], "total": job["progress_total"]}
+
+
+# 서비스가 만든 자기 프로젝트 목록 (남은 방 정리용). 콘솔 프로젝트와 다른 서비스 것은 보이지 않는다.
+@router.get("/projects")
+def list_projects_v1(request: Request) -> dict:
+    service = _service(request)
+    with connect(load_env()) as conn:
+        rows = conn.execute(
+            """SELECT p.id, p.name, p.defaults, p.created_at,
+                      (SELECT count(*) FROM project_documents pd WHERE pd.project_id = p.id) AS documents,
+                      (SELECT count(*) FROM ingest_jobs j
+                        WHERE (j.params->>'project_id')::int = p.id AND j.status IN ('queued', 'running')) AS active_jobs
+               FROM projects p WHERE p.source->>'service' = %s ORDER BY p.id""", (service,)).fetchall()
+    return {"projects": [{"id": r[0], "name": r[1], "external_ok": bool((r[2] or {}).get("external_ok")),
+                          "created_at": r[3].isoformat(), "documents": r[4], "active_jobs": r[5]} for r in rows]}
 
 
 # 프로젝트와 그 문서·조각을 지운다 (방이 끝났을 때). 넣는 중인 작업이 있으면 409.
