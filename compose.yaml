@@ -110,6 +110,34 @@ services:
       timeout: 3s
       retries: 5
 
+  # 서비스용 게이트웨이 (Kong, DB 없이 선언형 설정). 서비스는 여기(GATEWAY_PORT)로만 엔진 /v1을 부른다.
+  # 키 확인·서비스 이름 붙이기·호출 수 제한을 맡는다. 설정: gateway/kong.yml (키가 있어 커밋 안 함, 예시는 kong.example.yml)
+  gateway:
+    image: kong:${KONG_VERSION:-3.9.3}
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      # 관리 API는 끈다. 설정은 kong.yml을 고치고 다시 시작해서 바꾼다
+      KONG_ADMIN_LISTEN: "off"
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      # 응답 헤더에 Kong 버전을 내보내지 않는다
+      KONG_HEADERS: "off"
+    volumes:
+      - ./gateway/kong.yml:/kong/kong.yml:ro
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8001}:8000"
+    depends_on:
+      engine:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   # 가져오기 worker (Celery). 엔진과 같은 이미지, 실행 명령만 다르다. 문서는 한 번에 하나씩 처리한다 (engine/app/tasks.py)
   worker:
     image: rag-ops-engine

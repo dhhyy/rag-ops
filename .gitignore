@@ -20,3 +20,6 @@ __pycache__/
 notes/
 labs/
 CLAUDE.md
+
+# 게이트웨이 실제 설정 (서비스 키가 들어 있다). 예시만 커밋
+gateway/kong.yml

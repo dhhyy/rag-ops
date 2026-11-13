@@ -14,24 +14,26 @@ from ingest import connect
 log = logging.getLogger("usage")
 
 
-def record(env: dict[str, str], row: dict) -> None:
+# 기록 번호(id)를 돌려준다. 실패하면 None.
+def record(env: dict[str, str], row: dict) -> int | None:
     try:
         with connect(env) as conn:
-            conn.execute(
+            return conn.execute(
                 """INSERT INTO usage_log (service, status, question, setup, hits, answer, sources, embed_tokens,
                        input_tokens, cached_tokens, output_tokens, cost_usd, latency_ms, error, trace_id)
                    VALUES (%(service)s, %(status)s, %(question)s, %(setup)s, %(hits)s, %(answer)s, %(sources)s,
                        %(embed_tokens)s, %(input_tokens)s, %(cached_tokens)s, %(output_tokens)s, %(cost_usd)s,
-                       %(latency_ms)s, %(error)s, %(trace_id)s)""",
+                       %(latency_ms)s, %(error)s, %(trace_id)s) RETURNING id""",
                 {"service": row.get("service", "playground"), "status": row["status"], "question": row["question"],
                  "setup": Jsonb(row["setup"]), "hits": Jsonb(row.get("hits", [])), "answer": row.get("answer"),
                  "sources": row.get("sources"), "embed_tokens": row.get("embed_tokens", 0),
                  "input_tokens": row.get("input_tokens", 0), "cached_tokens": row.get("cached_tokens", 0),
                  "output_tokens": row.get("output_tokens", 0), "cost_usd": row.get("cost_usd"),
                  "latency_ms": Jsonb(row.get("latency_ms", {})), "error": row.get("error"),
-                 "trace_id": row.get("trace_id")})
+                 "trace_id": row.get("trace_id")}).fetchone()[0]
     except Exception:  # 기록 실패가 질문 처리를 깨면 안 된다
         log.exception("usage_log 기록 실패")
+        return None
 
 
 # 요약 한 묶음: 질문 수, 비용 합계, 평균·느린 쪽(p95) 전체 지연, 오류 수, 토큰 합계.

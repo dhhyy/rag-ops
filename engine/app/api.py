@@ -25,6 +25,8 @@ from typing import Literal
 import anyio
 import redis
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from psycopg.types.json import Jsonb
@@ -43,6 +45,7 @@ from search import answer, hit_dict, load_setup, query_defaults, retrieve_steps
 from tasks import celery, ingest_task
 import telemetry
 import usage
+import v1
 
 # 작업은 worker가 실행하므로 엔진을 다시 켜도 진행 중인 작업은 영향을 받지 않는다. (끊긴 작업 정리는 worker가 켜질 때 한다)
 app = FastAPI(title="rag-ops engine")
@@ -50,6 +53,23 @@ app = FastAPI(title="rag-ops engine")
 if telemetry.setup("rag-ops-engine"):
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
     FastAPIInstrumentor.instrument_app(app, excluded_urls="health,queue,jobs/[0-9]+/events,usage")
+
+# 서비스용 API (/v1, 규약: docs/api-v1.md). 오류는 /v1에서만 {"error": {"code", "message"}} 모양으로 바꾼다.
+app.include_router(v1.router)
+
+
+@app.exception_handler(v1.V1Error)
+async def v1_error(_: Request, e: v1.V1Error) -> Response:
+    return v1.error_response(e.status, e.code, e.message)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, e: RequestValidationError) -> Response:
+    if request.url.path.startswith("/v1/"):
+        first = e.errors()[0] if e.errors() else {}
+        where = ".".join(str(p) for p in first.get("loc", []) if p != "body")
+        return v1.error_response(400, "invalid_query", f"{where}: {first.get('msg', '요청 값이 맞지 않습니다')}")
+    return await request_validation_exception_handler(request, e)
 
 
 # 가져오기 요청 본문. 메타데이터 값은 documents 테이블 주석에 적힌 선택지로 제한한다.

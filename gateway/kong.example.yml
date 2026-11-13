@@ -1,0 +1,35 @@
+# Kong 게이트웨이 선언형 설정 (DB 없이 이 파일 하나로 동작). 규약: docs/api-v1.md
+# 실제 설정은 이 파일을 gateway/kong.yml로 복사하고 키를 바꿔 쓴다. kong.yml은 키가 들어 있어 커밋하지 않는다.
+#   키 만들기: openssl rand -hex 24
+# 고친 뒤 반영: docker compose restart gateway
+_format_version: "3.0"
+
+services:
+  # 서비스용 엔진 API. /v1/search → engine:8000/v1/search
+  - name: engine-v1
+    url: http://engine:8000/v1
+    routes:
+      - name: v1
+        paths: ["/v1"]
+        strip_path: true
+    plugins:
+      # 서비스 키 확인. 통과하면 엔진에 X-Consumer-Username(서비스 이름)을 붙여 넘기고, 키 헤더는 지운다
+      - name: key-auth
+        config:
+          key_names: ["X-Service-Key"]
+          hide_credentials: true
+      # 서비스마다 분당 호출 수 제한 (게이트웨이 한 대라 local로 센다)
+      - name: rate-limiting
+        config:
+          minute: 60
+          policy: local
+          limit_by: consumer
+
+# 서비스 = consumer. username이 엔진 사용 기록(usage_log.service)에 그대로 남는다
+consumers:
+  - username: quiz-arena
+    keyauth_credentials:
+      - key: change-me-quiz-arena
+  - username: doc-search
+    keyauth_credentials:
+      - key: change-me-doc-search
