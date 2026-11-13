@@ -207,7 +207,11 @@ def _clean(raw: dict, qid: str, old: dict | None) -> dict:
                    JOIN projects p ON p.id = pd.project_id WHERE d.source_path = ANY(%s)""", ([e["path"] for e in evidence],))}
         if len(names) == 1:
             q["project"] = names.pop()
-    return {k: q[k] for k in FIELDS}
+    out = {k: q[k] for k in FIELDS}
+    # 서비스(doc-search)가 쓰는 기대 판단(answer/abstain/ask_back/partial). 화면에는 없으니 원래 값을 그대로 둔다
+    if (old or {}).get("expect"):
+        out["expect"] = old["expect"]
+    return out
 
 
 def _next_id(questions: list[dict]) -> str:
