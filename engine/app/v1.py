@@ -5,6 +5,9 @@
 - 응답 모양은 고정이다. 필드를 더하는 것만 하고, 지우거나 뜻을 바꾸려면 /v2를 만든다.
 - 답변은 만들지 않는다. 근거와 근거 정보(위치·판·환경·검증 상태·외부 전송 가능 여부)만 준다. 보류 판단은 서비스가 한다.
 - 관리 콘솔의 /search(JSON Lines 스트림)와 같은 검색 함수(retrieve)를 쓰므로 순위가 같다.
+- 넣기(프로젝트·PDF·작업·지우기)는 콘솔 API 함수를 그대로 부르고, 앞에서 소유권만 확인한다.
+  서비스가 만든 프로젝트는 source.service에 서비스 이름을 적는다. 그 서비스만 올리고·지우고·검색할 수 있다.
+  콘솔에서 만든 프로젝트(source.service 없음)는 모든 서비스가 검색만 할 수 있다.
 """
 from __future__ import annotations
 
@@ -12,7 +15,7 @@ import re
 import time
 from typing import Literal
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -63,7 +66,7 @@ def search_v1(req: SearchV1, request: Request) -> dict:
     with connect(env) as conn:
         setup = load_setup(conn)
         scope = projects.get_project(conn, req.project_id) if req.project_id is not None else None
-    if req.project_id is not None and scope is None:
+    if req.project_id is not None and not _can_read(scope, service):
         raise V1Error(404, "project_not_found", f"프로젝트 {req.project_id}이(가) 없습니다")
     query = setup["query"] if req.rerank == "setting" else {**setup["query"], "reranker": None}
     index = setup["index"]
@@ -126,3 +129,104 @@ def _hit_v1(rank: int, h: dict, extra: tuple[bool, int | None]) -> dict:
         "meta": {"env": h["env"], "doc_type": h["doc_type"], "verification": h["verification"],
                  "checked_at": h["checked_at"], "external_ok": extra[0]},
     }
+
+
+# ---------- 넣기: 프로젝트, PDF, 작업, 지우기 ----------
+
+def _service(request: Request) -> str:
+    return request.headers.get("x-consumer-username") or DIRECT
+
+
+# 다른 서비스의 프로젝트는 "없음"으로 답한다 (있는지 여부도 알려 주지 않는다).
+def _can_read(project: dict | None, service: str) -> bool:
+    if project is None:
+        return False
+    owner = (project.get("source") or {}).get("service")
+    return owner is None or owner == service
+
+
+def _owned(project_id: int, service: str) -> dict:
+    with connect(load_env()) as conn:
+        project = projects.get_project(conn, project_id)
+    if project is None or (project.get("source") or {}).get("service") != service:
+        raise V1Error(404, "project_not_found", f"프로젝트 {project_id}이(가) 없습니다")
+    return project
+
+
+class ProjectV1(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    external_ok: bool = False      # 올리는 문서를 외부 LLM에 보내도 되는지 (사용자 동의를 받은 서비스만 true)
+    description: str = Field("", max_length=200)
+
+
+def _project_out(p: dict) -> dict:
+    return {"id": p["id"], "name": p["name"], "external_ok": bool((p.get("defaults") or {}).get("external_ok"))}
+
+
+# 프로젝트 이름은 서비스 이름을 앞에 붙여 저장한다 (서비스끼리 이름이 부딪히지 않게, 콘솔에서 누구 것인지 보이게).
+@router.post("/projects", status_code=201)
+def create_project_v1(req: ProjectV1, request: Request) -> dict:
+    service = _service(request)
+    name = f"{service}-{req.name.strip()}"
+    with connect(load_env()) as conn:
+        try:
+            pid = projects.create_project(conn, name, "managed", {"service": service},
+                                          {"external_ok": req.external_ok}, req.description)
+        except ValueError as e:
+            code = "project_exists" if "이미 있습니다" in str(e) else "invalid_request"
+            raise V1Error(409 if code == "project_exists" else 400, code, str(e)) from None
+        project = projects.get_project(conn, pid)
+    return {"project": _project_out(project)}
+
+
+# 직접 관리 문서의 판 이름은 "v3" 꼴. 응답은 숫자(3)로 맞춘다
+def _ver(name: str | None) -> int | None:
+    s = str(name or "")
+    return int(s[1:]) if s[:1] == "v" and s[1:].isdigit() else None
+
+
+# PDF 하나를 원본 바이트로 올린다 (본문 = 파일, Content-Type: application/pdf, 20MB 이하). 넣기는 작업으로 돈다.
+@router.post("/projects/{project_id}/pdf", status_code=202)
+async def upload_pdf_v1(project_id: int, request: Request, name: str = Query(..., min_length=1, max_length=255)) -> dict:
+    import api   # api.py가 이 모듈을 불러오므로 함수 안에서 부른다
+    _owned(project_id, _service(request))
+    out = await api.upload_pdf(project_id, request, name)
+    if out["skipped"]:
+        s = out["skipped"][0]
+        return {"status": "skipped", "name": s["name"], "reason": s["reason"], "job_id": None}
+    if out["unchanged"]:
+        u = out["unchanged"][0]
+        return {"status": "unchanged", "name": u["name"], "version": _ver(u["version"]), "job_id": None}
+    item = (out["new"] or out["updated"])[0]
+    info = out["pdf"][0] if out["pdf"] else {}
+    return {"status": "queued", "name": item["name"], "job_id": item["job_id"], "replaces": _ver(item.get("from")),
+            "pages": info.get("pages"), "empty_pages": info.get("empty_pages"), "suspect": info.get("suspect")}
+
+
+# 넣기 작업 상태. status: queued → running → done | failed. done이면 document_id가 생긴다.
+@router.get("/jobs/{job_id}")
+def get_job_v1(job_id: int, request: Request) -> dict:
+    from jobs import fetch_job
+    job = fetch_job(job_id)
+    params = (job or {}).get("params") or {}
+    if job is None or params.get("project_id") is None:
+        raise V1Error(404, "job_not_found", f"작업 {job_id}이(가) 없습니다")
+    try:
+        _owned(int(params["project_id"]), _service(request))
+    except V1Error:
+        raise V1Error(404, "job_not_found", f"작업 {job_id}이(가) 없습니다") from None
+    result = job.get("result") or {}
+    return {"job_id": job["id"], "project_id": params["project_id"], "name": params.get("filename"),
+            "status": job["status"], "stage": job["stage"],
+            "progress": {"done": job["progress_done"], "total": job["progress_total"]},
+            "error": job["error"], "document_id": result.get("document_id"), "version": result.get("version"),
+            "chunks": result.get("chunks")}
+
+
+# 프로젝트와 그 문서·조각을 지운다 (방이 끝났을 때). 넣는 중인 작업이 있으면 409.
+@router.delete("/projects/{project_id}")
+def delete_project_v1(project_id: int, request: Request) -> dict:
+    import api
+    project = _owned(project_id, _service(request))
+    out = api.delete_project(project_id, confirm=project["name"])
+    return {"deleted": project_id, "name": project["name"], "documents": out.get("origin_documents"), "chunks": out.get("chunks")}

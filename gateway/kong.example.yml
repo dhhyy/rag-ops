@@ -18,6 +18,11 @@ services:
         config:
           key_names: ["X-Service-Key"]
           hide_credentials: true
+      # 본문 크기 제한: PDF 20MB(엔진 한도) + 여유. 넘으면 엔진에 닿기 전에 413
+      - name: request-size-limiting
+        config:
+          allowed_payload_size: 21
+          size_unit: megabytes
       # 서비스마다 분당 호출 수 제한 (게이트웨이 한 대라 local로 센다)
       - name: rate-limiting
         config:

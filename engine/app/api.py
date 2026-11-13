@@ -25,9 +25,10 @@ from typing import Literal
 import anyio
 import redis
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response, StreamingResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 from psycopg.types.json import Jsonb
 
@@ -61,6 +62,17 @@ app.include_router(v1.router)
 @app.exception_handler(v1.V1Error)
 async def v1_error(_: Request, e: v1.V1Error) -> Response:
     return v1.error_response(e.status, e.code, e.message)
+
+
+# 콘솔 API 함수를 /v1이 다시 부를 때 나오는 HTTPException도 /v1에서는 같은 모양으로 바꾼다.
+V1_CODES = {400: "invalid_request", 404: "not_found", 409: "conflict", 413: "too_large", 503: "engine_unavailable"}
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error(request: Request, e: StarletteHTTPException) -> Response:
+    if request.url.path.startswith("/v1/"):
+        return v1.error_response(e.status_code, V1_CODES.get(e.status_code, "error"), str(e.detail))
+    return await http_exception_handler(request, e)
 
 
 @app.exception_handler(RequestValidationError)
