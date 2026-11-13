@@ -263,16 +263,18 @@ def delete_project_v1(project_id: int, request: Request) -> dict:
 def _chunks_for(conn, chunk_ids: list[int], service: str) -> dict[int, dict]:
     rows = conn.execute(
         """SELECT c.id, c.document_id, c.content, c.heading_path, d.title, d.external_ok,
-                  array_agg(p.source->>'service') AS owners
+                  array_agg(p.source->>'service') AS owners, d.env, d.doc_type, d.verification, d.checked_at
            FROM chunks c JOIN documents d ON d.id = c.document_id
            JOIN project_documents pd ON pd.document_id = d.id JOIN projects p ON p.id = pd.project_id
            WHERE c.id = ANY(%s) GROUP BY c.id, d.id""", (chunk_ids,)).fetchall()
     out = {}
-    for cid, doc_id, content, heading, title, ext, owners in rows:
+    for cid, doc_id, content, heading, title, ext, owners, env_, doc_type, verification, checked in rows:
         if any(o is None or o == service for o in owners):
             out[cid] = {"chunk_id": cid, "document_id": doc_id, "text": content, "title": title,
                         "heading_path": " > ".join(heading) if isinstance(heading, list) else (heading or ""),
-                        "external_ok": bool(ext)}
+                        "external_ok": bool(ext),
+                        "meta": {"env": env_, "doc_type": doc_type, "verification": verification,
+                                 "checked_at": checked.isoformat() if checked else None, "external_ok": bool(ext)}}
     return out
 
 
@@ -298,7 +300,7 @@ def list_chunks_v1(project_id: int, request: Request, limit: int = Query(200, ge
     for cid in ids:
         c = found[cid]
         m = PAGE.match(c["heading_path"].split(" > ")[-1].strip()) if c["heading_path"] else None
-        chunks.append({"chunk_id": cid, "text": c["text"], "external_ok": c["external_ok"],
+        chunks.append({"chunk_id": cid, "text": c["text"], "external_ok": c["external_ok"], "meta": c["meta"],
                        "location": {"document_id": c["document_id"], "title": c["title"],
                                     "heading_path": c["heading_path"], "page": int(m.group(1)) if m else None}})
     return {"project_id": project_id, "index_id": index_id, "total": total, "offset": offset, "chunks": chunks}

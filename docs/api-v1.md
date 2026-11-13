@@ -212,9 +212,11 @@ Content-Type: application/json
 ```json
 { "project_id": 42, "index_id": 1, "total": 21, "offset": 0,
   "chunks": [ { "chunk_id": 433, "text": "…", "external_ok": false,
+                "meta": { "env": null, "doc_type": null, "verification": "미확인", "checked_at": null, "external_ok": false },
                 "location": { "document_id": 35, "title": "bio", "heading_path": "bio > p.1", "page": 1 } } ] }
 ```
 
+- `meta`는 `/v1/search`의 `meta`와 같다 (2026-11-14 추가).
 - `limit` 1~500 (기본 200). `total`보다 적게 왔으면 `offset`을 늘려 다시 부른다.
 
 ## POST /v1/llm
