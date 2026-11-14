@@ -69,8 +69,8 @@ export function Home({ openPipeline, openSetup, openPlayground, openEvaluations,
         external={!!setup?.index.external} />
       <EvalCard last={last} loading={!evals} open={openEvaluations} reload={loadEvals} />
       <FlowCard setup={setup} open={openPipeline} />
-      <RecentCard usage={usage} open={openUsage} />
       <WeekCard usage={usage} indexes={s.indexes} activeId={setup?.index.id} open={openKnowledge} />
+      <RecentCard usage={usage} open={openUsage} />
     </section>
   </div>;
 }
